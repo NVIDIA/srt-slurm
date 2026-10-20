@@ -23,6 +23,7 @@ from .engines import parse_engine_log
 from .identities import canonical_role, frontend_identity, worker_identity
 from .model import SCHEMA, activity_label, lifecycle
 from .nsys import read_profiles
+from .point_buffer import PointBuffers
 from .sources import otel_files, source_identity
 
 
@@ -55,6 +56,7 @@ class Importer:
         iteration_timezone: str | None = None,
         max_profile_events: int = 250_000,
         otel: bool = True,
+        point_buffers: PointBuffers | None = None,
     ) -> None:
         self.logs = logs / "logs" if (logs / "logs").is_dir() else logs
         if not self.logs.is_dir():
@@ -65,6 +67,7 @@ class Importer:
         self.iteration_zone = ZoneInfo(iteration_timezone) if iteration_timezone else None
         self.max_profile_events = max_profile_events
         self.otel = otel
+        self.point_buffers = point_buffers
         self.workers: dict[str, dict[str, Any]] = {}
         self.worker_epochs: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
         self.warnings: list[str] = []

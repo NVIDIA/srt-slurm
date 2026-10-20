@@ -5,12 +5,14 @@
 
 import copy
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import yaml
 from marshmallow import ValidationError
 
-from srtctl.backends import SGLangProtocol, VLLMProtocol
+from srtctl.backends import SGLangBackend, VLLMBackend
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import SrtConfig
@@ -19,6 +21,8 @@ from srtctl.frontends.base import _FRONTENDS
 from srtctl.frontends.sglang import SGLangRouterFrontend
 from srtctl.frontends.vllm_router import VLLMRouterFrontend
 from srtctl.ports import HTTP_PORTS
+from srtctl.services.config import ServiceConfig
+from srtctl.services.exporters import PROCESS_EXPORTER_CONFIG_NAME, ProcessExporterService
 
 
 @pytest.fixture(autouse=True)
@@ -56,10 +60,19 @@ def load(data):
     return SrtConfig.Schema().load(copy.deepcopy(data))
 
 
+def test_process_exporter_groups_cover_every_role_engine(tmp_path):
+    service = ServiceConfig(name="process-exporter", type="process-exporter")
+    ProcessExporterService().prepare(service, SimpleNamespace(log_dir=tmp_path), load(recipe()))
+    text = (tmp_path / PROCESS_EXPORTER_CONFIG_NAME).read_text()
+    names = [group["name"] for group in yaml.safe_load(text)["process_names"]]
+    assert {"vllm_engine_core", "dynamo_vllm", "sglang_scheduler", "dynamo_sglang"} <= set(names)
+    assert "dynamo_trtllm" not in names
+
+
 def test_independent_engine_arguments_environments_and_images():
     config = load(recipe())
-    assert isinstance(config.backend_for_role("prefill"), VLLMProtocol)
-    assert isinstance(config.backend_for_role("decode"), SGLangProtocol)
+    assert isinstance(config.backend_for_role("prefill"), VLLMBackend)
+    assert isinstance(config.backend_for_role("decode"), SGLangBackend)
     assert config.backend_for_role("prefill").get_config_for_mode("prefill") == {"tensor-parallel-size": 2}
     assert config.backend_for_role("decode").get_config_for_mode("decode") == {"tp-size": 2}
     assert config.backend_for_role("prefill").get_environment_for_mode("prefill") == {"PREFILL_ONLY": "1"}
@@ -87,7 +100,7 @@ def test_explicit_role_engines_do_not_inherit_sibling_options():
     data["roles"]["decode"]["engine"] = {"type": "sglang", "gpu_type": "h100"}
     config = load(data)
     assert config.backend_for_role("decode").gpu_type == "h100"
-    assert config.backend_for_role("prefill").gpu_type == SGLangProtocol().gpu_type
+    assert config.backend_for_role("prefill").gpu_type == SGLangBackend().gpu_type
     assert config.backend_for_role("prefill").get_config_for_mode("prefill") == {"tensor-parallel-size": 2}
     assert config.backend_for_role("decode").get_config_for_mode("decode") == {"tp-size": 2}
 

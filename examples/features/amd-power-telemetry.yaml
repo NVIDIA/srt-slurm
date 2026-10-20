@@ -1,0 +1,62 @@
+# Single-node SGLang with AMD device-metrics-exporter power collection.
+# In srtslurm.yaml, set visible_devices_env: ROCR_VISIBLE_DEVICES and map
+# the sglang-rocm container alias to an SGLang ROCm image for your GPU.
+# Include /dev/kfd: /dev/kfd and /dev/dri: /dev/dri in default_mounts.
+# Use unpartitioned GPUs. See docs/power-telemetry.md for artifact limitations.
+schema: 2
+name: qwen3-0.6b-amd-power
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: hf:Qwen/Qwen3-0.6B
+  container: sglang-rocm
+  precision: bf16
+
+resources:
+  gpu_type: mi300x
+  gpus_per_node: 8
+
+engine: sglang
+frontend:
+  type: sglang
+  enable_multiple_frontends: false
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    args:
+      served-model-name: Qwen/Qwen3-0.6B
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      context-length: 4096
+
+telemetry:
+  enabled: true
+  # Record samples without failing the benchmark for missing measurement windows.
+  required: false
+  # This block can instead be default_gpu_exporter in srtslurm.yaml.
+  dcgm_exporter:
+    container_image: docker://rocm/device-metrics-exporter:v1.5.2
+    command: /home/amd/tools/entrypoint.sh
+    port: 5000
+    kind: custom
+    gpu_labels:
+      index: gpu_id
+      identity: serial_number
+    gpu_metrics:
+      power:
+        metric: gpu_power_usage
+        scope: amd_device_metrics_exporter_gpu_power_usage
+      gpu_util:
+        metric: gpu_gfx_activity
+      temperature:
+        metric: gpu_junction_temperature
+
+benchmark:
+  type: sa-bench
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

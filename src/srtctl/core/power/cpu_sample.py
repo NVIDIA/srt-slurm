@@ -14,9 +14,15 @@ Origin (``source``) decides which rail is *primary*:
 
 * ``acpi`` -- the ``total`` envelope (``Grace Power Socket N``); the component
   rails ``cpu_rail``/``soc``/``dram`` ride along as reference breakdowns.
-* ``dcgm`` -- field 1130, one already-aggregated value per socket, no rails.
+* ``dcgm`` -- field 1130 is the primary. It is the ACPI ``cpu_rail`` read
+  through DCGM (``cpu_rails.DCGM_FIELD_RAIL_KINDS``), so the same value is
+  also filed as the ``cpu_rail`` component, and field 1132 as ``soc``; see
+  :func:`dcgm_rail_readings`. DCGM exposes no socket envelope.
 
-A socket without its primary reading is not a sample: a component rail must
+The ``module`` rail (superchip module power, GPUs included) is a reference
+rail too and rides on the socket row under either origin.
+
+A socket without its primary reading is not a sample: a reference rail must
 never stand in for the socket's power.
 """
 
@@ -25,7 +31,14 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from srtctl.core.power.cpu_rails import COMPONENT_RAIL_KINDS, DCGM_KIND, TOTAL_KIND, sensor_name
+from srtctl.core.power.cpu_rails import (
+    DCGM_FIELD_RAIL_KINDS,
+    DCGM_KIND,
+    DCGM_PRIMARY_FIELD_ID,
+    REFERENCE_RAIL_KINDS,
+    TOTAL_KIND,
+    sensor_name,
+)
 
 PRIMARY_KIND_BY_SOURCE: dict[str, str] = {"acpi": TOTAL_KIND, "dcgm": DCGM_KIND}
 
@@ -45,7 +58,7 @@ class RailReading:
     """One classified sensor value: which socket, which rail, from which sensor."""
 
     socket_id: int
-    kind: str  # cpu_rails.TOTAL_KIND / DCGM_KIND / a COMPONENT_RAIL_KINDS member
+    kind: str  # cpu_rails.TOTAL_KIND / DCGM_KIND / a REFERENCE_RAIL_KINDS member
     sensor: str
     watts: float
 
@@ -87,9 +100,9 @@ class CpuSample:
 
     @property
     def rails(self) -> dict[str, float]:
-        """Component rails only (never the primary), in canonical column order."""
+        """Reference rails only (never the primary), in canonical column order."""
         by_kind = {reading.kind: reading.watts for reading in self.readings}
-        return {kind: by_kind[kind] for kind in COMPONENT_RAIL_KINDS if kind in by_kind}
+        return {kind: by_kind[kind] for kind in REFERENCE_RAIL_KINDS if kind in by_kind}
 
     def reading(self, kind: str) -> RailReading | None:
         return next((reading for reading in self.readings if reading.kind == kind), None)
@@ -110,6 +123,27 @@ class CpuSample:
         for rail_kind, watts in (rails or {}).items():
             readings.append(RailReading(socket_id, rail_kind, sensor_name(rail_kind, socket_id), watts))
         return cls(source=source, socket_id=socket_id, readings=tuple(readings))
+
+
+def dcgm_rail_readings(socket_id: int, watts_by_field: Mapping[int, float]) -> list[RailReading]:
+    """Classify one socket's DCGM field values into rail readings.
+
+    The one place DCGM field ids become rails, shared by the host collector
+    and the scrape parser. Field 1130 yields two readings for one value: the
+    ``dcgm`` primary (what DCGM-mode ``power_w`` has always been) and the
+    ``cpu_rail`` component it actually measures, so the wide CSV's
+    ``cpu_rail_w`` column is honest about what the number is. Unknown fields
+    are ignored.
+    """
+    readings: list[RailReading] = []
+    primary = watts_by_field.get(DCGM_PRIMARY_FIELD_ID)
+    if primary is not None:
+        readings.append(RailReading(socket_id, DCGM_KIND, sensor_name(DCGM_KIND, socket_id), primary))
+    for field_id, kind in DCGM_FIELD_RAIL_KINDS.items():
+        watts = watts_by_field.get(field_id)
+        if watts is not None:
+            readings.append(RailReading(socket_id, kind, sensor_name(kind, socket_id), watts))
+    return readings
 
 
 def pivot_socket_samples(source: str, readings: Iterable[RailReading]) -> tuple[CpuSample, ...]:

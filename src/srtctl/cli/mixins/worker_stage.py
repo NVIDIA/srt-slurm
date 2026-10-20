@@ -9,22 +9,28 @@ Handles starting backend worker processes (prefill/decode/agg).
 
 import logging
 import shlex
+import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
-from srtctl.backends.vllm import VLLMFailoverConfig, VLLMProtocol
+from srtctl.backends.base import WorkerMode
+from srtctl.backends.vllm import VLLMBackend, VLLMFailoverConfig
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.health import wait_for_health
 from srtctl.core.observability_nsys import wrap_observability_nsys
-from srtctl.core.processes import ManagedProcess, NamedProcesses
+from srtctl.core.processes import ManagedProcess, NamedProcesses, ProcessRegistry
+from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import build_otel_env, installs_dynamo
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
+from srtctl.core.supervisor import EndpointKey, WorkerSupervisor
 from srtctl.frontends import get_frontend
 from srtctl.services.implicit import discovery_env
+from srtctl.services.otel import lifecycle_otel_env
 
 if TYPE_CHECKING:
-    from srtctl.core.runtime import RuntimeContext
+    from collections.abc import Iterable
+
     from srtctl.core.schema import SrtConfig
     from srtctl.core.topology import Endpoint, Process
 
@@ -32,6 +38,26 @@ logger = logging.getLogger(__name__)
 
 # Engines shut down on SIGTERM (deregister, free GPUs, flush); give them longer than the default 10s.
 WORKER_TERMINATE_TIMEOUT_SECONDS = 30.0
+
+
+def worker_step_name(
+    mode: str, index: int, node: str, attempt: int = 0, engine_id: int = 0, dp_rank: int | None = None
+) -> str:
+    """The Slurm step name (and registry name) of a worker step.
+
+    ``dp_rank`` names one rank of a per-rank endpoint (``_dp<r>``). ``engine_id``
+    > 0 is a shadow engine of the worker (vLLM ``engine.failover``) and adds
+    ``_e<k>``. ``attempt`` is the supervisor's relaunch count; a
+    relaunched step carries an ``_r<n>`` suffix so ``squeue --steps`` can never
+    confuse it with a lingering step of the life it replaces.
+    """
+    name = f"{mode}_{index}_{node}"
+    if dp_rank is not None:
+        name = f"{name}_dp{dp_rank}"
+    if engine_id:
+        name = f"{name}_e{engine_id}"
+    return f"{name}_r{attempt}" if attempt else name
+
 
 # Dynamo runtime (Rust) log filter for worker containers; a recipe's roles.<role>.env
 # overrides it via the merge below.
@@ -61,7 +87,7 @@ class WorkerStageMixin:
     Requires:
         self.config: SrtConfig
         self.runtime: RuntimeContext
-        self.backend: BackendProtocol
+        self.backend: Backend
         self.backend_processes: list[Process]
     """
 
@@ -71,7 +97,7 @@ class WorkerStageMixin:
 
     def _apply_mooncake_process_config(self, process: "Process", environment: dict[str, str]) -> None:
         backend = self.config.backend_for_role(process.endpoint_mode)
-        if not isinstance(backend, VLLMProtocol):
+        if not isinstance(backend, VLLMBackend):
             return
         local_config = backend.build_mooncake_process_config(
             process, self.runtime.infra_node_ip, self.runtime.gpus_per_node
@@ -89,7 +115,7 @@ class WorkerStageMixin:
 
     @property
     def backend(self) -> Any:
-        """Access the backend config (implements BackendProtocol)."""
+        """Access the backend config (implements Backend)."""
         return self.config.backend
 
     @property
@@ -140,11 +166,11 @@ class WorkerStageMixin:
 
         return " && ".join(parts)
 
-    def _fatal_log_patterns(self, mode: Literal["prefill", "decode", "agg"]) -> tuple[str, ...]:
+    def _fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
         """Log lines that fail a worker whose srun step outlives its engine.
 
         The backend names the lines its launcher prints once the engine has died
-        (``BackendProtocol.fatal_log_patterns``); the recipe adds its own through
+        (``Backend.fatal_log_patterns``); the recipe adds its own through
         ``health_check.extra_fatal_log_patterns`` or switches the watch off with
         ``health_check.fatal_log_markers: false``.
         """
@@ -174,6 +200,7 @@ class WorkerStageMixin:
         env = {"HEAD_NODE_IP": self.runtime.head_node_ip}
         if get_frontend(self.config.frontend.type).worker_launch == "dynamo":
             env.update(discovery_env(self.config, self.runtime))
+            env.update(lifecycle_otel_env(self.config.services, self.runtime.head_node_ip, process.endpoint_mode))
             env.update(
                 DYN_SYSTEM_PORT=str(process.sys_port),
                 DYN_REQUEST_PLANE=self.config.dynamo.request_plane,
@@ -209,7 +236,37 @@ class WorkerStageMixin:
         env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_PUB_PORT", str(leader.kvbm_zmq_port))
         env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_ACK_PORT", str(leader.kvbm_zmq_port + 1))
 
-    def _get_worker_environment_for_mode(self, mode: Literal["prefill", "decode", "agg"]) -> dict[str, str]:
+    def _apply_dwdp_endpoint_env(self, env_to_set: dict[str, str], mode: WorkerMode) -> None:
+        """Point a DWDP worker at its group's rendezvous master.
+
+        ``TRTLLMBackend.get_process_environment`` gives each DWDP worker its rank
+        but cannot see the other endpoints; the master is the rank-0 worker of the
+        same role, whose node is in ``backend_processes``. A recipe-provided
+        ``TRTLLM_DWDP_MASTER_ADDR`` is kept.
+        """
+        from srtctl.backends.trtllm import DWDP_MASTER_ADDR_ENV, DWDP_RANK_ENV
+
+        if DWDP_RANK_ENV not in env_to_set or DWDP_MASTER_ADDR_ENV in env_to_set:
+            return
+        master = next(
+            (p for p in self.backend_processes if p.endpoint_mode == mode and p.endpoint_index == 0 and p.is_leader),
+            None,
+        )
+        if master is None:
+            raise RuntimeError(f"DWDP {mode} worker found no rank-0 {mode} endpoint to rendezvous with")
+        env_to_set[DWDP_MASTER_ADDR_ENV] = get_hostname_ip(master.node, self.runtime.network_interface)
+
+    def _dwdp_preamble(self, backend: Any, process: "Process", env_to_set: dict[str, str]) -> str | None:
+        """``mkdir -p`` for a DWDP worker's private cache dir (transformers and the autotuner create files, not dirs)."""
+        from srtctl.backends.trtllm import DWDP_RANK_ENV, TRTLLMBackend
+
+        if DWDP_RANK_ENV not in env_to_set or not isinstance(backend, TRTLLMBackend):
+            return None
+        home = env_to_set.get("HOME", backend.dwdp_private_dir(process))
+        modules = env_to_set.get("HF_MODULES_CACHE", f"{home}/hf_modules")
+        return f"mkdir -p {shlex.quote(home)} {shlex.quote(modules)}"
+
+    def _get_worker_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
         """Return mode environment with engine-specific defaults the recipe can override."""
         backend = self.config.backend_for_role(mode)
         environment = backend.get_environment_for_mode(mode)
@@ -255,8 +312,15 @@ class WorkerStageMixin:
             process.node_rank,
         )
 
-    def start_worker(self, process: "Process", endpoint_processes: list["Process"]) -> ManagedProcess:
-        """Start a single worker process (one srun per node, used by SGLang)."""
+    def start_worker(
+        self, process: "Process", endpoint_processes: list["Process"], *, attempt: int = 0
+    ) -> ManagedProcess:
+        """Start a single worker process (one srun per node, used by SGLang).
+
+        ``attempt`` > 0 is a supervisor relaunch of the same process spec: same
+        node, GPUs, ports and log path (the previous life's log has been rotated
+        away), only the step name differs.
+        """
         mode = process.endpoint_mode
         backend = self.config.backend_for_role(mode)
         index = process.endpoint_index
@@ -265,7 +329,9 @@ class WorkerStageMixin:
         # (getattr: tests drive this stage with plain namespaces standing in for Process.)
         suffix = getattr(process, "engine_suffix", "")
 
-        if suffix:
+        if attempt:
+            logger.info("Relaunching %s worker %d on %s (restart %d)", mode, index, process.node, attempt)
+        elif suffix:
             logger.info("Starting %s worker %d shadow engine %d on %s", mode, index, process.engine_id, process.node)
         else:
             logger.info("Starting %s worker %d on %s", mode, index, process.node)
@@ -343,6 +409,7 @@ class WorkerStageMixin:
 
         # Add backend-specific process environment variables (e.g., unique ports)
         env_to_set.update(backend.get_process_environment(process))
+        self._apply_dwdp_endpoint_env(env_to_set, mode)
         if failover is not None:
             env_to_set.update(backend.get_failover_environment(process, self.runtime.job_id))
 
@@ -354,7 +421,7 @@ class WorkerStageMixin:
             local_hostname = env_to_set.get("MOONCAKE_LOCAL_HOSTNAME") or get_hostname_ip(
                 process.node, self.runtime.network_interface
             )
-            env_to_set.update(backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
+            env_to_set.update(backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname, mode))
 
         self._apply_mooncake_process_config(process, env_to_set)
 
@@ -380,7 +447,11 @@ class WorkerStageMixin:
                 bash_preamble,
                 _nsys_library_path_preamble(profiling.nsys_library_paths),
             )
-        fp_cmd = generate_capture_script(f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}{suffix}.json")
+        fingerprint_path = f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}{suffix}.json"
+        if isinstance(self.runtime, RuntimeContext) and self.runtime.hf_snapshot_path:
+            fp_cmd = generate_capture_script(fingerprint_path, self.runtime.worker_model_arg)
+        else:
+            fp_cmd = generate_capture_script(fingerprint_path)
         # Keep fingerprint failures non-fatal, but do not let its `|| true`
         # mask failures from setup/dynamo install commands before it.
         fp_cmd = f"( {fp_cmd} )"
@@ -390,7 +461,7 @@ class WorkerStageMixin:
             # The engine creates the lock file itself; its directory (also the GMS
             # socket dir) must exist. The gms service made it, but the engine step
             # should not depend on that after a relaunch.
-            assert isinstance(backend, VLLMProtocol)
+            assert isinstance(backend, VLLMBackend)
             worker_dir = backend.failover_worker_dir(self.runtime.job_id, process)
             bash_preamble = _append_preamble(bash_preamble, f"mkdir -p {shlex.quote(worker_dir)}")
 
@@ -401,7 +472,9 @@ class WorkerStageMixin:
         endpoint_nodes = {endpoint_process.node for endpoint_process in endpoint_processes}
         env_to_unset = ["VLLM_PORT"] if backend.type == "vllm" and len(endpoint_nodes) > 1 else None
 
-        step_name = f"{mode}_{index}_{process.node}{suffix}"
+        step_name = worker_step_name(
+            mode, index, process.node, attempt, getattr(process, "engine_id", 0), process.dp_rank
+        )
         proc = start_srun_process(
             command=cmd,
             nodelist=[process.node],
@@ -415,7 +488,7 @@ class WorkerStageMixin:
             env_to_set=env_to_set,
             env_to_unset=env_to_unset,
             bash_preamble=bash_preamble,
-            srun_options=self.runtime.srun_options,
+            srun_options={**self.runtime.srun_options, **self.config.roles[mode].srun_options},
             srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if installs_dynamo(self.config) else None,
             het_group=process.het_group,
             step_name=step_name,
@@ -437,13 +510,15 @@ class WorkerStageMixin:
             signal_full=not automatic_nsys,
             step_name=step_name,
             fatal_log_patterns=self._fatal_log_patterns(mode),
+            worker_assignments=(process,),
         )
 
-    def start_endpoint_worker(self, endpoint_processes: list["Process"]) -> ManagedProcess:
+    def start_endpoint_worker(self, endpoint_processes: list["Process"], *, attempt: int = 0) -> ManagedProcess:
         """Start a worker using MPI-style launching (one srun per endpoint, used by TRTLLM).
 
         This launches a single srun command that spans all nodes in the endpoint,
-        with ntasks = total GPUs across all nodes.
+        with ntasks = total GPUs across all nodes. ``attempt`` is the supervisor's
+        relaunch count (see ``start_worker``).
         """
         # Use the leader process for metadata
         leader = endpoint_processes[0]
@@ -469,12 +544,14 @@ class WorkerStageMixin:
                 rank_offset += local_size
 
         logger.info(
-            "Starting %s worker %d on %d nodes (%s) with %d total GPUs (MPI mode)",
+            "%s %s worker %d on %d nodes (%s) with %d total GPUs (MPI mode)%s",
+            "Relaunching" if attempt else "Starting",
             mode,
             index,
             num_nodes,
             ",".join(endpoint_nodes),
             total_gpus,
+            f" (restart {attempt})" if attempt else "",
         )
 
         # Log and config files (use leader node in name)
@@ -531,6 +608,12 @@ class WorkerStageMixin:
         # Add config environment variables
         env_to_set.update(self.runtime.environment)
 
+        # Add backend-specific process environment variables. One srun covers the
+        # endpoint, so the leader stands for it (a DWDP group member is a
+        # single-GPU endpoint and needs its own rank here).
+        env_to_set.update(backend.get_process_environment(leader))
+        self._apply_dwdp_endpoint_env(env_to_set, mode)
+
         if backend.type == "trtllm" and leader.trtllm_dist_init_port is not None:
             # Enroot may infer rank 0 from the sorted step nodelist, which
             # differs from our rank order for workers sharing a partial node.
@@ -571,7 +654,7 @@ class WorkerStageMixin:
             local_hostname = env_to_set.get("MOONCAKE_LOCAL_HOSTNAME") or get_hostname_ip(
                 leader.node, self.runtime.network_interface
             )
-            env_to_set.update(backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
+            env_to_set.update(backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname, mode))
 
         # Add profiling environment variables after the worker environment.
         if profiling.enabled and profiling_selects_process:
@@ -595,11 +678,19 @@ class WorkerStageMixin:
                 bash_preamble,
                 _nsys_library_path_preamble(profiling.nsys_library_paths),
             )
-        fp_cmd = generate_capture_script(f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}.json")
+        fingerprint_path = f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}.json"
+        if isinstance(self.runtime, RuntimeContext) and self.runtime.hf_snapshot_path:
+            fp_cmd = generate_capture_script(fingerprint_path, self.runtime.worker_model_arg)
+        else:
+            fp_cmd = generate_capture_script(fingerprint_path)
         # Keep fingerprint failures non-fatal, but do not let its `|| true`
         # mask failures from setup/dynamo install commands before it.
         fp_cmd = f"( {fp_cmd} )"
         bash_preamble = f"{bash_preamble} && {fp_cmd}" if bash_preamble else fp_cmd
+
+        dwdp_setup = self._dwdp_preamble(backend, leader, env_to_set)
+        if dwdp_setup:
+            bash_preamble = _append_preamble(bash_preamble, dwdp_setup)
 
         if node_gpu_setup:
             bash_preamble = f"{node_gpu_setup} && {bash_preamble}" if bash_preamble else node_gpu_setup
@@ -607,9 +698,23 @@ class WorkerStageMixin:
         # Repeated hosts preserve each node's exact rank count and ordering.
         task_nodes = [p.node for p in endpoint_processes for _ in p.gpu_indices]
         task_counts = [len(p.gpu_indices) for p in endpoint_processes]
-        srun_options = dict(self.runtime.srun_options)
+        srun_options = {**self.runtime.srun_options, **self.config.roles[mode].srun_options}
         srun_options["ntasks-per-node"] = str(max(task_counts))
-        if len(set(task_counts)) > 1:
+        if num_nodes > 1:
+            # Every multi-node endpoint, uniform or not, lays its ranks out explicitly:
+            # one host per task, in srt-slurm's node order, under --distribution=arbitrary.
+            # A plain --nodelist only names the nodes; Slurm may still order the tasks
+            # by its own topology, putting rank 0 on a node other than the leader whose
+            # IP is MASTER_ADDR, and the rendezvous then waits forever.
+            configured = srun_options.get("distribution")
+            if configured not in (None, "arbitrary"):
+                logger.warning(
+                    "%s worker %d: srun_options.distribution=%r is replaced by 'arbitrary'; "
+                    "a multi-node endpoint needs the explicit per-rank host list",
+                    mode,
+                    index,
+                    configured,
+                )
             srun_options["distribution"] = "arbitrary"
             endpoint_nodes = task_nodes
 
@@ -621,7 +726,7 @@ class WorkerStageMixin:
             # step instead of leaving the other ranks up with no engine.
             srun_options["kill-on-bad-exit"] = "1"
 
-        step_name = f"{mode}_{index}_{leader.node}"
+        step_name = worker_step_name(mode, index, leader.node, attempt)
         proc = start_srun_process(
             command=cmd,
             nodes=num_nodes,
@@ -662,6 +767,7 @@ class WorkerStageMixin:
             signal_full=not automatic_nsys,
             step_name=step_name,
             fatal_log_patterns=self._fatal_log_patterns(mode),
+            worker_assignments=tuple(endpoint_processes),
         )
 
     def _wait_for_worker_ready(self, leader: "Process") -> None:
@@ -692,6 +798,66 @@ class WorkerStageMixin:
         ):
             raise RuntimeError(f"Sequential node start: worker on {leader.node}:{port} did not become healthy")
 
+    def worker_endpoint_groups(self, processes: list["Process"] | None = None) -> dict[EndpointKey, list["Process"]]:
+        """The physical processes of every restart unit, keyed by ``(mode, index, engine)``, in launch order.
+
+        ``processes`` defaults to every backend process; ``_start_workers`` passes
+        one role's share so a per-role engine groups only its own workers. The
+        engine is 0 for every process unless the backend runs shadow engines
+        (vLLM ``engine.failover``), whose processes carry ``engine_id``; each
+        engine of a worker is launched, supervised, and relaunched on its own.
+        """
+        grouped: dict[EndpointKey, list[Process]] = defaultdict(list)
+        for process in self.backend_processes if processes is None else processes:
+            grouped[(process.endpoint_mode, process.endpoint_index, getattr(process, "engine_id", 0))].append(process)
+        return dict(grouped)
+
+    def relaunch_endpoint(self, endpoint_processes: list["Process"], *, attempt: int) -> "Iterable[ManagedProcess]":
+        """Yield each launched step so the supervisor tracks it before the next rank starts."""
+        # The role's own engine decides the launch strategy (roles may run different engines).
+        backend = self.config.backend_for_role(endpoint_processes[0].endpoint_mode)
+        if backend.get_srun_config().launch_per_endpoint:
+            yield self.start_endpoint_worker(endpoint_processes, attempt=attempt)
+        else:
+            for process in endpoint_processes:
+                yield self.start_worker(process, endpoint_processes, attempt=attempt)
+
+    def worker_ready_probe(self, endpoint_processes: list["Process"]) -> tuple[str, int] | None:
+        """Where a relaunched endpoint answers ``GET /health`` once it serves (WorkerLauncher protocol).
+
+        Under the Dynamo frontend that is the runtime's system status server on
+        ``DYN_SYSTEM_PORT`` (200 once the model is loaded and the endpoint is
+        registered); every other frontend talks to the engine's own HTTP port.
+        """
+        leader = endpoint_processes[0]
+        frontend = get_frontend(self.config.frontend.type)
+        port = (
+            frontend.worker_ready_port(leader)
+            if frontend.worker_launch == "dynamo"
+            else frontend.worker_endpoint_port(leader, self.config, self.runtime)
+        )
+        if port is None or port <= 0:
+            return None
+        return get_hostname_ip(leader.node, self.runtime.network_interface), port
+
+    def build_worker_supervisor(self, registry: ProcessRegistry, stop_event: threading.Event) -> WorkerSupervisor:
+        """The reconcile loop that relaunches workers per ``roles.<role>.restart``; a no-op until ``track_workers``."""
+        health = self.config.health_check
+        return WorkerSupervisor(
+            registry=registry,
+            stop_event=stop_event,
+            launcher=self,
+            log_dir=self.runtime.log_dir,
+            # A relaunched worker gets the same budget to come up as the initial health gate.
+            ready_timeout=float(health.max_attempts * health.interval_seconds),
+        )
+
+    def track_workers(self, supervisor: WorkerSupervisor, worker_procs: NamedProcesses) -> None:
+        """Hand the launched workers to the supervisor; roles with ``restart: never`` are skipped."""
+        if not worker_procs:
+            return  # nothing launched, nothing to supervise
+        supervisor.track(self.worker_endpoint_groups(), worker_procs.keys(), self.config.topology.worker_restart)
+
     def start_all_workers(self) -> NamedProcesses:
         """Launch each role using its engine's existing launch strategy."""
         if not self.config.role_backends:
@@ -709,10 +875,7 @@ class WorkerStageMixin:
         srun_config = backend.get_srun_config()
         launch_per_endpoint = srun_config.launch_per_endpoint
 
-        grouped: dict[tuple, list[Process]] = defaultdict(list)
-        for process in processes:
-            key = (process.endpoint_mode, process.endpoint_index)
-            grouped[key].append(process)
+        grouped = self.worker_endpoint_groups(processes)
 
         result: NamedProcesses = {}
 

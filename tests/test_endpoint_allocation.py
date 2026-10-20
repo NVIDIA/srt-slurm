@@ -101,6 +101,49 @@ class TestAllocateEndpoints:
         for ep in endpoints:
             assert len(ep.nodes) == 2
             assert ep.total_gpus == 8
+            assert ep.gpu_indices == frozenset(range(4))
+
+    def test_multi_node_worker_leaves_gpus_idle_evenly(self):
+        """6 GPUs on 4-GPU nodes use 3+3, not 4+2 (nnodes needs an even split)."""
+        endpoints = allocate_endpoints(
+            num_prefill=2,
+            num_decode=1,
+            num_agg=0,
+            gpus_per_prefill=6,
+            gpus_per_decode=8,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("n0", "n1", "n2", "n3", "n4", "n5"),
+        )
+
+        prefill = [e for e in endpoints if e.mode == "prefill"]
+        decode = [e for e in endpoints if e.mode == "decode"]
+
+        assert [ep.nodes for ep in prefill] == [("n0", "n1"), ("n2", "n3")]
+        for ep in prefill:
+            assert ep.gpu_indices == frozenset({0, 1, 2})
+            assert ep.total_gpus == 6
+        assert decode[0].nodes == ("n4", "n5")
+        assert decode[0].gpu_indices == frozenset(range(4))
+        assert decode[0].total_gpus == 8
+
+        processes = endpoints_to_processes(prefill)
+        assert len(processes) == 4
+        assert all(p.gpu_indices == frozenset({0, 1, 2}) for p in processes)
+
+    def test_multi_node_worker_rejects_uneven_gpu_split(self):
+        """A GPU count that cannot split evenly across spanned nodes is rejected."""
+        with pytest.raises(ValueError, match="not an even split"):
+            allocate_endpoints(
+                num_prefill=1,
+                num_decode=0,
+                num_agg=0,
+                gpus_per_prefill=5,
+                gpus_per_decode=1,
+                gpus_per_agg=0,
+                gpus_per_node=4,
+                available_nodes=("n0", "n1"),
+            )
 
     def test_insufficient_gpus(self):
         """Test that we raise an error when there are insufficient GPUs."""
@@ -403,6 +446,30 @@ class TestEndpointsToProcesses:
         assert processes[0].kv_events_port == KV_EVENTS_PORT_BASE
         assert processes[1].kv_events_port == KV_EVENTS_PORT_BASE + 1
 
+    def test_kv_events_block_per_publisher(self):
+        """A process with N KV-event publishers reserves N ports, so DP workers on one node do not overlap."""
+        endpoints = allocate_endpoints(
+            num_prefill=2,
+            num_decode=1,
+            num_agg=0,
+            gpus_per_prefill=2,
+            gpus_per_decode=2,
+            gpus_per_agg=8,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1"),
+        )
+
+        processes = endpoints_to_processes(
+            endpoints, base_sys_port=8081, kv_events_port_sizes={"prefill": 2, "decode": 2}
+        )
+
+        ports = {(p.endpoint_mode, p.endpoint_index): (p.node, p.kv_events_port) for p in processes}
+        assert ports == {
+            ("prefill", 0): ("node0", KV_EVENTS_PORT_BASE),
+            ("prefill", 1): ("node0", KV_EVENTS_PORT_BASE + 2),
+            ("decode", 0): ("node1", KV_EVENTS_PORT_BASE + 4),
+        }
+
     def test_nixl_port_allocation(self):
         """Test NIXL ports are allocated globally unique from the default."""
         from srtctl.core.topology import Endpoint
@@ -559,10 +626,10 @@ class TestAllocateEndpointsHet:
 
 @pytest.mark.parametrize("gpu_count, expected_counts", [(6, [4, 2]), (5, [4, 1]), (12, [4, 4, 4]), (32, [4] * 8)])
 def test_multinode_exact_gpu_count(gpu_count: int, expected_counts: list[int]) -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
     nodes = len(expected_counts)
-    endpoints = TRTLLMProtocol().allocate_endpoints(
+    endpoints = TRTLLMBackend().allocate_endpoints(
         num_prefill=1,
         num_decode=1,
         num_agg=0,
@@ -581,10 +648,10 @@ def test_multinode_exact_gpu_count(gpu_count: int, expected_counts: list[int]) -
 
 @pytest.mark.parametrize("gpu_count", [0, -1])
 def test_trtllm_rejects_nonpositive_worker_gpu_count(gpu_count: int) -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
     with pytest.raises(ValueError, match="GPUs per worker must be positive"):
-        TRTLLMProtocol().allocate_endpoints(
+        TRTLLMBackend().allocate_endpoints(
             num_prefill=1,
             num_decode=0,
             num_agg=0,
@@ -597,9 +664,9 @@ def test_trtllm_rejects_nonpositive_worker_gpu_count(gpu_count: int) -> None:
 
 
 def test_trtllm_partial_workers_stay_on_single_nodes() -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
-    endpoints = TRTLLMProtocol().allocate_endpoints(
+    endpoints = TRTLLMBackend().allocate_endpoints(
         num_prefill=2,
         num_decode=0,
         num_agg=0,
@@ -618,10 +685,10 @@ def test_trtllm_partial_workers_stay_on_single_nodes() -> None:
 
 
 def test_two_dep6_workers_reject_insufficient_nodes() -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
     with pytest.raises(ValueError, match="Not enough nodes for GPU allocation"):
-        TRTLLMProtocol().allocate_endpoints(
+        TRTLLMBackend().allocate_endpoints(
             num_prefill=2,
             num_decode=0,
             num_agg=0,
@@ -634,9 +701,9 @@ def test_two_dep6_workers_reject_insufficient_nodes() -> None:
 
 
 def test_two_dep6_workers_spread_across_four_nodes() -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
-    endpoints = TRTLLMProtocol().allocate_endpoints(
+    endpoints = TRTLLMBackend().allocate_endpoints(
         num_prefill=2,
         num_decode=0,
         num_agg=0,
@@ -659,7 +726,7 @@ def test_two_dep6_workers_spread_across_four_nodes() -> None:
 
 @pytest.mark.parametrize("heterogeneous", [False, True])
 def test_two_dep6_workers_share_three_nodes(heterogeneous: bool) -> None:
-    from srtctl.backends.trtllm import TRTLLMProtocol
+    from srtctl.backends.trtllm import TRTLLMBackend
 
     if heterogeneous:
         endpoints = allocate_endpoints_het(
@@ -673,7 +740,7 @@ def test_two_dep6_workers_share_three_nodes(heterogeneous: bool) -> None:
             pack_multinode_workers=True,
         )
     else:
-        endpoints = TRTLLMProtocol().allocate_endpoints(
+        endpoints = TRTLLMBackend().allocate_endpoints(
             num_prefill=2,
             num_decode=1,
             num_agg=0,

@@ -460,7 +460,15 @@ def test_metric_rank_labels_survive_null_columns(artifacts):
     assert series["samples"] == 4
 
 
-def test_per_process_and_shadow_engine_reports_map_to_the_agg_worker_and_keep_scheduler_stages(tmp_path):
+@pytest.mark.parametrize(
+    "stages",
+    [
+        ("scheduler.run_batch", "scheduler.process_batch_result"),
+        ("schedule: update_after_schedule", "gpu_model_runner: forward"),
+    ],
+    ids=["sglang", "vllm"],
+)
+def test_per_process_and_shadow_engine_reports_map_to_the_agg_worker_and_keep_scheduler_stages(tmp_path, stages):
     logs, sqlites = write_run(tmp_path)
     (logs / "agg-host_agg_w0.out").write_text("")
     (logs / "agg-host_agg_w0_e1.out").write_text("")
@@ -476,15 +484,16 @@ def test_per_process_and_shadow_engine_reports_map_to_the_agg_worker_and_keep_sc
         conn.executemany(
             "INSERT INTO NVTX_EVENTS VALUES (?, ?, ?, NULL, 17)",
             [
-                (2_300_000_000, 2_400_000_000, "scheduler.run_batch"),
-                (2_400_000_000, 2_450_000_000, "scheduler.process_batch_result"),
+                (2_300_000_000, 2_400_000_000, stages[0]),
+                (2_400_000_000, 2_450_000_000, stages[1]),
                 (2_450_000_000, 2_460_000_000, "attention_layer_3"),
+                (2_460_000_000, 2_461_000_000, "schedule: allocate_slots"),
             ],
         )
     data = Importer(logs, sqlites).run()
     agg = next(p for p in data["profiles"] if p["file"].startswith("agg-host"))
     assert (agg["worker"], agg["rank"], agg["engine"], agg["gpus"]) == ("agg-0", None, 1, "0-1")
-    assert agg["names"] == ["scheduler.run_batch", "scheduler.process_batch_result"]
+    assert agg["names"] == list(stages)
     assert next(w for w in data["workers"] if w["id"] == "agg-0")["profiles"] == [agg["id"]]
     dataset = TraceDataset(data)
     assert dataset.query("nsys", worker="agg-0", start=2, end=3)["total"] == 2
@@ -499,6 +508,9 @@ def test_per_process_and_shadow_engine_reports_map_to_the_agg_worker_and_keep_sc
         ("sglang:num_running_reqs", "Running requests", "requests"),
         ("sglang:num_queue_reqs", "Waiting requests", "requests"),
         ("sglang:token_usage", "KV cache utilization", "ratio"),
+        ("vllm:num_requests_running", "Running requests", "requests"),
+        ("vllm:num_requests_waiting", "Waiting requests", "requests"),
+        ("vllm:kv_cache_usage_perc", "KV cache utilization", "ratio"),
     ],
 )
 def test_engine_gauges_are_imported(artifacts, name, label, unit):

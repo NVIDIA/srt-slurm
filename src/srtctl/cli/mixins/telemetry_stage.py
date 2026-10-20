@@ -8,7 +8,9 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import subprocess
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -18,10 +20,12 @@ from srtctl.core.cpu_power_session import CpuPowerTelemetrySession
 from srtctl.core.git_state import head_commit
 from srtctl.core.power.contract import Reason
 from srtctl.core.power.cpu_session import CpuPowerCollector, CpuPowerSessionSettings
+from srtctl.core.power.identity import WORKER_PROBE_SCRIPTS, WorkerGpuIdentity, WorkerIdentityProof, parse_node_probe
 from srtctl.core.power.manifest import ExpectedWindow
+from srtctl.core.power.mapping import DCGM_EXPORTER_COMMAND_TEMPLATE, TACHOMETER_SCRAPE
 from srtctl.core.power.session import PowerSessionSettings, PowerTelemetrySession
-from srtctl.core.power.topology import build_expected_devices
-from srtctl.core.processes import ManagedProcess, ProcessRegistry
+from srtctl.core.power.topology import DeviceAssignment, build_expected_devices
+from srtctl.core.processes import ManagedProcess, ProcessRegistry, list_step_ids
 from srtctl.core.schema import TelemetryExporterConfig
 from srtctl.core.slurm import start_srun_process
 from srtctl.core.status import log_stream_interval, tachometer_outbox
@@ -34,9 +38,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Power telemetry's template: 100ms NVML sampling is its purpose (dense power
-# curves inside sa-bench measurement windows). Never used for tachometer.
-DCGM_EXPORTER_COMMAND_TEMPLATE = "dcgm-exporter --collect-interval=100 --address :{port}"
 # Time tachometer gets after SIGTERM to compact its in-memory arrow rows to parquet.
 TACHOMETER_STEP_NAME = "tachometer"
 
@@ -169,7 +170,11 @@ class TelemetryStageMixin:
         return managed
 
     def start_power_telemetry(self, registry: ProcessRegistry) -> PowerTelemetrySession | None:
-        """Start DCGM power telemetry when it is enabled.
+        """Start GPU power telemetry when it is enabled.
+
+        The exporter block's ``gpu_labels`` and ``gpu_metrics`` (DCGM when unset) tell the
+        collector which metric and labels to read; nothing here depends on the
+        GPU vendor.
 
         Every provider-originated startup failure becomes session state once the
         session exists, so the orchestrator can still finalize artifacts and
@@ -183,6 +188,7 @@ class TelemetryStageMixin:
         if exporter_config is None:
             return None
 
+        mapping = exporter_config.power_mapping
         worker_nodes = self._telemetry_nodes()
         power_dir = self.runtime.log_dir / telemetry.storage_subdir
         command = resolve_exporter_command(exporter_config, DCGM_EXPORTER_COMMAND_TEMPLATE)
@@ -203,6 +209,7 @@ class TelemetryStageMixin:
                 exporter_command=command,
                 network_interface=self.runtime.network_interface,
                 producer_git_commit=read_producer_commit(),
+                mapping=mapping,
             ),
             expected_devices=build_expected_devices(self.backend_processes),
             expected_windows=[
@@ -214,8 +221,9 @@ class TelemetryStageMixin:
         # NOTE: stored before initialize() so a raise mid-startup still leaves a finalizable session.
         self._power_session = session
         self._power_telemetry_ready = False
+        session.record_clock_sync_failures(getattr(self, "_clock_sync_failures", ()))
         session.initialize()
-        logger.info("Starting DCGM power telemetry (artifacts under %s)", power_dir)
+        logger.info("Starting GPU power telemetry (%s, artifacts under %s)", mapping.power_metric, power_dir)
 
         def own(process: ManagedProcess) -> None:
             registry.add_process(process)
@@ -233,7 +241,7 @@ class TelemetryStageMixin:
                 on_started=own,
             )
         except Exception:
-            logger.exception("DCGM exporter launch failed")
+            logger.exception("GPU power exporter launch failed")
             session.record_reason(Reason.EXPORTER_LAUNCH_FAILED)
             return session
 
@@ -242,6 +250,97 @@ class TelemetryStageMixin:
         else:
             logger.warning("Power collector did not reach readiness within %.1fs", telemetry.startup_timeout_seconds)
         return session
+
+    def capture_power_worker_identity(self, registry: ProcessRegistry) -> None:
+        """Record which GPU UUIDs each worker step holds, once the server is healthy.
+
+        Any failure is recorded instead of raised: the run still publishes on a
+        fully used node, and idle GPUs on a worker node stay ``unexpected_device``
+        (see ``validate_devices``).
+        """
+        session = getattr(self, "_power_session", None)
+        if session is None:
+            return
+        captured_at = time.time()
+        exporter = self.config.telemetry.dcgm_exporter
+        kind = None if exporter is None else exporter.kind
+        script = None if kind is None else WORKER_PROBE_SCRIPTS.get(kind)
+        if script is None:
+            session.record_worker_identity(
+                WorkerIdentityProof(captured_at_unix=captured_at, error=f"no worker GPU probe for exporter kind {kind}")
+            )
+            return
+        try:
+            workers = self.probe_worker_gpus(registry, session.power_dir, script)
+        except Exception as error:
+            logger.exception("Worker GPU identity could not be established")
+            reason = str(error) or type(error).__name__
+            session.record_worker_identity(WorkerIdentityProof(captured_at_unix=captured_at, error=reason))
+            return
+        session.record_worker_identity(WorkerIdentityProof(captured_at_unix=captured_at, workers=workers))
+
+    def probe_worker_gpus(
+        self, registry: ProcessRegistry, power_dir: Path, script: str
+    ) -> tuple[WorkerGpuIdentity, ...]:
+        """One bare-host probe per worker node, started together and joined back to the workers planned there."""
+        workers = [process for process in registry.get_all_processes().values() if process.worker_assignments]
+        if not workers:
+            raise ValueError("no worker steps are registered")
+        steps = list_step_ids(
+            self.runtime.job_id, unique_names={worker.step_name for worker in workers if worker.step_name}
+        )
+        if steps is None:
+            raise ValueError("worker step listing unavailable")
+        by_host: dict[str, list[tuple[ManagedProcess, Process]]] = {}
+        for managed in workers:
+            if not managed.is_running or managed.step_name not in steps:
+                raise ValueError(f"worker step {managed.name} is missing or stopped")
+            for process in managed.worker_assignments:
+                by_host.setdefault(process.node, []).append((managed, process))
+
+        probes: list[tuple[str, list[str], ManagedProcess, Path]] = []
+        for hostname, placements in sorted(by_host.items()):
+            step_ids = sorted({steps[managed.step_name or ""] for managed, _ in placements})
+            step_name = f"power_worker_identity_{hostname}"
+            log_path = power_dir / f"{step_name}.out"
+            child = start_srun_process(
+                command=["python3", "-c", script, *step_ids],
+                nodelist=[hostname],
+                output=str(log_path),
+                container_image=None,
+                het_group=self.runtime.nodes.het_group_for(hostname),
+                srun_options=self.runtime.srun_options,
+                use_bash_wrapper=False,
+                step_name=step_name,
+            )
+            probe = ManagedProcess(
+                name=step_name, popen=child, node=hostname, log_file=log_path, step_name=step_name, critical=False
+            )
+            registry.add_process(probe)
+            probes.append((hostname, step_ids, probe, log_path))
+
+        identities = []
+        for hostname, step_ids, probe, log_path in probes:
+            try:
+                exit_code = probe.popen.wait(timeout=30 + 10 * len(step_ids))
+            except subprocess.TimeoutExpired:
+                probe.terminate(timeout=5)
+                raise ValueError(f"worker GPU probe timed out on {hostname}") from None
+            if exit_code != 0:
+                raise ValueError(f"worker GPU probe exited {exit_code} on {hostname}")
+            held = parse_node_probe(log_path.read_text())
+            for managed, process in by_host[hostname]:
+                step_id = steps[managed.step_name or ""]
+                identities.append(
+                    WorkerGpuIdentity(
+                        hostname=hostname,
+                        assignment=DeviceAssignment.from_process(process),
+                        step_name=managed.step_name or "",
+                        step_id=step_id,
+                        gpu_uuids=held[step_id],
+                    )
+                )
+        return tuple(identities)
 
     def start_cpu_power_telemetry(self, registry: ProcessRegistry) -> CpuPowerCollector | None:
         """Launch cpu-power-exporter on each worker node and start the head-node collector.
@@ -551,6 +650,15 @@ class TelemetryStageMixin:
             return None
         return get_frontend(self.config.frontend.type).frontend_metrics_port(self.config.frontend.args)
 
+    def _worker_metrics_paths(self) -> dict[str, str | None]:
+        """Per worker mode, the path its workers serve Prometheus metrics at; empty for a services-only job."""
+        from srtctl.frontends import FRONTEND_NONE, get_frontend
+
+        if self.config.frontend.type == FRONTEND_NONE:
+            return {}
+        frontend = get_frontend(self.config.frontend.type)
+        return {mode: frontend.worker_metrics_path(self.config.backend, mode) for mode in ("prefill", "decode", "agg")}
+
     def _service_metrics_targets(self) -> list[ServiceMetricsTarget]:
         """One tachometer target per node for every service that serves metrics.
 
@@ -574,6 +682,7 @@ class TelemetryStageMixin:
             if not endpoints:
                 continue
             all_nodes = service_nodes(service)
+            metrics_filter, endpoint_prefix, gpu_metadata = kind.metrics_scrape(service)
             for endpoint in endpoints:
                 nodes = all_nodes[:1] if endpoint.nodes == "first" else all_nodes
                 for node in nodes:
@@ -582,27 +691,32 @@ class TelemetryStageMixin:
                             service=service.name,
                             node=node,
                             url=f"http://{node}:{endpoint.port}{endpoint.path}",
-                            filter=kind.metrics_filter,
-                            endpoint=endpoint.name or kind.metrics_endpoint_prefix,
-                            gpu_metadata=kind.metrics_gpu_metadata,
+                            filter=metrics_filter,
+                            endpoint=endpoint.name or endpoint_prefix,
+                            gpu_metadata=gpu_metadata,
                         )
                     )
         return targets
 
-    def _power_dcgm_targets(self) -> list[ServiceMetricsTarget]:
-        """DCGM targets when power telemetry runs its own exporter (no implied dcgm-exporter service)."""
+    def _power_exporter_targets(self) -> list[ServiceMetricsTarget]:
+        """Tachometer targets for the exporter power telemetry runs itself (no implied dcgm-exporter service).
+
+        The exporter's power mapping says how tachometer should filter the body;
+        DCGM keeps the ``dcgm`` filter and per-GPU worker labels, other exporters pass through.
+        """
         power = self.config.telemetry
         if not (power.enabled and power.dcgm_exporter is not None):
             return []
+        scrape = TACHOMETER_SCRAPE[power.dcgm_exporter.kind]
         nodes = sorted({process.node for process in self.backend_processes})
         return [
             ServiceMetricsTarget(
                 service="dcgm-exporter",
                 node=node,
                 url=f"http://{node}:{power.dcgm_exporter.port}/metrics",
-                filter="dcgm",
-                endpoint="dcgm",
-                gpu_metadata=True,
+                filter=scrape.filter,
+                endpoint=scrape.endpoint,
+                gpu_metadata=scrape.gpu_metadata,
             )
             for node in nodes
         ]
@@ -628,7 +742,8 @@ class TelemetryStageMixin:
                 tachometer=tachometer,
                 frontend_type=self.config.frontend.type,
                 frontend_metrics_port=self._frontend_metrics_port(),
-                service_targets=[*self._service_metrics_targets(), *self._power_dcgm_targets()],
+                worker_metrics_paths=self._worker_metrics_paths(),
+                service_targets=[*self._service_metrics_targets(), *self._power_exporter_targets()],
             )
         )
 

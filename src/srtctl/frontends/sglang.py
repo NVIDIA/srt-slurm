@@ -33,7 +33,7 @@ class SGLangRouterFrontend(StaticRouterFrontend):
     executable: ClassVar[tuple[str, ...]] = ("python", "-m", "sglang_router.launch_router")
     pd_flag: ClassVar[str] = "--pd-disaggregation"
     process_name: ClassVar[str] = "sglang_router"
-    log_label: ClassVar[str] = "router"
+    log_label: ClassVar[str | None] = "router"
     # Preserve the historical launch shape used by dry-run/topology callers
     # that construct the frontend before populating worker processes.
     allow_empty_workers: ClassVar[bool] = True
@@ -65,9 +65,6 @@ class SGLangRouterFrontend(StaticRouterFrontend):
         if "prometheus-host" not in normalized:
             managed.extend(["--prometheus-host", "0.0.0.0"])
         return managed
-
-    def worker_scheme(self, backend: Any, mode: str) -> str:
-        return "grpc" if backend.is_grpc_mode(mode) else "http"
 
     def resolve_worker_host(self, node: str, network_interface: str | None) -> str:
         return get_hostname_ip(node, network_interface)

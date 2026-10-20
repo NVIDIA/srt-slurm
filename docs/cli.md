@@ -1,34 +1,6 @@
-# CLI Reference
+# CLI Guide
 
-`srtctl` is the main command-line interface for submitting benchmark jobs to SLURM.
-
-## Table of Contents
-
-- [Quick Start](#quick-start)
-- [Interactive Mode](#interactive-mode)
-  - [Example Browser](#example-browser)
-  - [Configuration Summary](#configuration-summary)
-  - [Interactive Actions Menu](#interactive-actions-menu)
-  - [sbatch Preview](#sbatch-preview)
-  - [Parameter Modification](#parameter-modification)
-  - [Sweep Preview](#sweep-preview)
-  - [Submission Confirmation](#submission-confirmation)
-  - [Workflow Examples](#workflow-examples)
-- [Commands](#commands)
-  - [srtctl apply](#srtctl-apply)
-  - [srtctl dry-run](#srtctl-dry-run)
-  - [srtctl render](#srtctl-render)
-  - [srtctl resolve-override](#srtctl-resolve-override)
-  - [srtctl migrate](#srtctl-migrate)
-  - [srtctl monitor](#srtctl-monitor)
-  - [srtctl status-server](#srtctl-status-server)
-  - [srtctl skill](#srtctl-skill)
-- [Output](#output)
-- [Sweep Support](#sweep-support)
-- [Config Override Support](#config-override-support)
-- [Tips](#tips)
-
----
+`srtctl` is the main command-line interface for submitting benchmark jobs to SLURM. This page covers workflows and behavior; every subcommand's arguments, with their defaults, are generated from the parser into the [CLI Reference](cli-reference.md).
 
 ## Quick Start
 
@@ -44,6 +16,9 @@ srtctl apply -f examples/sglang/sglang-router-disagg.yaml --serve-only
 
 # Preview without submitting
 srtctl dry-run -f config.yaml
+
+# Pre-generate SA-Bench datasets so the benchmark job starts measuring right away
+srtctl cache-inputs -f config.yaml
 
 # Live dashboard - monitor all jobs in one place
 srtctl monitor
@@ -250,19 +225,7 @@ Submit a job or sweep to SLURM.
 srtctl apply -f <config.yaml> [options]
 ```
 
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `-f, --file` | Path to YAML config file, directory, or `file:selector` for overrides (required) |
-| `--sweep` | Force sweep mode (usually auto-detected) |
-| `--setup-script` | Custom setup script from `configs/` |
-| `--tags` | Comma-separated tags for the run |
-| `--serve-only` | Deploy the endpoint without running a benchmark; serve until cancellation |
-| `--set KEY=VALUE` | Override one recipe value by dotted path before validation (repeatable). Also on `dry-run`, `preflight`, `resolve-override` |
-| `--unset KEY` | Remove one recipe key by dotted path before validation (repeatable) |
-| `-y, --yes` | Skip confirmation prompts |
-| `--no-preflight` | Skip the pre-submit `model.path` / `model.container` / telemetry filesystem checks for this run. `preflight: false` in `srtslurm.yaml` does the same for every run on a cluster whose paths exist only on compute nodes |
+Every argument: [CLI Reference](cli-reference.md#srtctl-apply).
 
 `--set` and `--unset` are the supported way to tweak a recipe from a script instead of editing the YAML. Paths are dotted, `[N]` indexes a list, and quotes protect a segment that contains dots (`container_mounts."/a/b.c"`). Values parse as YAML: `720` is an int, `"720"` a string, `[4, 8]` a list; a mapping such as `{"rope_type": "yarn"}` stays a literal string because that is how engine flags take JSON. Overrides are applied to the raw document before cluster defaults, sweep expansion, and validation, so an explicit `--set` always wins and `{placeholder}` values still expand. On an override file the value is written into `base` and every `override_*` / `zip_override_*` variant, so no variant can shadow it. The applied overrides are listed in each `--json` record as `applied_overrides`, and the `config.yaml` copied into the job directory reflects them. The source file is never modified.
 
@@ -309,12 +272,7 @@ Preview what would be submitted without actually submitting.
 srtctl dry-run -f <config.yaml> [options]
 ```
 
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `-f, --file` | Path to YAML config file, directory, or `file:selector` for overrides (required) |
-| `--sweep` | Force sweep mode |
+Every argument: [CLI Reference](cli-reference.md#srtctl-dry-run).
 
 **Examples:**
 
@@ -339,6 +297,60 @@ Dry-run output includes:
 - srun options (if configured)
 - For sweeps: table of all jobs with parameters
 - Generated configs saved to `dry-runs/` folder
+
+### `srtctl cache-inputs`
+
+Pre-generate the datasets a recipe's benchmark run would build, so the benchmark
+job spends its GPU time measuring instead of tokenizing.
+
+```bash
+srtctl cache-inputs -f <config.yaml> [options]
+```
+
+The command asks the recipe's benchmark runner what it can build ahead of time;
+a benchmark that has nothing to pre-generate says so and nothing runs. SA-Bench
+is the one that does today, and it requires `benchmark.dataset_cache_dir` in the
+recipe — that is where the datasets are written, and where the benchmark looks
+for them. See [Dataset caching](benchmarks.md#dataset-caching).
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `-f, --file` | Recipe YAML file (required) |
+| `--dry-run` | Print the datasets and the srun command, then exit |
+| `--account` | SLURM account (default: recipe `slurm.account`) |
+| `--partition` | SLURM partition (default: recipe `slurm.partition`) |
+| `--time` | SLURM time limit (default: recipe `slurm.time_limit`) |
+| `--num-workers` | Worker processes for prompt generation (default: `min(cpu_count, 8)`) |
+
+**Examples:**
+
+```bash
+# Build every dataset the recipe needs
+srtctl cache-inputs -f disagg.yaml
+
+# See what it would build first
+srtctl cache-inputs -f disagg.yaml --dry-run
+
+# Long sweep on a wide node
+srtctl cache-inputs -f disagg.yaml --time 4:00:00 --num-workers 32
+```
+
+One dataset is built per prompt count the run asks for. Warmup and measured runs
+each get their own file because `num_prompts` changes how many draws come out of
+the seeded RNG, so a recipe with `concurrencies: "64x128"`, `num_prompts_mult: 8`
+and `num_warmup_mult: 1` produces four datasets: `n=64`, `n=512`, `n=128`,
+`n=1024`. Counts that repeat across concurrency levels are built once.
+
+The command allocates a single node with no GPUs and runs only the prompt build
+in the recipe's container, so it can run while the cluster is busy with the jobs
+it is preparing for. Run from inside an existing allocation it attaches to it
+instead of queueing again.
+
+Re-running is cheap and safe: datasets already in the cache are verified and
+skipped, and only missing ones are generated. That makes this the fastest way to
+resume after a time limit cut a long prewarm short.
 
 ### `srtctl render`
 
@@ -383,13 +395,7 @@ exactly as for `apply`, and are found the same way: `srtslurm.yaml` in the worki
 directory (or its two parents), or the file `SRTSLURM_CONFIG` points at. A launcher
 that runs `render` from somewhere else should set `SRTSLURM_CONFIG`.
 
-| Flag | Description |
-|------|-------------|
-| `-f, --file` | Path to YAML config file, or `file:selector` for one override variant (required) |
-| `--to` | Directory to render into (required) |
-| `--serve-only` | Render a serve-only job (deploy, hold, no benchmark) |
-| `--setup-script` | Custom setup script in `configs/` |
-| `--no-preflight` | Skip the pre-render model/container/telemetry filesystem checks |
+Every argument: [CLI Reference](cli-reference.md#srtctl-render).
 
 ### `srtctl resolve-override`
 
@@ -399,12 +405,7 @@ Expand an override config and write the specialised YAML file(s) without submitt
 srtctl resolve-override -f <config.yaml> [options]
 ```
 
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `-f, --file` | Override YAML file, or `file:selector` to resolve a specific variant (required) |
-| `--stdout` | Print resolved YAML to stdout instead of writing files |
+Every argument: [CLI Reference](cli-reference.md#srtctl-resolve-override).
 
 **Examples:**
 
@@ -450,6 +451,76 @@ srtctl monitor --once                   # Snapshot and exit
 srtctl monitor --resume KEY             # Resume a previous session
 ```
 
+### `srtctl bake-image`
+
+Preinstall dynamo, the sa-bench Python packages, a recipe `setup_script`, and/or
+a vLLM unified diff into a new container image, so jobs stop paying for the same
+work on every run.
+
+```bash
+srtctl bake-image --image my-model-fp8 --dynamo 1.2.0.dev20260526 --sa-bench
+srtctl bake-image --image my-model-fp8 --script install-nixl-dsv4.sh
+srtctl bake-image --image my-model-fp8 --patch mine.diff
+```
+
+No allocation needed: srun requests a node itself, taking `default_account` and
+`default_partition` from `srtslurm.yaml`. Run it inside an existing `salloc` and
+it joins that allocation instead, skipping the queue.
+
+| Flag | Description |
+| ---- | ----------- |
+| `--image` | Source `.sqsh` path, or a container alias from `srtslurm.yaml` |
+| `-o`, `--output` | Output path (default: source name plus what was installed) |
+| `--dynamo VERSION` | `ai-dynamo` version to pip-install |
+| `--sa-bench` | Install the packages sa-bench needs at runtime |
+| `--script`, `--setup-script` | Run a `configs/` setup script inside the image (same as recipe `setup_script`). Name under `configs/` or `configs/patches/`, or a path |
+| `--patch FILE.diff` | Apply a unified diff to the image's vLLM tree (repeatable). Name under `configs/patches/` or a path. A conflict aborts the bake; no output image is kept |
+| `--force` | Overwrite an existing output image |
+| `--time` | Time limit when srun allocates a node itself (default: `0:30:00`) |
+| `--account`, `--partition` | Override the `srtslurm.yaml` defaults |
+| `--dry-run` | Print the srun command and install script without running them |
+
+Inside the container the steps run in this order: `--script`, then each
+`--patch`, then dynamo, then sa-bench. `--script` mounts the repo `configs/`
+tree at `/configs`, the same path jobs use. `--patch` dry-runs `patch(1)`
+against the installed vLLM package first; if a hunk does not apply, the step
+exits non-zero and a newly written `.sqsh` is removed so a conflicted tree is
+not baked.
+
+The default output name records its contents, so a directory of images stays
+readable:
+
+```
+my-model-fp8-dynamo1.2.0.dev20260526-sa-bench.sqsh
+my-model-fp8-install-nixl-dsv4.sqsh
+my-model-fp8-mine.sqsh
+my-model-fp8-dynamo1.2.0.dev20260526-sa-bench.manifest.json
+```
+
+The manifest records the source image, what was installed (including the setup
+script and patch filenames) and when.
+
+Nothing understands the squashfs format here: pyxis' `--container-save` exports
+the container filesystem to a new image when the step ends. Bind mounts are not
+part of that export; only overlay writes (patched site-packages, pip installs)
+persist. The install runs as root inside the container via `ENROOT_REMAP_ROOT`,
+and pip caches plus `/tmp` are cleared before the save so they are not baked in.
+
+Once an image is baked, drop the matching work from your recipes:
+
+```yaml
+dynamo:
+  install: false        # already in the image
+# setup_script: "install-nixl-dsv4.sh"   # already baked; omit
+```
+
+SA-Bench dependencies are installed into
+`/opt/srtctl/venvs/sa-bench`, isolated from the model server's Python
+environment. `bench.sh` activates that venv automatically; recipes do not need
+to modify `PATH`. Both sides read the package list and venv path from
+`src/srtctl/benchmarks/scripts/sa-bench/deps.sh`, which keeps a baked image
+aligned with what the benchmark expects.
+
 ### `srtctl status-server`
 
 Run the native status collector. Point `reporting.status.endpoint` in `srtslurm.yaml` or a recipe at it and every `srtctl apply` shows up as a job row with an ordered event feed (`submitted`, `starting`, `workers`, `frontend`, `benchmark`, then `completed` or `failed`, each with its stage and message). Jobs and events persist in one SQLite file and the process prints one line per transition. The endpoints are in [Status API](status-api-spec.md).
@@ -478,6 +549,20 @@ srtctl skill --target cursor            # .cursor/rules/srtctl.mdc
 srtctl skill --target claude --root /path/to/project
 srtctl skill --target claude --print    # to stdout
 ```
+
+### `srtctl schema` and `schema-docs`
+
+Both read the recipe and `srtslurm.yaml` dataclasses, so their keys, types, defaults, allowed values, and descriptions always match what `srtctl apply` loads.
+
+```bash
+srtctl schema                           # JSON Schema (draft 2020-12) for recipes and override files, to stdout
+srtctl schema --cluster                 # JSON Schema for srtslurm.yaml
+srtctl schema --output recipe.schema.json
+srtctl schema-docs                      # regenerate docs/schema-reference.md, docs/schema/*.schema.json, docs/cli-reference.md
+srtctl schema-docs --check              # exit 1 when a checked-in generated file is stale (CI)
+```
+
+The JSON Schema checks shape only (unknown keys, types, enums, required keys). Cross-field rules such as the role topology, placement, and the benchmark keys each `benchmark.type` accepts are checked by `srtctl dry-run`. Point an editor's YAML language server at the published copy with `# yaml-language-server: $schema=https://nvidia.github.io/srt-slurm/schema/recipe.schema.json` as a recipe's first line, or validate with any JSON Schema library.
 
 ### `srtctl-mcp`
 

@@ -18,10 +18,10 @@ This package contains:
 
 # Re-export backend configs
 from srtctl.backends import (
+    Backend,
     BackendConfig,
-    BackendProtocol,
     BackendType,
-    SGLangProtocol,
+    SGLangBackend,
 )
 
 from .config import (
@@ -86,8 +86,8 @@ from .topology import (
 __all__ = [
     "DEFAULT_AI_ANALYSIS_PROMPT",
     "AIAnalysisConfig",
+    "Backend",
     "BackendConfig",
-    "BackendProtocol",
     "BackendType",
     "BenchmarkConfig",
     "ClusterConfig",
@@ -114,7 +114,7 @@ __all__ = [
     "RoleConfig",
     "RuntimeContext",
     # Backend configs (re-exported from backends)
-    "SGLangProtocol",
+    "SGLangBackend",
     "SlurmConfig",
     # Schema types (frozen dataclasses)
     "SrtConfig",

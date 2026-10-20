@@ -1,15 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from srtctl.core.power.cpu_parser import parse_cpu_scrape
+from srtctl.core.power.cpu_parser import ParsedCpuScrape, parse_cpu_scrape
 
 
 def _dcgm_body():
+    """Legacy exporter body: field 1130 only, no field_id label."""
     return (
         "# HELP cpu_power_dcgm_watts x\n"
         "# TYPE cpu_power_dcgm_watts gauge\n"
         'cpu_power_dcgm_watts{socket="0",source="dcgm"} 43.878000\n'
         'cpu_power_dcgm_watts{socket="1",source="dcgm"} 52.350000\n'
+    )
+
+
+def _dcgm_rail_body():
+    """Current exporter body: one sample per (socket, DCGM field), labelled with the field id."""
+    return (
+        "# HELP cpu_power_dcgm_watts x\n"
+        "# TYPE cpu_power_dcgm_watts gauge\n"
+        'cpu_power_dcgm_watts{socket="0",field_id="1130",source="dcgm"} 43.878000\n'
+        'cpu_power_dcgm_watts{socket="0",field_id="1132",source="dcgm"} 6.100000\n'
+        'cpu_power_dcgm_watts{socket="1",field_id="1130",source="dcgm"} 52.350000\n'
+        'cpu_power_dcgm_watts{socket="1",field_id="1132",source="dcgm"} 5.900000\n'
+        'cpu_power_dcgm_watts{socket="1",field_id="1133",source="dcgm"} 70.000000\n'
     )
 
 
@@ -28,14 +42,62 @@ def _acpi_body(*, include_grace=True):
     return "".join(lines)
 
 
+def _nvml_body(*samples: str) -> str:
+    lines = ["# HELP cpu_power_nvml_watts x", "# TYPE cpu_power_nvml_watts gauge"]
+    return "".join(f"{line}\n" for line in (*lines, *(f"cpu_power_nvml_watts{sample}" for sample in samples)))
+
+
+MODULE_SOCKET_0 = '{type="module",socket="0",gpus="0,1",source="nvml"} 498.720000'
+MODULE_SOCKET_1 = '{type="module",socket="1",gpus="2,3",source="nvml"} 470.500000'
+
+
 def test_dcgm_mode_sums_all_sockets_into_the_total():
     scrape = parse_cpu_scrape(_dcgm_body())
 
     assert scrape.mode == "dcgm"
-    assert [r.socket_id for r in scrape.readings] == [0, 1]
+    assert [(r.socket_id, r.kind) for r in scrape.readings] == [
+        (0, "dcgm"),
+        (0, "cpu_rail"),
+        (1, "dcgm"),
+        (1, "cpu_rail"),
+    ]
     assert scrape.readings[0].sensor == "CPU0:cpuPowerUsageW"
     assert scrape.readings[0].source == "dcgm"
     assert scrape.total_power_w == 43.878 + 52.35
+
+
+def test_dcgm_field_labelled_body_fills_cpu_rail_and_soc():
+    """1130 is the CPU rail and 1132 is SysIO; 1133 (module) has no rail kind and is dropped."""
+    scrape = parse_cpu_scrape(_dcgm_rail_body())
+
+    assert scrape.mode == "dcgm"
+    assert [(s.socket_id, s.sensor, s.power_w, s.rails) for s in scrape.sockets] == [
+        (0, "CPU0:cpuPowerUsageW", 43.878, {"cpu_rail": 43.878, "soc": 6.1}),
+        (1, "CPU1:cpuPowerUsageW", 52.35, {"cpu_rail": 52.35, "soc": 5.9}),
+    ]
+    # SysIO never joins the node total: power_w stays field 1130 exactly as before.
+    assert scrape.total_power_w == 43.878 + 52.35
+
+
+def test_dcgm_body_without_1130_publishes_no_socket():
+    body = '# TYPE cpu_power_dcgm_watts gauge\ncpu_power_dcgm_watts{socket="0",field_id="1132",source="dcgm"} 6.1\n'
+    scrape = parse_cpu_scrape(body)
+
+    assert scrape.mode == "dcgm"
+    assert scrape.sockets == ()
+    assert scrape.total_power_w is None
+    assert [(r.kind, r.power_w) for r in scrape.readings] == [("soc", 6.1)]
+
+
+def test_dcgm_garbage_field_id_is_ignored():
+    body = (
+        "# TYPE cpu_power_dcgm_watts gauge\n"
+        'cpu_power_dcgm_watts{socket="0",field_id="abc",source="dcgm"} 6.1\n'
+        'cpu_power_dcgm_watts{socket="0",field_id="1130",source="dcgm"} 40.0\n'
+    )
+    scrape = parse_cpu_scrape(body)
+
+    assert [(s.socket_id, s.power_w, s.rails) for s in scrape.sockets] == [(0, 40.0, {"cpu_rail": 40.0})]
 
 
 def test_acpi_mode_totals_only_total_channels():
@@ -81,12 +143,13 @@ def test_acpi_mode_accepts_legacy_exporter_type_aliases():
     assert scrape.sockets[0].rails == {"cpu_rail": 40.0, "soc": 6.0}
 
 
-def test_dcgm_mode_pivots_one_socket_row_with_no_rails():
+def test_legacy_dcgm_body_pivots_one_socket_row_with_the_cpu_rail_filled():
+    """An unlabelled sample is field 1130, which is the CPU rail -- the fact lives in cpu_rails, not on the wire."""
     scrape = parse_cpu_scrape(_dcgm_body())
 
     assert [(s.socket_id, s.sensor, s.power_w, s.rails) for s in scrape.sockets] == [
-        (0, "CPU0:cpuPowerUsageW", 43.878, {}),
-        (1, "CPU1:cpuPowerUsageW", 52.35, {}),
+        (0, "CPU0:cpuPowerUsageW", 43.878, {"cpu_rail": 43.878}),
+        (1, "CPU1:cpuPowerUsageW", 52.35, {"cpu_rail": 52.35}),
     ]
 
 
@@ -98,6 +161,32 @@ def test_acpi_mode_leaves_total_blank_without_a_total_channel():
     # And publishes no socket row: a component rail must not stand in for power_w.
     assert scrape.sockets == ()
     assert len(scrape.readings) == 2  # the rails themselves are still parsed
+
+
+def test_acpi_mode_treats_a_zero_total_as_missing():
+    """0 W from a power_meter channel is 'not reporting', never idle: no power_w=0 row, no 0 J."""
+    body = _acpi_body(include_grace=False) + (
+        'cpu_power_acpi_watts{sensor="a/2",type="total",socket="0",oem_info="Grace Power Socket 0"} 0\n'
+    )
+    scrape = parse_cpu_scrape(body)
+
+    assert [r.kind for r in scrape.readings] == ["cpu_rail", "soc"]
+    assert scrape.sockets == ()
+    assert scrape.total_power_w is None
+
+
+def test_dcgm_mode_treats_a_zero_field_value_as_missing():
+    body = (
+        "# TYPE cpu_power_dcgm_watts gauge\n"
+        'cpu_power_dcgm_watts{socket="0",field_id="1130",source="dcgm"} 0\n'
+        'cpu_power_dcgm_watts{socket="0",field_id="1132",source="dcgm"} 6.2\n'
+        'cpu_power_dcgm_watts{socket="1",field_id="1130",source="dcgm"} 52.35\n'
+    )
+    scrape = parse_cpu_scrape(body)
+
+    # Socket 0's primary read 0 -> no row for it; socket 1 is untouched.
+    assert [(s.socket_id, s.power_w) for s in scrape.sockets] == [(1, 52.35)]
+    assert scrape.total_power_w == 52.35
 
 
 def test_acpi_mode_totals_a_generic_total_power_label_too():
@@ -164,3 +253,61 @@ def test_empty_body_yields_no_readings():
 
     assert scrape.readings == ()
     assert scrape.mode == "unknown"
+
+
+def test_nvml_module_merges_into_an_acpi_scrape():
+    scrape = parse_cpu_scrape(_acpi_body() + _nvml_body(MODULE_SOCKET_0))
+
+    assert scrape.mode == "acpi"
+    assert [(s.socket_id, s.power_w, s.rails) for s in scrape.sockets] == [
+        (0, 93.4, {"cpu_rail": 48.1, "soc": 5.2, "module": 498.72}),
+    ]
+    assert scrape.total_power_w == 93.4
+
+
+def test_nvml_module_merges_into_a_dcgm_scrape():
+    scrape = parse_cpu_scrape(_dcgm_body() + _nvml_body(MODULE_SOCKET_0, MODULE_SOCKET_1))
+
+    assert scrape.mode == "dcgm"
+    assert [(s.socket_id, s.power_w, s.rails) for s in scrape.sockets] == [
+        (0, 43.878, {"cpu_rail": 43.878, "module": 498.72}),
+        (1, 52.35, {"cpu_rail": 52.35, "module": 470.5}),
+    ]
+    assert scrape.total_power_w == 43.878 + 52.35
+
+
+def test_nvml_only_body_yields_an_empty_scrape():
+    scrape = parse_cpu_scrape(_nvml_body(MODULE_SOCKET_0))
+
+    assert scrape == ParsedCpuScrape()
+
+
+def test_nvml_family_ignores_non_module_types_and_invalid_samples():
+    body = _dcgm_body() + _nvml_body(
+        '{type="gpu",socket="0",source="nvml"} 300.0',
+        '{type="total",socket="0",source="nvml"} 310.0',
+        '{socket="0",source="nvml"} 320.0',
+        '{type="module",socket="",source="nvml"} 330.0',
+        '{type="module",socket="-1",source="nvml"} 340.0',
+        '{type="module",socket="1",source="nvml"} -1.0',
+        '{type="module",socket="0",source="nvml"} 0.0',
+    )
+
+    scrape = parse_cpu_scrape(body)
+
+    assert [(s.socket_id, s.power_w, s.rails) for s in scrape.sockets] == [
+        (0, 43.878, {"cpu_rail": 43.878}),
+        (1, 52.35, {"cpu_rail": 52.35}),
+    ]
+    assert all(reading.source == "dcgm" for reading in scrape.readings)
+
+
+def test_acpi_module_sample_is_ignored_and_nvml_is_the_only_module_source():
+    acpi_module = (
+        'cpu_power_acpi_watts{type="module",socket="0",oem_info="Module Power Socket 0",source="acpi"} 505.0\n'
+    )
+
+    scrape = parse_cpu_scrape(_acpi_body() + acpi_module + _nvml_body(MODULE_SOCKET_0))
+
+    assert scrape.sockets[0].rails["module"] == 498.72
+    assert all(r.source == "nvml" for r in scrape.readings if r.kind == "module")

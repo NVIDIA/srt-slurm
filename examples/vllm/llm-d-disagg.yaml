@@ -1,0 +1,94 @@
+# vLLM disaggregated prefill/decode behind the llm-d router (docs/llm-d.md).
+#
+# One TP1 prefill and one TP1 decode `vllm serve` worker sharing a node, KV over
+# NIXL. On the router node srtctl starts llm-d's Endpoint Picker (EPP), which
+# reads the workers from an endpoints file srtctl writes, and Envoy on the public
+# port. The decode worker sits behind llm-d's P/D sidecar, a service the
+# frontend implies (`llm-d-sidecar`, one per decode worker, started before the
+# workers): the EPP picks the decode sidecar and a prefill worker for each
+# request, and the sidecar runs the prefill before handing the KV transfer
+# parameters to its vLLM.
+#
+# Aliases (`qwen3-0.6b`, `llm-d-vllm`) resolve through srtslurm.yaml; see
+# examples/README.md. `llm-d-vllm` is a vLLM image that also ships the `epp`,
+# `pd-sidecar`, and `envoy` executables on PATH (docs/llm-d.md#images).
+
+schema: 2
+name: "qwen3-0.6b-vllm-llm-d-disagg"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "llm-d-vllm"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+frontend:
+  type: llm-d
+  enable_multiple_frontends: false
+  # The EPP's scheduler: decode and prefill profiles, picked by the disaggregation
+  # profile handler; srtctl adds the file-discovery plugin.
+  epp_config:
+    plugins:
+      # Hashes each prompt's blocks into the prefix index the prefix-cache scorer reads.
+      - type: approx-prefix-cache-producer
+      - type: prefill-filter
+      - type: decode-filter
+      - type: prefix-cache-scorer
+      - type: queue-scorer
+      - type: always-disagg-pd-decider
+      - type: disagg-profile-handler
+        parameters:
+          deciders:
+            prefill: always-disagg-pd-decider
+      - type: max-score-picker
+    schedulingProfiles:
+      - name: prefill
+        plugins:
+          - pluginRef: prefill-filter
+          - pluginRef: prefix-cache-scorer
+            weight: 2
+          - pluginRef: queue-scorer
+          - pluginRef: max-score-picker
+      - name: decode
+        plugins:
+          - pluginRef: decode-filter
+          - pluginRef: queue-scorer
+          - pluginRef: max-score-picker
+
+engine:
+  type: vllm
+  connector: nixl
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+  decode:
+    nodes: colocate
+    workers: 1
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

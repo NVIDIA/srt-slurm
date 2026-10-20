@@ -8,6 +8,7 @@ import pytest
 from srtctl.core.power.cpu_sample import (
     CpuSample,
     RailReading,
+    dcgm_rail_readings,
     node_total_watts,
     pivot_socket_samples,
     primary_kind,
@@ -42,11 +43,31 @@ def test_acpi_sample_power_is_the_total_envelope_and_rails_are_the_components():
     assert sample.reading("dram") is None
 
 
-def test_dcgm_sample_has_no_rails():
+def test_dcgm_sample_with_only_the_primary_has_no_rails():
     sample = CpuSample("dcgm", 1, (RailReading(1, "dcgm", "CPU1:cpuPowerUsageW", 52.35),))
 
     assert sample.power_w == 52.35
     assert sample.rails == {}
+
+
+def test_dcgm_rail_readings_files_1130_as_primary_and_cpu_rail_and_1132_as_soc():
+    readings = dcgm_rail_readings(1, {1130: 52.35, 1132: 6.1, 1133: 70.0})
+
+    assert [(r.kind, r.sensor, r.watts) for r in readings] == [
+        ("dcgm", "CPU1:cpuPowerUsageW", 52.35),
+        ("cpu_rail", "CPU1:cpuRailPowerUsageW", 52.35),
+        ("soc", "CPU1:socPowerUsageW", 6.1),
+    ]
+    (sample,) = pivot_socket_samples("dcgm", readings)
+    assert sample.power_w == 52.35
+    assert sample.rails == {"cpu_rail": 52.35, "soc": 6.1}
+
+
+def test_dcgm_rail_readings_without_1130_yield_no_primary():
+    readings = dcgm_rail_readings(0, {1132: 6.1})
+
+    assert [r.kind for r in readings] == ["soc"]
+    assert pivot_socket_samples("dcgm", readings) == ()
 
 
 def test_sample_refuses_to_exist_without_exactly_one_primary():
@@ -74,6 +95,32 @@ def test_pivot_groups_by_socket_and_drops_sockets_without_their_primary():
     assert samples[0].rails == {"cpu_rail": 40.0, "soc": 15.0}
     assert samples[1].rails == {"cpu_rail": 45.0}
     assert node_total_watts(samples) == 210.0  # envelopes only, never cpu_rail
+
+
+def test_module_reading_never_becomes_the_socket_power():
+    module = RailReading(0, "module", "CPU0:modulePowerUsageW", 498.72)
+
+    for source in ("acpi", "dcgm"):
+        assert pivot_socket_samples(source, [module]) == ()
+        with pytest.raises(ValueError, match="exactly one"):
+            CpuSample(source, 0, (module,))
+
+
+def test_module_rides_on_the_socket_but_never_sums_into_node_total():
+    readings = [
+        *_acpi_readings(0, total=100.0, cpu_rail=40.0),
+        RailReading(0, "module", "CPU0:modulePowerUsageW", 500.0),
+        RailReading(1, "dcgm", "CPU1:cpuPowerUsageW", 50.0),
+        RailReading(1, "module", "CPU1:modulePowerUsageW", 450.0),
+    ]
+
+    (acpi_sample,) = pivot_socket_samples("acpi", readings[:3])
+    (dcgm_sample,) = pivot_socket_samples("dcgm", readings[3:])
+
+    assert acpi_sample.power_w == 100.0
+    assert acpi_sample.rails == {"cpu_rail": 40.0, "module": 500.0}
+    assert dcgm_sample.rails == {"module": 450.0}
+    assert node_total_watts((acpi_sample, dcgm_sample)) == 150.0
 
 
 def test_pivot_keeps_the_first_reading_for_a_duplicated_rail():

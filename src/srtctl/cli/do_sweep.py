@@ -19,12 +19,13 @@ import logging
 import os
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from srtctl.backends.vllm import MOONCAKE_STORE_CONFIG_FILENAME, VLLMProtocol
+from srtctl.backends.vllm import VLLMBackend
 from srtctl.cli.mixins import (
     BenchmarkStageMixin,
     FrontendStageMixin,
@@ -46,6 +47,7 @@ from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import SrtConfig
 from srtctl.core.slurm import get_slurm_job_id, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, LogStreamer, StatusReporter, tachometer_outbox
+from srtctl.core.supervisor import WORKER_RESTARTS_FILENAME
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
 from srtctl.logging_utils import setup_logging
 from srtctl.ports import (
@@ -81,7 +83,7 @@ class SweepOrchestrator(
 
     @property
     def backend(self):
-        """Access the backend config (implements BackendProtocol)."""
+        """Access the backend config (implements Backend)."""
         return self.config.backend
 
     @functools.cached_property
@@ -129,18 +131,21 @@ class SweepOrchestrator(
         self.start_services("infra", registry)
 
     def _write_mooncake_store_config(self) -> None:
-        """vLLM's MooncakeStoreConnector reads its config from a JSON file, not env.
+        """vLLM's and TRT-LLM's Mooncake connectors read their config from a JSON file, not env.
 
         Written into log_dir (mounted at /logs in every worker) before workers
         start, pointing at the Mooncake master on the infra node.
         """
         backend = self.config.backend
-        if not isinstance(backend, VLLMProtocol) or backend.mooncake_kv_store is None:
+        served_model_name = backend.get_served_model_name(self.runtime.model_path.name)
+        for filename, store_cfg in backend.mooncake_store_configs(
+            self.runtime.infra_node_ip, served_model_name
+        ).items():
+            store_cfg_path = self.runtime.log_dir / filename
+            store_cfg_path.write_text(json.dumps(store_cfg, indent=2))
+            logger.info("Wrote mooncake_store_config to %s: %s", store_cfg_path, store_cfg)
+        if not isinstance(backend, VLLMBackend) or backend.mooncake_kv_store is None:
             return
-        store_cfg = backend.build_mooncake_store_config(self.runtime.infra_node_ip)
-        store_cfg_path = self.runtime.log_dir / MOONCAKE_STORE_CONFIG_FILENAME
-        store_cfg_path.write_text(json.dumps(store_cfg, indent=2))
-        logger.info("Wrote mooncake_store_config to %s: %s", store_cfg_path, store_cfg)
         if not backend.mooncake_kv_store.device_names_by_gpu:
             return
         # Render only GPU subsets actually launched, rather than all 2**N subsets.
@@ -321,6 +326,164 @@ class SweepOrchestrator(
             return
         raise RuntimeError(f"host_setup failed on: {', '.join(failures)}")
 
+    # One probe per branch; the first that proves synchronisation prints its
+    # evidence and wins, so clock_sync_<node>.out records *which* source
+    # vouched (and, for chrony/ntp, the offset it reported). Every probe is
+    # read-only and unprivileged on stock images: timedatectl reads the kernel
+    # maxerror over D-Bus, chronyc/ntpq ask their daemon. The last
+    # branch reads that same kernel value directly through adjtimex(2), for
+    # hosts whose clock is disciplined but expose no daemon to ask: no systemd
+    # PID 1 or D-Bus (container-rooted Slurm nodes), no chrony/ntp CLI. Each
+    # probe's stderr is kept and printed on the failure path, so the .out says
+    # why nothing vouched ("Failed to connect to bus", "command not found", ...).
+    #
+    # The kernel probe is plain Python shipped inside the bash one-liner, so it
+    # must stay free of single quotes.
+    CLOCK_SYNC_ADJTIMEX_PROBE = textwrap.dedent(
+        """\
+        import ctypes
+        import sys
+
+        # Match systemd ntp_synced(): STA_UNSYNC can stay set when chrony disables RTC sync.
+        MAXERROR_LIMIT_US = 16_000_000
+
+
+        class timex(ctypes.Structure):  # struct timex, LP64 layout (adjtimex(2))
+            _fields_ = [
+                ("modes", ctypes.c_uint),
+                ("offset", ctypes.c_long),
+                ("freq", ctypes.c_long),
+                ("maxerror", ctypes.c_long),
+                ("esterror", ctypes.c_long),
+                ("status", ctypes.c_int),
+                ("constant", ctypes.c_long),
+                ("precision", ctypes.c_long),
+                ("tolerance", ctypes.c_long),
+                ("time", ctypes.c_long * 2),
+                ("tick", ctypes.c_long),
+                ("ppsfreq", ctypes.c_long),
+                ("jitter", ctypes.c_long),
+                ("shift", ctypes.c_int),
+                ("stabil", ctypes.c_long),
+                ("jitcnt", ctypes.c_long),
+                ("calcnt", ctypes.c_long),
+                ("errcnt", ctypes.c_long),
+                ("stbcnt", ctypes.c_long),
+                ("tai", ctypes.c_int),
+                ("pad", ctypes.c_int * 11),
+            ]
+
+
+        tx = timex()  # modes == 0: read-only query
+        state = ctypes.CDLL(None, use_errno=True).adjtimex(ctypes.byref(tx))
+        if state < 0:
+            sys.exit("adjtimex failed: errno %d" % ctypes.get_errno())
+        if tx.maxerror >= MAXERROR_LIMIT_US:
+            sys.exit("kernel clock unsynchronised: state %d status 0x%x maxerror %dus" % (state, tx.status, tx.maxerror))
+        print("maxerror %dus status 0x%x" % (tx.maxerror, tx.status))
+        """
+    )
+    CLOCK_SYNC_SCRIPT = (
+        'timedatectl=$(timedatectl show -p NTPSynchronized --value 2>&1); if grep -qx yes <<<"$timedatectl"; then '
+        'echo "$(hostname): timedatectl NTPSynchronized=yes"; exit 0; fi; '
+        "if chronyc=$(chronyc -n tracking 2>&1) && grep -Eq '^Leap status *: *Normal' <<<\"$chronyc\"; then "
+        'echo "$(hostname): chronyc Leap status Normal"; '
+        "grep -E '^(Reference ID|System time|Last offset)' <<<\"$chronyc\"; exit 0; fi; "
+        "if ntpq=$(ntpq -pn 2>&1) && grep -q '^[*]' <<<\"$ntpq\"; then "
+        'echo "$(hostname): ntpq has a selected peer"; grep \'^[*]\' <<<"$ntpq"; exit 0; fi; '
+        f"if adjtimex=$(python3 -c '{CLOCK_SYNC_ADJTIMEX_PROBE}' 2>&1); then "
+        'echo "$(hostname): kernel adjtimex maxerror below 16s ($adjtimex)"; exit 0; fi; '
+        '{ echo "$(hostname): system clock is not NTP-synchronised"; '
+        'echo "timedatectl: $timedatectl"; echo "chronyc: $chronyc"; echo "ntpq: $ntpq"; echo "adjtimex: $adjtimex"; } >&2; '
+        "exit 1"
+    )
+    CLOCK_SYNC_TIMEOUT_SECONDS = 30
+
+    @staticmethod
+    def _clock_sync_evidence(log: Path) -> str:
+        """First line the probe printed (which daemon vouched), formatted for the OK log line."""
+        try:
+            first = log.read_text().splitlines()[0].strip()
+        except (OSError, IndexError):
+            return ""
+        # The probe prefixes with "<hostname>: "; the log line already names the node.
+        return f" ({first.split(': ', 1)[-1]})" if first else ""
+
+    def _clock_sync_nodes(self) -> list[str]:
+        """Every node whose clock feeds a power artifact: collector host, benchmark client, workers."""
+        nodes = [
+            self.runtime.nodes.head,
+            self.runtime.nodes.bench,
+            self.runtime.nodes.infra,
+            *self.runtime.nodes.compute,
+        ]
+        return list(dict.fromkeys(nodes))
+
+    def _check_clock_sync(self) -> None:
+        """Refuse to start servers for a power run on nodes whose clocks are not NTP-synchronised.
+
+        DCGM power publication compares collector sample timestamps with the
+        benchmark child's window boundaries by raw float, so it holds only
+        when the hosts involved share a synchronised wall clock. This does not
+        measure skew -- it asks each node's own time daemon whether it is
+        locked -- but it catches the gross case (chrony down, misconfigured
+        image) before GPU time is spent.
+
+        Under ``telemetry.required`` a failure aborts the job here. Otherwise
+        the failing nodes are kept in ``_clock_sync_failures`` and handed to
+        the power session when it starts, so the manifest records
+        ``clock_sync_unverified`` and ``publication_valid: false`` instead of
+        silently claiming an alignment nobody checked.
+        """
+        self._clock_sync_failures: list[str] = []
+        telemetry = self.config.telemetry
+        if not (telemetry.enabled and telemetry.dcgm_exporter is not None and telemetry.clock_sync_check):
+            return
+        if os.environ.get("EVAL_ONLY", "false").lower() == "true":
+            return
+
+        nodes = self._clock_sync_nodes()
+        logger.info("clock_sync_check: probing NTP synchronisation on %d node(s)", len(nodes))
+        procs = []
+        for node in nodes:
+            log = self.runtime.log_dir / f"clock_sync_{node}.out"
+            proc = start_srun_process(
+                command=["bash", "-c", self.CLOCK_SYNC_SCRIPT],
+                nodelist=[node],
+                output=str(log),
+                container_image=None,  # bare host: the time daemon lives outside the container
+                het_group=self.runtime.nodes.het_group_for(node),
+            )
+            procs.append((node, proc, log))
+
+        failures = []
+        for node, proc, log in procs:
+            try:
+                returncode = proc.wait(timeout=self.CLOCK_SYNC_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                logger.error("clock_sync_check timed out on %s (see %s)", node, log)
+                failures.append(node)
+                continue
+            if returncode != 0:
+                logger.error("clock_sync_check failed on %s (see %s)", node, log)
+                failures.append(node)
+                continue
+            logger.info("clock_sync_check: %s OK%s", node, self._clock_sync_evidence(log))
+
+        if not failures:
+            logger.info("clock_sync_check: all %d node(s) report NTP-synchronised clocks", len(nodes))
+            return
+        message = (
+            f"clock_sync_check: {', '.join(failures)} did not report an NTP-synchronised clock; "
+            "power sample and measurement-window timestamps would not be comparable"
+        )
+        if telemetry.required:
+            raise RuntimeError(message)
+        self._clock_sync_failures = failures
+        logger.warning("%s (telemetry.required is false; continuing, artifacts will be marked unpublishable)", message)
+
     def _run_host_teardown(self) -> None:
         """Undo host_setup after workers stop.
 
@@ -388,6 +551,12 @@ class SweepOrchestrator(
         in cache and skip downloading entirely - no locks created.
         """
         if not self.runtime.is_hf_model:
+            return
+
+        if self.runtime.hf_snapshot_path:
+            logger.info(
+                "Using pinned HF snapshot %s; skipping unversioned model pre-download", self.runtime.hf_snapshot_path
+            )
             return
 
         hf_home = self._get_hf_home()
@@ -628,7 +797,10 @@ class SweepOrchestrator(
         registry = ProcessRegistry(job_id=self.runtime.job_id)
         stop_event = threading.Event()
         setup_signal_handlers(stop_event, registry)
-        start_process_monitor(stop_event, registry)
+        # The supervisor relaunches workers whose role has a restart policy; it
+        # runs inside the monitor tick, ahead of the critical-failure check.
+        supervisor = self.build_worker_supervisor(registry, stop_event)
+        start_process_monitor(stop_event, registry, reconcile=supervisor.reconcile)
 
         exit_code = 1
 
@@ -642,6 +814,10 @@ class SweepOrchestrator(
             # Stage 0: Bare-host node setup (GPU clocks, kernel modules). Runs
             # before anything containerized so workers see the prepared node.
             self._run_host_setup()
+
+            # Stage 0b: power runs compare clocks across nodes; refuse to spend
+            # GPU time if any node is not NTP-synchronised.
+            self._check_clock_sync()
 
             # Stage 1: the discovery plane (etcd, NATS) as services. Implied by the
             # dynamo frontend; static/direct frontends imply nothing here.
@@ -674,6 +850,7 @@ class SweepOrchestrator(
             reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "Starting workers")
             worker_procs = self.start_all_workers()
             registry.add_processes(worker_procs)
+            self.track_workers(supervisor, worker_procs)
 
             # Stage 3: Frontend
             reporter.report(JobStatus.FRONTEND, JobStage.FRONTEND, "Starting frontend")
@@ -756,6 +933,8 @@ class SweepOrchestrator(
             self._run_host_teardown()
             if exit_code != 0:
                 registry.print_failure_details()
+            if restart_summary := supervisor.summary_line():
+                logger.warning("%s; details in %s", restart_summary, self.runtime.log_dir / WORKER_RESTARTS_FILENAME)
             # Deliberately AFTER _run_host_teardown(): the final pass plus its
             # thread-join can take up to DEFAULT_JOIN_TIMEOUT_SECONDS, and on
             # the SLURM walltime-kill path this feature exists to survive

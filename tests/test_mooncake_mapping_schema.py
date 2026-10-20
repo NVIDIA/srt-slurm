@@ -10,7 +10,7 @@ import pytest
 import yaml
 from marshmallow import ValidationError
 
-from srtctl.backends.vllm import VLLMProtocol
+from srtctl.backends.vllm import VLLMBackend
 from srtctl.cli.submit import show_config_details
 from srtctl.core.migrate import migrate_recipe_text
 from srtctl.core.schema import SrtConfig
@@ -64,7 +64,7 @@ def test_valid_mapping_reaches_runtime_and_dry_run(
     """All authoring paths preserve the map, shared defaults, and process selection."""
     config = load(tmp_path, recipe(style, mode, devices))
     backend = config.backend
-    assert isinstance(backend, VLLMProtocol)
+    assert isinstance(backend, VLLMBackend)
     assert backend.mooncake_kv_store is not None
     assert backend.mooncake_kv_store.device_names_by_gpu == (devices or [])
     process = Process("node0", frozenset({2, 3}), 7500, 6100, "decode", 0)

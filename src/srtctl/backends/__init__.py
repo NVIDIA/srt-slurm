@@ -9,37 +9,43 @@ Supported backends:
 - TRTLLM: TensorRT-LLM backend with prefill/decode disaggregation
 """
 
-from .atom import AtomProtocol
-from .base import BackendProtocol, BackendType, RoleSettings, SrunConfig
-from .mocker import MockerProtocol
-from .sglang import MooncakeKVStoreConfig, SGLangProtocol
-from .tilert import TileRTProtocol
-from .trtllm import TRTLLMProtocol
-from .vllm import VLLMFailoverConfig, VLLMMooncakeKVStoreConfig, VLLMProtocol
+from .atom import AtomBackend
+from .base import Backend, BackendType, RoleSettings, SrunConfig
+from .mocker import MockerBackend
+from .sglang import MooncakeKVStoreConfig, SGLangBackend
+from .tilert import TileRTBackend
+from .tokenspeed import TokenSpeedBackend
+from .trtllm import TRTLLMBackend, TRTLLMMooncakeKVStoreConfig
+from .vllm import VLLMBackend, VLLMFailoverConfig, VLLMMooncakeKVStoreConfig
 
 # Union type for all backend configs
-BackendConfig = AtomProtocol | SGLangProtocol | TileRTProtocol | TRTLLMProtocol | VLLMProtocol | MockerProtocol
+BackendConfig = (
+    AtomBackend | SGLangBackend | TileRTBackend | TokenSpeedBackend | TRTLLMBackend | VLLMBackend | MockerBackend
+)
 
 __all__ = [
     # ATOM
-    "AtomProtocol",
-    "BackendConfig",
+    "AtomBackend",
     # Base types
-    "BackendProtocol",
+    "Backend",
+    "BackendConfig",
     "BackendType",
     # Mocker
-    "MockerProtocol",
+    "MockerBackend",
     # SGLang
     "MooncakeKVStoreConfig",
     "RoleSettings",
-    "SGLangProtocol",
+    "SGLangBackend",
     "SrunConfig",
     # TRTLLM
-    "TRTLLMProtocol",
+    "TRTLLMBackend",
+    "TRTLLMMooncakeKVStoreConfig",
     # TileRT
-    "TileRTProtocol",
+    "TileRTBackend",
+    # TokenSpeed
+    "TokenSpeedBackend",
     # vLLM
+    "VLLMBackend",
     "VLLMFailoverConfig",
     "VLLMMooncakeKVStoreConfig",
-    "VLLMProtocol",
 ]

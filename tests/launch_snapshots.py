@@ -36,7 +36,12 @@ JOB_ID = "4242"
 NOT_A_JOB = {"examples/features/override.yaml", "examples/features/sweep.yaml"}
 
 # Values generated fresh on every run, replaced by a stable placeholder.
-_RANDOM_VALUES = (re.compile(r"moe_shared_[0-9a-f]{32}"),)
+_RANDOM_VALUES = (
+    re.compile(r"moe_shared_[0-9a-f]{32}"),
+    # Observability nsys: a fresh control-step id and report barrier per wrapped launch.
+    re.compile(r'(?<="step": ")[0-9a-f]{32}'),
+    re.compile(r"(?<=/profiles/\.stopped/)[0-9a-f]{32}"),
+)
 # The worker fingerprint script (core/fingerprint.py) is inlined into every worker preamble; keep one line.
 _FINGERPRINT_SCRIPT = re.compile(r"(<<'__FINGERPRINT_EOF__'\n).*?(__FINGERPRINT_EOF__\n)", re.DOTALL)
 
@@ -74,7 +79,13 @@ def snapshot_path(recipe: Path) -> Path:
 
 @contextmanager
 def _isolated_cluster(model_dir: Path, container_file: Path) -> Iterator[None]:
-    """No srtslurm.yaml; the recipe's model and container-file paths resolve to existing placeholders."""
+    """No srtslurm.yaml and no `make setup` binaries; the recipe's model and container-file paths resolve to
+    existing placeholders.
+
+    Snapshots describe a clean checkout, so a locally installed ``configs/process-exporter`` or
+    ``bin/tachometer-scraper`` must not add or rewrite srun calls.
+    """
+    from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
     from srtctl.core import config as config_module
 
     original_load = config_module.load_config
@@ -84,11 +95,16 @@ def _isolated_cluster(model_dir: Path, container_file: Path) -> Iterator[None]:
         container = cfg.model.container
         if container.startswith(("/", "./")):
             container = str(container_file)
-        return dataclasses.replace(cfg, model=dataclasses.replace(cfg.model, path=str(model_dir), container=container))
+        # Pinned HF examples must retain the ID and snapshot so the launch plan
+        # captures the actual engine and tokenizer arguments.
+        model_path = cfg.model.path if cfg.model.hf_snapshot_path else str(model_dir)
+        return dataclasses.replace(cfg, model=dataclasses.replace(cfg.model, path=model_path, container=container))
 
     with (
         patch.object(config_module, "load_cluster_config", lambda: None),
         patch.object(config_module, "load_config", _load_with_fake_model),
+        patch("srtctl.services.exporters.resolve_host_binary", lambda binary: None),
+        patch.object(TelemetryStageMixin, "_resolve_bundled_binary", lambda self, name: name),
     ):
         yield
 
@@ -144,7 +160,13 @@ def render_launch_plan(recipe: Path) -> str:
         prior_cwd = Path.cwd()
         os.chdir(tmp_path)
         try:
-            with _isolated_cluster(model_dir, container_file):
+            # Capture exporter launches without polling metrics from nonexistent containers.
+            with (
+                _isolated_cluster(model_dir, container_file),
+                patch(
+                    "srtctl.core.power.session.PowerTelemetrySession.start_and_wait_for_readiness", return_value=True
+                ),
+            ):
                 nodes = load_config(recipe).total_nodes
                 options = MockOptions(
                     child_duration_s=0.0,

@@ -733,6 +733,7 @@ class TestArtifactErrors:
                 node_rank=0,
                 node="node-p",
                 http_port=1233,
+                grpc_http_port=None,
                 sys_port=0,
             ),
             SimpleNamespace(
@@ -742,6 +743,7 @@ class TestArtifactErrors:
                 node_rank=0,
                 node="node-d",
                 http_port=1234,
+                grpc_http_port=None,
                 sys_port=0,
             ),
         ]

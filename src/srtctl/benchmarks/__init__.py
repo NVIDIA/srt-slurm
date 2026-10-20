@@ -21,6 +21,7 @@ from srtctl.benchmarks import (
 from srtctl.benchmarks.base import (
     SHARED_BENCHMARK_FIELDS,
     BenchmarkRunner,
+    PrewarmPlan,
     benchmark_config_fields,
     get_runner,
     get_runner_class,
@@ -31,6 +32,7 @@ from srtctl.benchmarks.base import (
 __all__ = [
     "SHARED_BENCHMARK_FIELDS",
     "BenchmarkRunner",
+    "PrewarmPlan",
     # Runners
     "agentperf",
     "benchmark_config_fields",

@@ -12,7 +12,7 @@ import pytest
 import yaml
 from marshmallow import ValidationError
 
-from srtctl.backends import AtomProtocol
+from srtctl.backends import AtomBackend
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.core.config import load_config, resolve_config_with_defaults
 from srtctl.core.runtime import Nodes, RuntimeContext
@@ -53,7 +53,7 @@ def _runtime() -> SimpleNamespace:
     return SimpleNamespace(worker_model_arg="/model", network_interface=None)
 
 
-def _build(backend: AtomProtocol, process: Process, runtime=None, **kwargs) -> list[str]:
+def _build(backend: AtomBackend, process: Process, runtime=None, **kwargs) -> list[str]:
     with patch("srtctl.core.slurm.get_hostname_ip", return_value=WORKER_IP):
         return backend.build_worker_command(process, [process], runtime or _runtime(), **kwargs)
 
@@ -70,7 +70,7 @@ def test_atom_worker_requires_atomesh_frontend() -> None:
     process = Process("node0", frozenset(range(8)), 7500, 6100, "agg", 0)
 
     with pytest.raises(ValueError, match="requires frontend.type: atomesh"):
-        AtomProtocol().build_worker_command(process, [process], _runtime(), frontend_type="dynamo")
+        AtomBackend().build_worker_command(process, [process], _runtime(), frontend_type="dynamo")
 
 
 def test_v2_atom_roles_build_prefill_decode_workers(tmp_path: Path) -> None:
@@ -143,7 +143,7 @@ def test_atom_served_name_follows_served_model_name() -> None:
 
 def test_atom_builds_native_aggregate_command() -> None:
     """Recipe flags keep ATOM's mixed hyphen/underscore spelling and follow the managed arguments."""
-    backend = AtomProtocol(
+    backend = AtomBackend(
         roles={
             "agg": RoleConfig(
                 args={
@@ -186,7 +186,7 @@ def test_atom_builds_native_aggregate_command() -> None:
 @pytest.mark.parametrize("key", ["tensor_parallel_size", "--server-port", "model"])
 def test_atom_rejects_recipe_overrides_of_managed_arguments(key: str) -> None:
     """Reserved flags are matched after normalizing dashes and underscores."""
-    backend = AtomProtocol(roles={"agg": RoleConfig(args={key: 4})})
+    backend = AtomBackend(roles={"agg": RoleConfig(args={key: 4})})
     process = Process("node0", frozenset(range(8)), 7500, 6100, "agg", 0)
 
     with pytest.raises(ValueError, match="srtctl-managed argument"):
@@ -195,7 +195,7 @@ def test_atom_rejects_recipe_overrides_of_managed_arguments(key: str) -> None:
 
 @pytest.mark.parametrize(("protocol", "extra"), [(None, {}), ("tcp", {"protocol": "tcp"})])
 def test_atom_pd_worker_emits_mooncake_kv_transfer_config(protocol: str | None, extra: dict) -> None:
-    backend = AtomProtocol(mooncake_protocol=protocol)
+    backend = AtomBackend(mooncake_protocol=protocol)
     process = Process("node0", frozenset(range(4)), 7500, 6100, "prefill", 0, nixl_port=6301)
 
     command = _build(backend, process)
@@ -213,7 +213,7 @@ def test_atom_pd_worker_emits_mooncake_kv_transfer_config(protocol: str | None, 
 def test_atom_wraps_extra_kv_connectors_with_mooncake_in_multi() -> None:
     """A role's extra-kv-connectors ride next to srtctl's Mooncake connector and never reach the CLI as a flag."""
     offload = {"kv_connector": "lmcache_offload", "kv_role": "offload", "lmcache.max_local_cpu_size": 180}
-    backend = AtomProtocol(roles={"prefill": RoleConfig(args={"extra-kv-connectors": [offload], "max-model-len": 8})})
+    backend = AtomBackend(roles={"prefill": RoleConfig(args={"extra-kv-connectors": [offload], "max-model-len": 8})})
     prefill = Process("node0", frozenset(range(8)), 7500, 6100, "prefill", 0, nixl_port=6301)
     decode = Process("node1", frozenset(range(8)), 7500, 6100, "decode", 0, nixl_port=6302)
 
@@ -234,7 +234,7 @@ def test_atom_wraps_extra_kv_connectors_with_mooncake_in_multi() -> None:
 
 def test_atom_aggregate_worker_runs_a_single_extra_connector_unwrapped() -> None:
     offload = {"kv_connector": "lmcache_offload", "kv_role": "offload"}
-    backend = AtomProtocol(roles={"agg": RoleConfig(args={"extra-kv-connectors": [offload]})})
+    backend = AtomBackend(roles={"agg": RoleConfig(args={"extra-kv-connectors": [offload]})})
     process = Process("node0", frozenset(range(8)), 7500, 6100, "agg", 0)
 
     command = _build(backend, process)
@@ -255,7 +255,7 @@ def test_atom_aggregate_worker_runs_a_single_extra_connector_unwrapped() -> None
 def test_atom_lmcache_mp_defaults_to_the_lmcache_server_port(extra_config: dict, expected: dict) -> None:
     """lmcache_mp dials srtctl's lmcache-server on its own node unless the recipe gave an address."""
     connector = {"kv_connector": "lmcache_mp", "kv_role": "offload", "kv_connector_extra_config": extra_config}
-    backend = AtomProtocol(roles={"agg": RoleConfig(args={"extra-kv-connectors": [connector]})})
+    backend = AtomBackend(roles={"agg": RoleConfig(args={"extra-kv-connectors": [connector]})})
     process = Process("node0", frozenset(range(8)), 7500, 6100, "agg", 0)
 
     command = _build(backend, process)
@@ -269,7 +269,7 @@ def test_atom_rejects_cross_node_model_parallel_endpoint() -> None:
     peer = Process("node1", frozenset(range(4)), 7501, 6101, "prefill", 0, nixl_port=6302)
 
     with pytest.raises(ValueError, match="fit on one Slurm node"):
-        AtomProtocol().build_worker_command(leader, [leader, peer], _runtime())
+        AtomBackend().build_worker_command(leader, [leader, peer], _runtime())
 
 
 def test_atom_pd_worker_requires_mooncake_handshake_port() -> None:
@@ -277,13 +277,13 @@ def test_atom_pd_worker_requires_mooncake_handshake_port() -> None:
     process = Process("node0", frozenset(range(4)), 7500, 6100, "decode", 0)
 
     with pytest.raises(ValueError, match="missing its Mooncake handshake port"):
-        _build(AtomProtocol(), process)
+        _build(AtomBackend(), process)
 
 
 def test_atomesh_builds_static_pd_command_without_bootstrap_ports() -> None:
     """ATOM publishes transfer topology itself, so no handshake port follows --prefill."""
     frontend = AtomeshFrontend()
-    backend = AtomProtocol()
+    backend = AtomBackend()
     processes = [
         Process("node0", frozenset(range(8)), 7500, 6100, "prefill", 0, nixl_port=6301),
         Process("node1", frozenset(range(8)), 7500, 6101, "decode", 0, nixl_port=6302),
@@ -316,7 +316,7 @@ def test_atomesh_rejects_recipe_backend_argument() -> None:
     config = SimpleNamespace(frontend=SimpleNamespace(args={"backend": "vllm"}))
 
     with pytest.raises(ValueError, match="managed by srtctl"):
-        AtomeshFrontend().get_managed_frontend_args(config, AtomProtocol(), [])
+        AtomeshFrontend().get_managed_frontend_args(config, AtomBackend(), [])
 
 
 def test_atomesh_worker_metrics_are_not_scraped() -> None:

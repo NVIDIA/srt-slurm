@@ -8,11 +8,11 @@ strict re-validation pass here and no reason-code contract with the shared
 ``Reason`` class. A malformed or missing file is simply unavailable data,
 never a job-failing condition.
 
-The writer emits schema v2 (one row per socket, component rails as columns).
-The reader accepts v2 and the legacy v1 long format (one row per rail). A v1
-row is one *rail*, not one socket, so it cannot be a ``CpuSample``; it is
-returned as a :class:`LegacyCpuRailRow` and callers that need one figure per
-socket go through ``cpu_rails.classify_sensor``.
+The writer emits schema v3 (one row per socket, reference rails as columns).
+The reader also accepts v2 (no ``module_w``) and the legacy v1 long format
+(one row per rail). A v1 row is one *rail*, not one socket, so it cannot be a
+``CpuSample``; it is returned as a :class:`LegacyCpuRailRow` and callers that
+need one figure per socket go through ``cpu_rails.classify_sensor``.
 """
 
 from __future__ import annotations
@@ -26,16 +26,24 @@ from typing import Any, TextIO
 from srtctl.core.power.contract import (
     CPU_SAMPLES_HEADER,
     CPU_SAMPLES_HEADER_V1,
+    CPU_SAMPLES_HEADER_V2,
     CPU_SCHEMA_VERSION,
     CPU_SCHEMA_VERSION_V1,
+    CPU_SCHEMA_VERSION_V2,
 )
-from srtctl.core.power.cpu_rails import COMPONENT_RAIL_KINDS
+from srtctl.core.power.cpu_rails import RAIL_COLUMNS, REFERENCE_RAIL_KINDS
 from srtctl.core.power.cpu_sample import CpuSample
+
+_SCHEMA_VERSION_BY_HEADER: dict[tuple[str, ...], int] = {
+    CPU_SAMPLES_HEADER: CPU_SCHEMA_VERSION,
+    CPU_SAMPLES_HEADER_V2: CPU_SCHEMA_VERSION_V2,
+    CPU_SAMPLES_HEADER_V1: CPU_SCHEMA_VERSION_V1,
+}
 
 
 @dataclass(frozen=True)
 class CpuSampleRow:
-    """One persisted v2 row: a :class:`CpuSample` placed at a time on a host, with the node total."""
+    """One persisted per-socket row (v2+): a :class:`CpuSample` placed at a time on a host, with the node total."""
 
     timestamp_unix: float
     hostname: str
@@ -74,7 +82,7 @@ class CpuSampleRow:
             self.sensor,
             self.socket_id,
             repr(self.power_w),
-            *("" if kind not in rails else repr(rails[kind]) for kind in COMPONENT_RAIL_KINDS),
+            *("" if kind not in rails else repr(rails[kind]) for kind in REFERENCE_RAIL_KINDS),
             "" if self.total_power_w is None else repr(self.total_power_w),
         ]
 
@@ -142,7 +150,7 @@ CpuCsvRow = CpuSampleRow | LegacyCpuRailRow
 
 
 def read_cpu_samples(path: Path) -> tuple[tuple[CpuCsvRow, ...], tuple[str, ...]]:
-    """Best-effort parse of persisted CPU samples (v1 or v2). Never raises."""
+    """Best-effort parse of persisted CPU samples (v1, v2 or v3). Never raises."""
     if not path.is_file():
         return (), ("cpu_samples_csv_missing",)
 
@@ -151,18 +159,12 @@ def read_cpu_samples(path: Path) -> tuple[tuple[CpuCsvRow, ...], tuple[str, ...]
     try:
         with open(path, newline="", encoding="utf-8") as handle:
             reader = csv.reader(handle)
-            header = next(reader, None)
-            if header is None:
+            header = next(reader, [])
+            expected_version = _SCHEMA_VERSION_BY_HEADER.get(tuple(header))
+            if expected_version is None:
                 return (), ("cpu_samples_csv_header_mismatch",)
-            if header == list(CPU_SAMPLES_HEADER):
-                expected_version = CPU_SCHEMA_VERSION
-            elif header == list(CPU_SAMPLES_HEADER_V1):
-                expected_version = CPU_SCHEMA_VERSION_V1
-            else:
-                return (), ("cpu_samples_csv_header_mismatch",)
-            columns = header
             for raw in reader:
-                row = _parse_row(raw, columns, expected_version)
+                row = _parse_row(raw, header, expected_version)
                 if row is None:
                     reasons.append("cpu_samples_csv_malformed")
                     continue
@@ -183,7 +185,7 @@ def _parse_row(raw: list[str], columns: list[str], expected_version: int) -> Cpu
         socket_id = int(cell["socket_id"])
         power_w = float(cell["power_w"])
         total_power_w = float(cell["total_power_w"]) if cell["total_power_w"] else None
-        rails = {kind: float(cell[f"{kind}_w"]) for kind in COMPONENT_RAIL_KINDS if cell.get(f"{kind}_w", "") != ""}
+        rails = {kind: float(cell[column]) for kind, column in RAIL_COLUMNS.items() if cell.get(column, "") != ""}
     except ValueError:
         return None
 

@@ -9,19 +9,34 @@ ENV SRTCTL_RELEASE_VERSION=${SRTCTL_RELEASE_VERSION}
 
 WORKDIR /app
 
-# musl-tools supplies x86_64-musl-gcc for the amd64 target.
-# arm64 uses the GNU cross-toolchain to link a musl target; it is not ideal
-# but works for fully Rust-native crates with no cc build-scripts.
-# libc6-dev-arm64-cross is only a Recommends of the compiler, yet libloading
-# emits `-ldl` on every linux target and the static link needs its (empty)
-# libdl.a from the cross sysroot.
+# arm64 links glibc: the NVML module reader and the DCGM source dlopen the
+# driver's libraries at runtime, and a static musl binary cannot dlopen. Those
+# meters exist only on Grace, so amd64 stays a static musl build, linked by
+# musl-tools' x86_64-musl-gcc.
+#
+# A plain cross-link would take its glibc symbol versions from this image's
+# sysroot (bookworm, 2.36) and fail to load on any host older than 2.34.
+# cargo-zigbuild links against zig's glibc stubs for GLIBC_FLOOR instead, so
+# the binary runs on every glibc from the floor up. 2.17 is the first glibc
+# with aarch64 support, so no aarch64 host is older. The check after the
+# build fails the image if any symbol needs a newer version.
+ARG GLIBC_FLOOR=2.17
+ARG ZIG_VERSION=0.17.0
+ARG CARGO_ZIGBUILD_VERSION=0.23.4
 RUN apt-get update \
     && if [ "$TARGETARCH" = "arm64" ]; then \
-        apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross; \
+        apt-get install -y --no-install-recommends binutils python3-venv; \
     else \
         apt-get install -y --no-install-recommends musl-tools; \
     fi \
     && rm -rf /var/lib/apt/lists/*
+# ziglang and cargo-zigbuild ship as prebuilt PyPI wheels for both build hosts.
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        python3 -m venv /opt/zigbuild \
+        && /opt/zigbuild/bin/pip install --no-cache-dir \
+            "ziglang==${ZIG_VERSION}" "cargo-zigbuild==${CARGO_ZIGBUILD_VERSION}"; \
+    fi
+ENV PATH="/opt/zigbuild/bin:${PATH}"
 
 COPY rust-toolchain.toml ./
 COPY Cargo.toml Cargo.lock ./
@@ -36,7 +51,7 @@ RUN mkdir -p src/tachometer/tachometer-writer/src src/tachometer/tachometer-scra
 COPY src/cpu-power-exporter/src src/cpu-power-exporter/src
 
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-        rustup target add aarch64-unknown-linux-musl; \
+        rustup target add aarch64-unknown-linux-gnu; \
     else \
         rustup target add x86_64-unknown-linux-musl; \
     fi
@@ -45,10 +60,15 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target,id=cpu-power-target-$TARGETARCH,sharing=locked \
     if [ "$TARGETARCH" = "arm64" ]; then \
-        export CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc \
-        && export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
-        && cargo build --release --locked --bin cpu-power-exporter --target aarch64-unknown-linux-musl \
-        && cp target/aarch64-unknown-linux-musl/release/cpu-power-exporter /cpu-power-exporter; \
+        cargo zigbuild --release --locked --bin cpu-power-exporter \
+            --target "aarch64-unknown-linux-gnu.${GLIBC_FLOOR}" \
+        && cp target/aarch64-unknown-linux-gnu/release/cpu-power-exporter /cpu-power-exporter \
+        && newest=$(readelf -V /cpu-power-exporter | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -n1) \
+        && test -n "$newest" \
+        && echo "cpu-power-exporter needs glibc >= ${newest} (floor ${GLIBC_FLOOR})" \
+        && if [ "$(printf '%s\n%s\n' "$newest" "$GLIBC_FLOOR" | sort -V | tail -n1)" != "$GLIBC_FLOOR" ]; then \
+            echo "ERROR: binary needs glibc ${newest}, above GLIBC_FLOOR=${GLIBC_FLOOR}" >&2; exit 1; \
+        fi; \
     else \
         cargo build --release --locked --bin cpu-power-exporter --target x86_64-unknown-linux-musl \
         && cp target/x86_64-unknown-linux-musl/release/cpu-power-exporter /cpu-power-exporter; \

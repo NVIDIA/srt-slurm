@@ -1,0 +1,236 @@
+# GLM-5.2 NVFP4 on GB300, based on InferenceX PR #3586's 1p1d TP8 MTP5 variant.
+# https://github.com/SemiAnalysisAI/InferenceX/pull/3586
+#
+# One TP4 prefill worker and one TP8 decode worker spanning two nodes.
+# Each TensorRT-LLM OpenEngine endpoint has a Dynamo sidecar. The NIXL
+# transceiver transfers KV between roles; KV events are disabled in this variant.
+# The image and Dynamo wheel are updated nightlies, distinct from the source PR.
+# Mount an HF cache containing the pinned revision at /hf/hub; the recipe
+# uses the pinned snapshot offline in the engine and benchmark containers.
+# The short sa-bench sweep is an E2E smoke, not the source PR's AgentX workload.
+# The sidecar registers the HF model ID; its cache ref must match the pinned revision.
+
+schema: 2
+name: glm5.2-nvfp4-trtllm-dynamo-sidecar-disagg
+slurm:
+  # Cold GB300 model loading and kernel compilation took about 28 minutes.
+  time_limit: 00:45:00
+model:
+  path: hf:nvidia/GLM-5.2-NVFP4
+  container: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
+  precision: fp4
+  hf_snapshot_path: /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab
+identity:
+  model:
+    repo: nvidia/GLM-5.2-NVFP4
+    revision: 53e0691e21895a3863a606dfd12910c69eba94ab
+  container:
+    image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
+dynamo:
+  install: true
+  source:
+    wheel: 1.6.0.dev20261010
+  request_plane: tcp
+health_check:
+  max_attempts: 270
+  interval_seconds: 10
+resources:
+  gpu_type: gb300
+  gpus_per_node: 4
+engine:
+  type: trtllm
+  publish_events_and_metrics: false
+  numa_cpu_bind: true
+  served_model_name: nvidia/GLM-5.2-NVFP4
+roles:
+  prefill:
+    gpus: 4
+    env:
+      HF_HUB_CACHE: /hf/hub
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+      TQDM_DISABLE: '1'
+      HF_HUB_DISABLE_PROGRESS_BARS: '1'
+      TLLM_LOG_LEVEL: INFO
+      TRTLLM_SERVER_DISABLE_GC: '1'
+      TRTLLM_WORKER_DISABLE_GC: '1'
+      TRTLLM_ENABLE_PDL: '1'
+      NCCL_GRAPH_MIXING_SUPPORT: '0'
+      MIMALLOC_PURGE_DELAY: '0'
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      TRTLLM_FUSED_DSA_METADATA: '1'
+      TRTLLM_DSA_INDEXER_BF16: '1'
+      TRTLLM_SERVE_ENABLE_MSGSPEC: '1'
+      TLLM_ADP_ROUTER_MATCH_RATE_THRESHOLD: '0.10'
+      TRTLLM_KV_CACHE_TRANSFER_TIMEOUT_SEC: '600'
+      UCX_CUDA_IPC_ENABLE_MNNVL: y
+      UCX_RNDV_SCHEME: put_zcopy
+      TRTLLM_KVCACHE_SEND_BUFFER_COUNT: '1'
+      TRTLLM_KVCACHE_RECV_BUFFER_COUNT: '1'
+      DYN_TRTLLM_ENABLE_ATTENTION_DP: '1'
+      DYN_ENGINE_CONV_AFFINITY: '1'
+      DYN_TOKENIZER: fastokens
+      DYN_PUBLISH_KV_EVENTS: '0'
+    args:
+      attention_dp_config:
+        enable_kv_cache_aware_routing: false
+        kv_cache_routing_conversation_affinity: true
+        kv_cache_routing_max_sessions: 65536
+      cache_transceiver_config:
+        backend: NIXL
+        transceiver_runtime: PYTHON
+        agent_bounce_buffer_enable: true
+        agent_bounce_params:
+          max_average_descriptor_size: 4MB
+          min_descriptor_count: '1'
+        max_tokens_in_buffer: 1048576
+        kv_transfer_timeout_ms: 600000
+        kv_cache_bounce_size_mb: 1024
+      cuda_graph_config:
+      enable_attention_dp: true
+      enable_chunked_prefill: true
+      trust_remote_code: true
+      kv_cache_config:
+        enable_block_reuse: true
+        event_buffer_max_size: 0
+        free_gpu_memory_fraction: 0.75
+        tokens_per_block: 64
+        dtype: fp8
+        host_cache_size: 137438953472
+      max_batch_size: 256
+      max_num_tokens: 8192
+      max_seq_len: 1048576
+      moe_config:
+        backend: CUTEDSL
+      moe_expert_parallel_size: 4
+      num_postprocess_workers: 8
+      pipeline_parallel_size: 1
+      print_iter_log: true
+      enable_iter_perf_stats: false
+      return_perf_metrics: false
+      scheduler_config:
+        capacity_scheduler_policy: MAX_UTILIZATION
+        context_chunking_policy: EQUAL_PROGRESS
+      sparse_attention_config:
+        algorithm: dsa
+        enable_heuristic_topk: true
+      speculative_config:
+        decoding_type: MTP
+        max_draft_len: 5
+      tensor_parallel_size: 4
+      disable_overlap_scheduler: true
+      backend: pytorch
+    nodes: 1
+    workers: 1
+    sidecar: true
+  decode:
+    env:
+      HF_HUB_CACHE: /hf/hub
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+      TQDM_DISABLE: '1'
+      HF_HUB_DISABLE_PROGRESS_BARS: '1'
+      TLLM_LOG_LEVEL: INFO
+      TRTLLM_SERVER_DISABLE_GC: '1'
+      TRTLLM_WORKER_DISABLE_GC: '1'
+      TRTLLM_ENABLE_PDL: '1'
+      NCCL_GRAPH_MIXING_SUPPORT: '0'
+      MIMALLOC_PURGE_DELAY: '0'
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      TRTLLM_FUSED_DSA_METADATA: '1'
+      TRTLLM_DSA_INDEXER_BF16: '1'
+      TRTLLM_SERVE_ENABLE_MSGSPEC: '1'
+      TLLM_ADP_ROUTER_MATCH_RATE_THRESHOLD: '0.10'
+      TRTLLM_KV_CACHE_TRANSFER_TIMEOUT_SEC: '600'
+      UCX_CUDA_IPC_ENABLE_MNNVL: y
+      UCX_RNDV_SCHEME: put_zcopy
+      TRTLLM_KVCACHE_SEND_BUFFER_COUNT: '1'
+      TRTLLM_KVCACHE_RECV_BUFFER_COUNT: '1'
+      DYN_TRTLLM_ENABLE_ATTENTION_DP: '1'
+      DYN_ENGINE_CONV_AFFINITY: '1'
+      DYN_TOKENIZER: fastokens
+      DYN_PUBLISH_KV_EVENTS: '0'
+    args:
+      cache_transceiver_config:
+        backend: NIXL
+        transceiver_runtime: PYTHON
+        agent_bounce_buffer_enable: true
+        agent_bounce_params:
+          max_average_descriptor_size: 4MB
+          min_descriptor_count: '1'
+        max_tokens_in_buffer: 1048576
+        kv_transfer_timeout_ms: 600000
+        kv_cache_bounce_size_mb: 1024
+      cuda_graph_config:
+        enable_padding: true
+        batch_sizes:
+          - 1
+      trust_remote_code: true
+      kv_cache_config:
+        enable_block_reuse: false
+        event_buffer_max_size: 0
+        tokens_per_block: 64
+        dtype: fp8
+        free_gpu_memory_fraction: 0.8
+      max_num_tokens: 128
+      max_seq_len: 1048576
+      moe_config:
+        use_low_precision_moe_combine: true
+        backend: TRTLLM
+      num_postprocess_workers: 4
+      pipeline_parallel_size: 1
+      print_iter_log: true
+      enable_iter_perf_stats: false
+      return_perf_metrics: false
+      sparse_attention_config:
+        algorithm: dsa
+        enable_heuristic_topk: true
+        use_cute_dsl_paged_mqa_logits: true
+        use_cute_dsl_topk: true
+      speculative_config:
+        decoding_type: MTP
+        max_draft_len: 5
+      stream_interval: 20
+      enable_attention_dp: false
+      max_batch_size: 1
+      moe_expert_parallel_size: 1
+      tensor_parallel_size: 8
+      backend: pytorch
+    nodes: 2
+    workers: 1
+    gpus: 8
+    sidecar: true
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  env:
+    HF_HUB_CACHE: /hf/hub
+    HF_HUB_OFFLINE: '1'
+    ETCD_LEASE_TTL: '120'
+    DYN_ROUTER_QUEUE_THRESHOLD: None
+    DYN_ROUTER_TEMPERATURE: '0'
+    DYN_TOKENIZER_CACHE: '1'
+    DYN_TOKENIZER_CACHE_BYTES: '8000000000'
+    DYN_TOKENIZER: fastokens
+    DYN_TCP_REQUEST_TIMEOUT: '30'
+    DYN_LOG: warn
+    DYN_ROUTER_SESSION_AFFINITY_TTL_SECS: '14400'
+  args:
+    router-mode: kv
+    no-kv-events: true
+    active-decode-blocks-threshold: None
+    active-prefill-tokens-threshold: None
+    active-prefill-tokens-threshold-frac: None
+  placement:
+    node: head
+benchmark:
+  type: sa-bench
+  isl: 128
+  osl: 32
+  concurrencies: '1'
+  num_prompts_mult: 2
+  num_warmup_mult: 0
+  custom_tokenizer: glm_moe_dsa
+  env:
+    HF_HUB_CACHE: /hf/hub
+    HF_HUB_OFFLINE: '1'

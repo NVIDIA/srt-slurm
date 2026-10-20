@@ -1,0 +1,500 @@
+# examples/trtllm/dynamo-sidecar-disagg.yaml
+# exit_code: 0
+# srun calls: 17
+
+## service_etcd
+nodelist: node-01
+output: <output>/logs/service_etcd.out
+container_image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <output>/logs: /logs
+use_bash_wrapper: True
+bash_preamble: |
+    rm -rf /tmp/etcd && mkdir -p /tmp/etcd
+command: |
+    /configs/etcd --data-dir /tmp/etcd --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://127.0.0.1:2379
+
+## service_otel-collector
+nodelist: node-01
+output: <output>/logs/service_otel-collector.out
+env_to_set:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: True
+command: |
+    configs/otelcol-contrib --config <output>/logs/otel-collector.yaml
+
+## prefill_0_node-01
+nodes: 1
+ntasks: 4
+nodelist: node-01
+output: <output>/logs/node-01_prefill_w0.out
+container_image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <output>/logs: /logs
+env_to_set:
+    DYNAMO_VERSION: 1.6.0.dev20261010
+    DYNAMO_WHEEL_NAME: ai_dynamo-1.6.0.dev20261010-py3-none-any.whl
+    DYN_ENGINE_CONV_AFFINITY: 1
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_PUBLISH_KV_EVENTS: 0
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7500
+    DYN_TOKENIZER: fastokens
+    DYN_TRTLLM_ENABLE_ATTENTION_DP: 1
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    HEAD_NODE_IP: 127.0.0.1
+    HF_HUB_CACHE: /hf/hub
+    HF_HUB_DISABLE_PROGRESS_BARS: 1
+    HF_HUB_OFFLINE: 1
+    MASTER_ADDR: 127.0.0.1
+    MASTER_PORT: 29500
+    MIMALLOC_PURGE_DELAY: 0
+    NCCL_GRAPH_MIXING_SUPPORT: 0
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-prefill
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    TLLM_ADP_ROUTER_MATCH_RATE_THRESHOLD: 0.10
+    TLLM_LOG_LEVEL: INFO
+    TLLM_NUMA_AWARE_WORKER_AFFINITY: 0
+    TQDM_DISABLE: 1
+    TRANSFORMERS_OFFLINE: 1
+    TRTLLM_DSA_INDEXER_BF16: 1
+    TRTLLM_ENABLE_PDL: 1
+    TRTLLM_EPLB_SHM_NAME: <random>
+    TRTLLM_FUSED_DSA_METADATA: 1
+    TRTLLM_KVCACHE_RECV_BUFFER_COUNT: 1
+    TRTLLM_KVCACHE_SEND_BUFFER_COUNT: 1
+    TRTLLM_KV_CACHE_TRANSFER_TIMEOUT_SEC: 600
+    TRTLLM_SERVER_DISABLE_GC: 1
+    TRTLLM_SERVE_ENABLE_MSGSPEC: 1
+    TRTLLM_WORKER_DISABLE_GC: 1
+    UCX_CUDA_IPC_ENABLE_MNNVL: y
+    UCX_RNDV_SCHEME: put_zcopy
+srun_options:
+    kill-on-bad-exit: 1
+    ntasks-per-node: 4
+srun_export_env:
+    ENROOT_REMAP_ROOT: yes
+mpi: pmix
+oversubscribe: True
+cpu_bind: verbose,none
+bash_preamble: |
+    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing ai-dynamo-runtime and ai-dynamo from wheel ai_dynamo-1.6.0.dev20261010-py3-none-any.whl...' && if [ -f /srtctl-runtime/dynamo_wheels.py ]; then python3 /srtctl-runtime/dynamo_wheels.py install; else echo 'ERROR: /srtctl-runtime/dynamo_wheels.py not found for ai-dynamo wheel install' >&2; exit 1; fi && echo 'ai-dynamo-runtime and ai-dynamo install path completed for ai_dynamo-1.6.0.dev20261010-py3-none-any.whl' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock" && ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    bash -lc 'set -euo pipefail
+    ENGINE_PID=
+    SIDECAR_PID=
+    request_stop() {
+        local pid="${1:-}"
+        if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+            kill "${pid}" 2>/dev/null || true
+        fi
+    }
+    reap_with_timeout() {
+        local pid="${1:-}"
+        if [[ -z "${pid}" ]]; then return; fi
+        for _ in $(seq 1 10); do
+            if ! kill -0 "${pid}" 2>/dev/null; then break; fi
+            sleep 1
+        done
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill -KILL "${pid}" 2>/dev/null || true
+        fi
+        wait "${pid}" 2>/dev/null || true
+    }
+    cleanup() {
+        status=$?
+        trap - EXIT INT TERM
+        request_stop "${SIDECAR_PID}"
+        request_stop "${ENGINE_PID}"
+        reap_with_timeout "${SIDECAR_PID}"
+        reap_with_timeout "${ENGINE_PID}"
+        exit "${status}"
+    }
+    trap cleanup EXIT INT TERM
+    bash /configs/numa_cpu_bind.sh numactl -m 0,1 trtllm-llmapi-launch python3 -m tensorrt_llm.commands.serve /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab --grpc --grpc-protocol openengine --host 127.0.0.1 --port 19000 --extra_llm_api_options /logs/trtllm_config_prefill.yaml --served_model_name nvidia/GLM-5.2-NVFP4 --tensor_parallel_size 4 --moe_expert_parallel_size 4 --pipeline_parallel_size 1 &
+    ENGINE_PID=$!
+    if [[ "${SLURM_PROCID:-0}" != "0" ]]; then
+        set +e
+        wait "${ENGINE_PID}"
+        status=$?
+        set -e
+        if [[ "${status}" == 0 ]]; then status=1; fi
+        exit "${status}"
+    fi
+    port_ready=0
+    for _ in $(seq 1 3600); do
+        if ! kill -0 "${ENGINE_PID}" 2>/dev/null; then
+            echo "TensorRT-LLM exited before native gRPC became ready" >&2
+            exit 1
+        fi
+        if grep -qE '"'"'^ *[0-9]+: [0-9A-F]+:4A38 [0-9A-F]+:0000 0A '"'"' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+            port_ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [[ "${port_ready}" != 1 ]]; then
+        echo "Timed out waiting for TensorRT-LLM native gRPC on port 19000" >&2
+        exit 1
+    fi
+    python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19000 --model-path nvidia/GLM-5.2-NVFP4 --disaggregation-mode prefill --context-length 1048576 &
+    SIDECAR_PID=$!
+    set +e
+    wait -n "${ENGINE_PID}" "${SIDECAR_PID}"
+    status=$?
+    set -e
+    if [[ "${status}" == 0 ]]; then status=1; fi
+    exit "${status}"
+    
+    '
+
+## decode_0_node-02
+nodes: 2
+ntasks: 8
+nodelist: node-02 node-02 node-02 node-02 node-03 node-03 node-03 node-03
+output: <output>/logs/node-02_decode_w0.out
+container_image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <output>/logs: /logs
+env_to_set:
+    DYNAMO_VERSION: 1.6.0.dev20261010
+    DYNAMO_WHEEL_NAME: ai_dynamo-1.6.0.dev20261010-py3-none-any.whl
+    DYN_ENGINE_CONV_AFFINITY: 1
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_PUBLISH_KV_EVENTS: 0
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7501
+    DYN_TOKENIZER: fastokens
+    DYN_TRTLLM_ENABLE_ATTENTION_DP: 1
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    HEAD_NODE_IP: 127.0.0.1
+    HF_HUB_CACHE: /hf/hub
+    HF_HUB_DISABLE_PROGRESS_BARS: 1
+    HF_HUB_OFFLINE: 1
+    MASTER_ADDR: 127.0.0.1
+    MASTER_PORT: 29501
+    MIMALLOC_PURGE_DELAY: 0
+    NCCL_GRAPH_MIXING_SUPPORT: 0
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-decode
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    TLLM_ADP_ROUTER_MATCH_RATE_THRESHOLD: 0.10
+    TLLM_LOG_LEVEL: INFO
+    TLLM_NUMA_AWARE_WORKER_AFFINITY: 0
+    TQDM_DISABLE: 1
+    TRANSFORMERS_OFFLINE: 1
+    TRTLLM_DSA_INDEXER_BF16: 1
+    TRTLLM_ENABLE_PDL: 1
+    TRTLLM_EPLB_SHM_NAME: <random>
+    TRTLLM_FUSED_DSA_METADATA: 1
+    TRTLLM_KVCACHE_RECV_BUFFER_COUNT: 1
+    TRTLLM_KVCACHE_SEND_BUFFER_COUNT: 1
+    TRTLLM_KV_CACHE_TRANSFER_TIMEOUT_SEC: 600
+    TRTLLM_SERVER_DISABLE_GC: 1
+    TRTLLM_SERVE_ENABLE_MSGSPEC: 1
+    TRTLLM_WORKER_DISABLE_GC: 1
+    UCX_CUDA_IPC_ENABLE_MNNVL: y
+    UCX_RNDV_SCHEME: put_zcopy
+srun_options:
+    distribution: arbitrary
+    kill-on-bad-exit: 1
+    ntasks-per-node: 4
+srun_export_env:
+    ENROOT_REMAP_ROOT: yes
+mpi: pmix
+oversubscribe: True
+cpu_bind: verbose,none
+bash_preamble: |
+    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing ai-dynamo-runtime and ai-dynamo from wheel ai_dynamo-1.6.0.dev20261010-py3-none-any.whl...' && if [ -f /srtctl-runtime/dynamo_wheels.py ]; then python3 /srtctl-runtime/dynamo_wheels.py install; else echo 'ERROR: /srtctl-runtime/dynamo_wheels.py not found for ai-dynamo wheel install' >&2; exit 1; fi && echo 'ai-dynamo-runtime and ai-dynamo install path completed for ai_dynamo-1.6.0.dev20261010-py3-none-any.whl' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock" && ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    bash -lc 'set -euo pipefail
+    ENGINE_PID=
+    SIDECAR_PID=
+    request_stop() {
+        local pid="${1:-}"
+        if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+            kill "${pid}" 2>/dev/null || true
+        fi
+    }
+    reap_with_timeout() {
+        local pid="${1:-}"
+        if [[ -z "${pid}" ]]; then return; fi
+        for _ in $(seq 1 10); do
+            if ! kill -0 "${pid}" 2>/dev/null; then break; fi
+            sleep 1
+        done
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill -KILL "${pid}" 2>/dev/null || true
+        fi
+        wait "${pid}" 2>/dev/null || true
+    }
+    cleanup() {
+        status=$?
+        trap - EXIT INT TERM
+        request_stop "${SIDECAR_PID}"
+        request_stop "${ENGINE_PID}"
+        reap_with_timeout "${SIDECAR_PID}"
+        reap_with_timeout "${ENGINE_PID}"
+        exit "${status}"
+    }
+    trap cleanup EXIT INT TERM
+    bash /configs/numa_cpu_bind.sh numactl -m 0,1 trtllm-llmapi-launch python3 -m tensorrt_llm.commands.serve /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab --grpc --grpc-protocol openengine --host 127.0.0.1 --port 19001 --extra_llm_api_options /logs/trtllm_config_decode.yaml --served_model_name nvidia/GLM-5.2-NVFP4 --tensor_parallel_size 8 --moe_expert_parallel_size 1 --pipeline_parallel_size 1 &
+    ENGINE_PID=$!
+    if [[ "${SLURM_PROCID:-0}" != "0" ]]; then
+        set +e
+        wait "${ENGINE_PID}"
+        status=$?
+        set -e
+        if [[ "${status}" == 0 ]]; then status=1; fi
+        exit "${status}"
+    fi
+    port_ready=0
+    for _ in $(seq 1 3600); do
+        if ! kill -0 "${ENGINE_PID}" 2>/dev/null; then
+            echo "TensorRT-LLM exited before native gRPC became ready" >&2
+            exit 1
+        fi
+        if grep -qE '"'"'^ *[0-9]+: [0-9A-F]+:4A39 [0-9A-F]+:0000 0A '"'"' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+            port_ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [[ "${port_ready}" != 1 ]]; then
+        echo "Timed out waiting for TensorRT-LLM native gRPC on port 19001" >&2
+        exit 1
+    fi
+    python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19001 --model-path nvidia/GLM-5.2-NVFP4 --disaggregation-mode decode --context-length 1048576 &
+    SIDECAR_PID=$!
+    set +e
+    wait -n "${ENGINE_PID}" "${SIDECAR_PID}"
+    status=$?
+    set -e
+    if [[ "${status}" == 0 ]]; then status=1; fi
+    exit "${status}"
+    
+    '
+
+## frontend_0
+nodelist: node-01
+output: <output>/logs/node-01_frontend_0.out
+container_image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <output>/logs: /logs
+env_to_set:
+    DYNAMO_VERSION: 1.6.0.dev20261010
+    DYNAMO_WHEEL_NAME: ai_dynamo-1.6.0.dev20261010-py3-none-any.whl
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
+    DYN_LOG: warn
+    DYN_REQUEST_PLANE: tcp
+    DYN_ROUTER_QUEUE_THRESHOLD: None
+    DYN_ROUTER_SESSION_AFFINITY_TTL_SECS: 14400
+    DYN_ROUTER_TEMPERATURE: 0
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_TCP_REQUEST_TIMEOUT: 30
+    DYN_TOKENIZER: fastokens
+    DYN_TOKENIZER_CACHE: 1
+    DYN_TOKENIZER_CACHE_BYTES: 8000000000
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    ETCD_LEASE_TTL: 120
+    HF_HUB_CACHE: /hf/hub
+    HF_HUB_OFFLINE: 1
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-frontend
+srun_export_env:
+    ENROOT_REMAP_ROOT: yes
+mpi: pmix
+bash_preamble: |
+    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing ai-dynamo-runtime and ai-dynamo from wheel ai_dynamo-1.6.0.dev20261010-py3-none-any.whl...' && if [ -f /srtctl-runtime/dynamo_wheels.py ]; then python3 /srtctl-runtime/dynamo_wheels.py install; else echo 'ERROR: /srtctl-runtime/dynamo_wheels.py not found for ai-dynamo wheel install' >&2; exit 1; fi && echo 'ai-dynamo-runtime and ai-dynamo install path completed for ai_dynamo-1.6.0.dev20261010-py3-none-any.whl' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock"
+command: |
+    python3 -m dynamo.frontend --http-port=8000 --router-mode kv --no-kv-events --active-decode-blocks-threshold None --active-prefill-tokens-threshold None --active-prefill-tokens-threshold-frac None
+
+## service_dcgm-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_dcgm-exporter_node-01.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_dcgm-exporter_node-02.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_dcgm-exporter_node-03.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-04
+nodelist: node-04
+output: <output>/logs/service_dcgm-exporter_node-04.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-05
+nodelist: node-05
+output: <output>/logs/service_dcgm-exporter_node-05.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_node-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_node-exporter_node-01.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_node-exporter_node-02.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_node-exporter_node-03.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-04
+nodelist: node-04
+output: <output>/logs/service_node-exporter_node-04.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-05
+nodelist: node-05
+output: <output>/logs/service_node-exporter_node-05.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## tachometer
+nodelist: node-01
+output: <output>/logs/tachometer.out
+srun_export_env:
+    POLARS_MAX_THREADS: 4
+use_bash_wrapper: False
+command: |
+    tachometer-scraper --config <output>/logs/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120
+
+## <unnamed>
+nodelist: node-01
+output: <output>/logs/benchmark.out
+container_image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <output>/logs: /logs
+env_to_set:
+    DYNAMO_VERSION: 1.6.0.dev20261010
+    DYNAMO_WHEEL_NAME: ai_dynamo-1.6.0.dev20261010-py3-none-any.whl
+    HF_HUB_CACHE: /hf/hub
+    HF_HUB_OFFLINE: 1
+    SRTCTL_FRONTEND_TYPE: dynamo
+    SRT_FRONTEND_HOST: 127.0.0.1
+    SRT_FRONTEND_PORT: 8000
+command: |
+    bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 128 32 1 inf /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab nvidia/GLM-5.2-NVFP4 true 12 4 8 0.8 2 0 glm_moe_dsa true random '' false

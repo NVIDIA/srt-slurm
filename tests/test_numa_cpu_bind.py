@@ -11,12 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from srtctl.backends import TRTLLMProtocol
+from srtctl.backends import TRTLLMBackend
 
 
 @pytest.mark.parametrize("memory_bind", [None, False, True, "local"])
 def test_memory_policy_round_trip(memory_bind) -> None:
-    schema = TRTLLMProtocol.Schema()
+    schema = TRTLLMBackend.Schema()
     settings = {"numa_cpu_bind": True, "numa_memory_bind": memory_bind}
     backend = schema.load(settings)
     assert backend.numa_memory_bind == memory_bind
@@ -25,7 +25,7 @@ def test_memory_policy_round_trip(memory_bind) -> None:
 
 def test_local_memory_requires_cpu_binding() -> None:
     with pytest.raises(ValueError, match="numa_memory_bind: local requires numa_cpu_bind: true"):
-        TRTLLMProtocol.Schema().load({"numa_memory_bind": "local"})
+        TRTLLMBackend.Schema().load({"numa_memory_bind": "local"})
 
 
 @pytest.mark.parametrize(

@@ -37,6 +37,7 @@ from srtctl.core.power.contract import (
     sha256_file,
 )
 from srtctl.core.power.diagnostics import ScrapeDiagnostics
+from srtctl.core.power.identity import WorkerIdentityProof
 from srtctl.core.power.manifest import (
     STATUS_COMPLETE,
     STATUS_FAILED,
@@ -46,6 +47,7 @@ from srtctl.core.power.manifest import (
     ExpectedWindow,
     PowerManifest,
 )
+from srtctl.core.power.mapping import DCGM_POWER_MAPPING, PowerMetricMapping
 from srtctl.core.power.parser import parse_power_scrape
 from srtctl.core.power.samples import SampleRow, SampleWriter, derive_observed_devices, read_samples
 from srtctl.core.power.topology import ExpectedDevice, validate_devices
@@ -82,6 +84,8 @@ class PowerSessionSettings:
     network_interface: str | None = None
     producer_git_commit: str | None = None
     log_dir: Path | None = None
+    # Which metric and labels the exporter's ``/metrics`` body carries the watts in.
+    mapping: PowerMetricMapping = DCGM_POWER_MAPPING
 
     @property
     def result_root(self) -> Path:
@@ -155,6 +159,7 @@ class PowerTelemetrySession:
             required=settings.required,
             started_at_unix=time.time(),
             producer_git_commit=settings.producer_git_commit,
+            mapping=settings.mapping,
             dcgm_exporter=_exporter_identity(settings),
             expected_devices=expected_device_list,
             expected_windows=list(expected_windows),
@@ -202,10 +207,28 @@ class PowerTelemetrySession:
         with self._exporters_lock:
             self._exporters.append(process)
 
+    def record_worker_identity(self, proof: WorkerIdentityProof) -> None:
+        """Persist which GPU UUIDs the workers hold, or why that could not be established."""
+        with self._state_lock:
+            self._manifest.worker_identity_proof = proof
+        self._write_manifest()
+
     def record_reason(self, reason: str) -> None:
         """Record a provider-level failure without raising into the sweep."""
         with self._state_lock:
             self._reasons.append(reason)
+
+    def record_clock_sync_failures(self, nodes: Sequence[str]) -> None:
+        """Mark the artifacts unpublishable because ``nodes`` could not prove NTP synchronisation.
+
+        Called by the orchestrator on a best-effort run that continued past a
+        failed pre-server probe. The exit-code policy stays with ``required``;
+        the manifest must still tell the truth about comparability.
+        """
+        if not nodes:
+            return
+        self._manifest.clock_sync_failures = list(dict.fromkeys(nodes))
+        self.record_reason(Reason.CLOCK_SYNC_UNVERIFIED)
 
     def start_and_wait_for_readiness(self) -> bool:
         """Resolve endpoints and start collecting under one absolute deadline."""
@@ -402,7 +425,7 @@ class PowerTelemetrySession:
         settled_monotonic = time.monotonic()
         settled_unix = time.time()
 
-        scrape = parse_power_scrape(body) if body is not None else None
+        scrape = parse_power_scrape(body, self._settings.mapping) if body is not None else None
         timestamp_unix = (started_unix + settled_unix) / 2
         rows = [
             SampleRow(
@@ -414,6 +437,7 @@ class PowerTelemetrySession:
                 power_w=reading.power_w,
                 gpu_util_pct=reading.gpu_util_pct,
                 sm_active=reading.sm_active,
+                temperature_c=reading.temperature_c,
             )
             for reading in (scrape.readings if scrape is not None else ())
         ]
@@ -458,7 +482,7 @@ class PowerTelemetrySession:
             return any(not process.is_running for process in self._exporters)
 
     def _check_exporters(self) -> None:
-        """A DCGM exporter exit during collection invalidates the run."""
+        """An exporter exit during collection invalidates the run."""
         if self._stop.is_set():
             return
         if self._any_exporter_exited():
@@ -542,7 +566,7 @@ class PowerTelemetrySession:
         except OSError:
             self.record_reason(Reason.SAMPLES_DIGEST_UNAVAILABLE)
         observed = derive_observed_devices(rows)
-        devices = validate_devices(self._manifest.expected_devices, observed)
+        devices = validate_devices(self._manifest.expected_devices, observed, self._manifest.worker_identity_proof)
 
         with self._state_lock:
             reasons = [*self._reasons, *sample_reasons, *devices.reason_codes]
@@ -578,6 +602,8 @@ class PowerTelemetrySession:
             and not sample_reasons
             and self._manifest.samples_sha256 is not None
             and not self._manifest.artifact_errors
+            # NOTE: coverage math is meaningless when sample and window clocks were never shown to agree.
+            and not self._manifest.clock_sync_failures
         )
 
         self._manifest.reason_codes = list(dedupe(reasons))

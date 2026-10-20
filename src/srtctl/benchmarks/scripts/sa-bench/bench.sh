@@ -8,23 +8,36 @@
 set -e
 
 # Ensure benchmark dependencies are available.
-# Creates an isolated venv with --system-site-packages so container packages are
-# reused and only missing deps get installed — without touching system Python.
-SA_BENCH_VENV="/tmp/sa-bench-venv"
-SA_BENCH_DEPS=(aiohttp numpy pandas datasets Pillow tqdm transformers huggingface_hub)
+# A non-baked image gets a temporary venv. `bake-image --sa-bench` creates the
+# persistent venv named in deps.sh instead, and this script activates it without
+# requiring PATH changes in the recipe.
+SA_BENCH_RUNTIME_VENV="/tmp/sa-bench-venv"
+# SA_BENCH_DEPS / SA_BENCH_IMPORTS live in deps.sh so that `srtctl bake-image`
+# can preinstall exactly this list into a container image.
+# shellcheck source=deps.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deps.sh"
 
 ensure_sa_bench_deps() {
+    if [ -x "$SA_BENCH_BAKED_VENV/bin/python" ]; then
+        # shellcheck disable=SC1091
+        source "$SA_BENCH_BAKED_VENV/bin/activate"
+        python3 -c "import ${SA_BENCH_IMPORTS}"
+        echo "Using baked sa-bench venv at $SA_BENCH_BAKED_VENV"
+        return
+    fi
+
     # Quick check: if all deps import fine in current Python, skip venv entirely
-    if python3 -c "import aiohttp, numpy, pandas, datasets, PIL, tqdm, transformers, huggingface_hub" 2>/dev/null; then
+    if python3 -c "import ${SA_BENCH_IMPORTS}" 2>/dev/null; then
         echo "All sa-bench deps already available — skipping venv setup"
         return
     fi
 
-    echo "Missing sa-bench deps — installing into venv at $SA_BENCH_VENV ..."
-    if [ ! -d "$SA_BENCH_VENV" ]; then
-        python3 -m venv --system-site-packages "$SA_BENCH_VENV"
+    echo "Missing sa-bench deps — installing into venv at $SA_BENCH_RUNTIME_VENV ..."
+    if [ ! -d "$SA_BENCH_RUNTIME_VENV" ]; then
+        python3 -m venv --system-site-packages "$SA_BENCH_RUNTIME_VENV"
     fi
-    source "$SA_BENCH_VENV/bin/activate"
+    # shellcheck disable=SC1091
+    source "$SA_BENCH_RUNTIME_VENV/bin/activate"
     pip install "${SA_BENCH_DEPS[@]}"
     echo "sa-bench deps ready"
 }
@@ -67,6 +80,11 @@ USE_CHAT_TEMPLATE=${16:-true}
 DATASET_NAME=${17:-random}
 DATASET_PATH=${18:-}
 REUSE_HTTP_CONNECTIONS=${19:-false}
+DATASET_CACHE_DIR=${20:-}
+SA_BENCH_API_ENDPOINT=${21:-/v1/completions}
+
+# The dynamo adapter picks the request body from the API path, so it serves both endpoints.
+BENCHMARK_HTTP_ARGS=(--backend "dynamo" --endpoint "$SA_BENCH_API_ENDPOINT")
 
 # Build optional custom tokenizer args
 CUSTOM_TOKENIZER_ARGS=()
@@ -120,6 +138,14 @@ if [ "$DATASET_NAME" = "random" ]; then
     )
 fi
 
+# Dataset cache: reuse pre-generated random prompts across runs (random only).
+# Falls back to the SA_BENCH_DATASET_CACHE_DIR env var when no arg is given.
+DATASET_CACHE_DIR="${DATASET_CACHE_DIR:-${SA_BENCH_DATASET_CACHE_DIR:-}}"
+CACHE_ARGS=()
+if [ "$DATASET_NAME" = "random" ] && [ -n "$DATASET_CACHE_DIR" ]; then
+    CACHE_ARGS=(--dataset-cache-dir "$DATASET_CACHE_DIR")
+fi
+
 # Optional SGLang /slow_down (set by srtctl for SA-Bench when YAML provides slow_down_* and frontend is sglang):
 #   SA_BENCH_SLOW_DOWN_URLS: comma-separated http://host:port base URLs (decode workers)
 #   SA_BENCH_SLOW_DOWN_SLEEP_TIME / SA_BENCH_SLOW_DOWN_WAIT_TIME
@@ -148,7 +174,75 @@ PORT=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f2 | cut -d/ -f1)
 
 WORK_DIR="$(dirname "$0")"
 
-echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; dataset=${DATASET_NAME}; dataset_path=${DATASET_PATH}; http_connection_mode=${HTTP_CONNECTION_MODE}"
+echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; dataset=${DATASET_NAME}; dataset_path=${DATASET_PATH}; dataset_cache_dir=${DATASET_CACHE_DIR:-<off>}; http_connection_mode=${HTTP_CONNECTION_MODE}; api_path=${SA_BENCH_API_ENDPOINT}"
+
+# Parse concurrency list
+IFS='x' read -r -a CONCURRENCY_LIST <<< "$CONCURRENCIES"
+
+# Prompt counts the benchmark loop below asks for, warmup runs included and
+# duplicates collapsed. Kept next to the loop it mirrors so both change together.
+dataset_prompt_counts() {
+    local counts=() seen=" " concurrency candidates n
+    for concurrency in "${CONCURRENCY_LIST[@]}"; do
+        candidates=()
+        if [ "$NUM_WARMUP_MULT" -gt 0 ]; then
+            candidates+=($((concurrency * NUM_WARMUP_MULT)))
+        fi
+        candidates+=($((concurrency * NUM_PROMPTS_MULT)))
+        for n in "${candidates[@]}"; do
+            case "$seen" in
+                *" $n "*) continue ;;
+            esac
+            seen="${seen}${n} "
+            counts+=("$n")
+        done
+    done
+    echo "${counts[@]}"
+}
+
+# Prewarm mode (srtctl cache-inputs): build every dataset the run would build
+# and exit. No endpoint, no profiling, no results — only the prompt cache.
+# The dataset-shaping args below must match those in the benchmark loop, or the
+# real run gets a cache miss and regenerates.
+prewarm_dataset_cache() {
+    if [ "$DATASET_NAME" != "random" ]; then
+        echo "[sa-bench] prewarm: nothing to build for dataset '${DATASET_NAME}' (random only)" >&2
+        return 1
+    fi
+    if [ -z "$DATASET_CACHE_DIR" ]; then
+        echo "[sa-bench] prewarm: no dataset cache dir configured" >&2
+        return 1
+    fi
+
+    local counts index total
+    read -r -a counts <<< "$(dataset_prompt_counts)"
+    total=${#counts[@]}
+    echo "[sa-bench] prewarm: ${total} dataset(s) for concurrencies ${CONCURRENCIES} -> ${DATASET_CACHE_DIR}"
+
+    index=0
+    for n in "${counts[@]}"; do
+        index=$((index + 1))
+        echo "[sa-bench] prewarm ${index}/${total}: num_prompts=${n}"
+        python3 -u "${WORK_DIR}/benchmark_serving.py" \
+            --model "${MODEL_NAME}" --tokenizer "${MODEL_PATH}" \
+            "${BENCHMARK_HTTP_ARGS[@]}" \
+            "${DATASET_ARGS[@]}" \
+            --num-prompts "$n" \
+            "${RANDOM_LEN_ARGS[@]}" \
+            "${CACHE_ARGS[@]}" \
+            --trust-remote-code \
+            "${CHAT_TEMPLATE_ARGS[@]}" \
+            "${CUSTOM_TOKENIZER_ARGS[@]}" \
+            --prewarm-dataset-cache || return $?
+    done
+
+    echo "[sa-bench] prewarm: all ${total} dataset(s) ready in ${DATASET_CACHE_DIR}"
+}
+
+if [ "${SA_BENCH_PREWARM_ONLY:-0}" = "1" ] || [ "${SA_BENCH_PREWARM_ONLY:-0}" = "true" ]; then
+    prewarm_dataset_cache || exit $?
+    exit 0
+fi
 
 # Profiling shared helpers
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -156,22 +250,34 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../lib/profiling.sh"
 profiling_init_from_env
 
+# Stage markers written into the live worker logs (see lib/stage_banner.sh)
+# shellcheck source=../lib/stage_banner.sh
+source "${SCRIPT_DIR}/../lib/stage_banner.sh"
+
 cleanup() { stop_all_profiling; }
 trap cleanup EXIT
 
-# Parse concurrency list
-IFS='x' read -r -a CONCURRENCY_LIST <<< "$CONCURRENCIES"
-
 # Quick curl to verify endpoint is working
-echo "Verifying endpoint..."
-curl -s "${ENDPOINT}/v1/chat/completions" \
-    -H "Content-Type: application/json" \
-    -d "{
-        \"model\": \"${MODEL_NAME}\",
-        \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],
-        \"stream\": false,
-        \"max_tokens\": 10
-    }" | head -c 200
+echo "Verifying endpoint (${SA_BENCH_API_ENDPOINT})..."
+if [[ "$SA_BENCH_API_ENDPOINT" == *"chat/completions"* ]]; then
+    curl -s "${ENDPOINT}${SA_BENCH_API_ENDPOINT}" \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"model\": \"${MODEL_NAME}\",
+            \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],
+            \"stream\": false,
+            \"max_completion_tokens\": 10
+        }" | head -c 200
+else
+    curl -s "${ENDPOINT}${SA_BENCH_API_ENDPOINT}" \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"model\": \"${MODEL_NAME}\",
+            \"prompt\": \"Hello\",
+            \"stream\": false,
+            \"max_tokens\": 10
+        }" | head -c 200
+fi
 echo ""
 
 ulimit -n 65536 2>/dev/null || true  # May fail in containers without CAP_SYS_RESOURCE
@@ -192,14 +298,16 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
 
     if [ "$NUM_WARMUP_MULT" -gt 0 ]; then
         num_warmup_prompts=$((concurrency * NUM_WARMUP_MULT))
+        stage_banner "cc=${concurrency} warmup begin"
         python3 -u "${WORK_DIR}/benchmark_serving.py" \
             --model "${MODEL_NAME}" --tokenizer "${MODEL_PATH}" \
             --host "$HOST" --port "$PORT" \
-            --backend "dynamo" --endpoint /v1/completions \
+            "${BENCHMARK_HTTP_ARGS[@]}" \
             --disable-tqdm \
             "${DATASET_ARGS[@]}" \
             --num-prompts "$num_warmup_prompts" \
             "${RANDOM_LEN_ARGS[@]}" \
+            "${CACHE_ARGS[@]}" \
             --ignore-eos \
             --request-rate 250 \
             --percentile-metrics ttft,tpot,itl,e2el \
@@ -208,6 +316,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
             "${HTTP_CONNECTION_ARGS[@]}" \
             "${CHAT_TEMPLATE_ARGS[@]}" \
             "${CUSTOM_TOKENIZER_ARGS[@]}"
+        stage_banner "cc=${concurrency} warmup end"
     fi
 
     num_prompts=$((concurrency * NUM_PROMPTS_MULT))
@@ -221,16 +330,18 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
 
     echo "Running benchmark with concurrency: $concurrency"
     echo "$(date '+%Y-%m-%d %H:%M:%S')"
+    stage_banner "cc=${concurrency} benchmark begin"
 
     set -x
     python3 -u "${WORK_DIR}/benchmark_serving.py" \
         --model "${MODEL_NAME}" --tokenizer "${MODEL_PATH}" \
         --host "$HOST" --port "$PORT" \
-        --backend "dynamo" --endpoint /v1/completions \
+        "${BENCHMARK_HTTP_ARGS[@]}" \
         --disable-tqdm \
         "${DATASET_ARGS[@]}" \
         --num-prompts "$num_prompts" \
         "${RANDOM_LEN_ARGS[@]}" \
+        "${CACHE_ARGS[@]}" \
         --ignore-eos \
         --request-rate "${REQ_RATE}" \
         --percentile-metrics ttft,tpot,itl,e2el \
@@ -243,6 +354,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         "${SLOW_DOWN_EXTRA[@]}" \
         --save-result --result-dir "$result_dir" --result-filename "$result_filename"
     set +x
+    stage_banner "cc=${concurrency} benchmark end"
 
     echo "$(date '+%Y-%m-%d %H:%M:%S')"
     echo "Completed benchmark with concurrency: $concurrency"

@@ -20,6 +20,7 @@ from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
 from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core.power.contract import MANIFEST_FILENAME, SAMPLES_FILENAME, WINDOWS_DIRNAME, Reason
 from srtctl.core.power.diagnostics import ScrapeDiagnostics
+from srtctl.core.power.identity import WorkerGpuIdentity, WorkerIdentityProof
 from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.power.samples import SampleRow, read_samples
 from srtctl.core.power.session import (
@@ -29,7 +30,7 @@ from srtctl.core.power.session import (
     _EndpointResult,
     _run_daemon_workers,
 )
-from srtctl.core.power.topology import build_expected_devices
+from srtctl.core.power.topology import DeviceAssignment, build_expected_devices
 from srtctl.core.power.validate_artifacts import validate_power_artifacts
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.schema import TelemetryExporterConfig
@@ -495,6 +496,38 @@ class TestCollection:
         assert {row.hostname for row in rows} == {"node-a", "node-b"}
         assert {row.scrape_seq for row in rows} == {0}
 
+    def test_idle_gpus_are_retained_and_require_worker_identity_proof(self, tmp_path, exporters):
+        a = exporters(_body("a", count=2 * GPUS_PER_NODE))
+        b = exporters(_body("b"))
+        session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)))
+        session.initialize()
+
+        written = session.collect_once()
+        outcome = session.stop_and_finalize()
+
+        rows, _ = read_samples(session.power_dir / SAMPLES_FILENAME)
+        assert written == 3 * GPUS_PER_NODE
+        assert {(row.hostname, row.gpu_index) for row in rows} == {
+            ("node-a", index) for index in range(2 * GPUS_PER_NODE)
+        } | {("node-b", index) for index in range(GPUS_PER_NODE)}
+        assert Reason.UNEXPECTED_DEVICE in outcome.reason_codes
+        assert outcome.publication_valid is False
+        assert Reason.EXPECTED_DEVICE_MISSING not in outcome.reason_codes
+
+    def test_a_node_without_workers_keeps_every_gpu(self, tmp_path, exporters):
+        a = exporters(_body("a"))
+        pool = exporters(_body("p"))
+        session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", pool.url)), processes=_processes()[:1])
+        session.initialize()
+
+        session.collect_once()
+        outcome = session.stop_and_finalize()
+
+        rows, _ = read_samples(session.power_dir / SAMPLES_FILENAME)
+        assert outcome.publication_valid is False
+        assert Reason.UNEXPECTED_DEVICE in outcome.reason_codes
+        assert {row.gpu_index for row in rows if row.hostname == "node-b"} == set(range(GPUS_PER_NODE))
+
     def test_terminal_manifest_records_the_samples_digest(self, tmp_path, exporters):
         endpoint = exporters(_body("a"))
         session = _session(
@@ -511,7 +544,7 @@ class TestCollection:
         assert _manifest(session)["samples_sha256"] == hashlib.sha256(samples.read_bytes()).hexdigest()
 
     def test_utilization_is_persisted_when_the_exporter_reports_it(self, tmp_path, exporters):
-        a = exporters(_body("a", utilization=True))
+        a = exporters(_body("a", utilization=True) + 'DCGM_FI_DEV_GPU_TEMP{gpu="0",UUID="GPU-a0"} 64.5\n')
         b = exporters(_body("b"))
         session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)), windows=[])
         session.initialize()
@@ -529,6 +562,8 @@ class TestCollection:
             (float(10 * index), 0.1 * index) for index in range(GPUS_PER_NODE)
         ]
         assert all(row.gpu_util_pct is None and row.sm_active is None for row in by_host["node-b"])
+        assert node_a[0].temperature_c == 64.5
+        assert all(row.temperature_c is None for row in by_host["node-b"])
         assert outcome.status == "complete"
         assert outcome.reason_codes == ()
 
@@ -795,18 +830,6 @@ class TestFailurePaths:
 
         assert Reason.EXPORTER_EXITED not in outcome.reason_codes
 
-    def test_unexpected_device_invalidates_publication(self, tmp_path, exporters):
-        a = exporters(_body("a", count=GPUS_PER_NODE + 1))
-        b = exporters(_body("b"))
-        session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)))
-        session.initialize()
-
-        session.collect_once()
-        outcome = session.stop_and_finalize()
-
-        assert Reason.UNEXPECTED_DEVICE in outcome.reason_codes
-        assert outcome.publication_valid is False
-
 
 class TestPublication:
     """A complete session with a covered formal window is publishable."""
@@ -872,6 +895,119 @@ class TestPublication:
             result_root=session.power_dir.parent,
         )
         assert report.ok is True, report.failures
+
+    @pytest.mark.parametrize("case", ["matching", "index_mismatch", "no_record", "failed"])
+    def test_partly_used_node_publishes_only_with_matching_worker_identity(self, tmp_path, exporters, case):
+        """A B300 run using four of eight GPUs: the rows stay, publication needs the worker record."""
+        a = exporters(_body("a", count=8))
+        process = _processes()[0]
+        session = _session(tmp_path, _endpoints(("node-a", a.url)), processes=[process], sample_interval_seconds=0.2)
+        session.initialize()
+        assert session.start_and_wait_for_readiness()
+        shift = 4 if case == "index_mismatch" else 0
+        worker = WorkerGpuIdentity(
+            hostname="node-a",
+            assignment=DeviceAssignment.from_process(process),
+            step_name="agg_0",
+            step_id="1.0",
+            gpu_uuids=tuple(f"GPU-a{index + shift}" for index in range(GPUS_PER_NODE)),
+        )
+        if case == "failed":
+            session.record_worker_identity(WorkerIdentityProof(100.0, error="worker step listing unavailable"))
+        elif case != "no_record":
+            session.record_worker_identity(WorkerIdentityProof(100.0, workers=(worker,)))
+
+        start = time.time()
+        time.sleep(0.6)
+        end = time.time()
+        self._write_window_and_result(session, start, end)
+        outcome = session.stop_and_finalize()
+        report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
+
+        assert outcome.publication_valid is (case == "matching")
+        assert report.ok is (case == "matching"), report.failures
+        assert not any("recomputed" in f or "disk-derived reason_codes mismatch" in f for f in report.failures)
+        rows, _ = read_samples(session.samples_path)
+        assert {row.gpu_index for row in rows if row.hostname == "node-a"} == set(range(8))
+        assert (
+            outcome.reason_codes
+            == {
+                "matching": (),
+                "index_mismatch": (Reason.UNEXPECTED_DEVICE, Reason.WORKER_GPU_UUID_MISMATCH),
+                "no_record": (Reason.UNEXPECTED_DEVICE,),
+                "failed": (Reason.UNEXPECTED_DEVICE, Reason.WORKER_IDENTITY_INVALID),
+            }[case]
+        )
+
+    def test_unverified_clock_sync_blocks_publication_without_failing_best_effort(self, tmp_path, exporters):
+        """Identical to the covered case except the orchestrator reported an unsynced node.
+
+        ``required`` governs the exit code only; the manifest must still say
+        the coverage math rests on clocks nobody proved comparable.
+        """
+        a = exporters(_body("a"))
+        b = exporters(_body("b"))
+        session = _session(
+            tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)), sample_interval_seconds=0.2, required=False
+        )
+        session.record_clock_sync_failures(["node-b", "node-b"])
+        session.initialize()
+        assert session.start_and_wait_for_readiness() is True
+
+        start = time.time()
+        time.sleep(0.6)
+        end = time.time()
+        self._write_window_and_result(session, start, end)
+
+        outcome = session.stop_and_finalize(allow_window_mutation=True)
+        manifest = _manifest(session)
+
+        assert outcome.status == "complete"
+        assert outcome.publication_valid is False
+        assert outcome.exit_nonzero is False
+        assert outcome.reason_codes == ("clock_sync_unverified",)
+        assert manifest["clock_sync_failures"] == ["node-b"]
+        # Coverage itself was fine; the gate is the clock, not the samples.
+        assert manifest["window_validations"][0]["power_coverage_valid"] is True
+
+        report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
+        assert report.ok is False
+        # The validator must *agree* with the producer that this package is unpublishable
+        # (stored false, recomputed false) -- not fail only because the two disagree.
+        assert "stored publication_valid is false" in report.failures, report.failures
+        assert not any("recomputed True" in failure for failure in report.failures), report.failures
+
+    def test_offline_validator_rejects_a_tampered_verdict_on_an_unverified_clock(self, tmp_path, exporters):
+        """Flipping stored publication_valid to true must not make a clock-unverified package pass."""
+        a = exporters(_body("a"))
+        b = exporters(_body("b"))
+        session = _session(
+            tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)), sample_interval_seconds=0.2, required=False
+        )
+        session.record_clock_sync_failures(["node-b"])
+        session.initialize()
+        assert session.start_and_wait_for_readiness() is True
+        start = time.time()
+        time.sleep(0.6)
+        end = time.time()
+        self._write_window_and_result(session, start, end)
+        session.stop_and_finalize(allow_window_mutation=True)
+
+        tampered = json.loads(session.manifest_path.read_text())
+        tampered["publication_valid"] = True
+        session.manifest_path.write_text(json.dumps(tampered))
+
+        report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
+        assert report.ok is False
+        assert any("publication_valid is True, recomputed False" in failure for failure in report.failures), (
+            report.failures
+        )
+
+    def test_no_clock_sync_failures_is_a_noop(self, tmp_path, exporters):
+        session = _session(tmp_path, _endpoints(("node-a", exporters(_body("a")).url)))
+        session.record_clock_sync_failures([])
+        assert session._manifest.clock_sync_failures == []
+        assert session._reasons == []
 
     def test_digest_io_failure_is_not_reclassified_as_malformed(self, tmp_path, exporters):
         a = exporters(_body("a"))
@@ -1036,6 +1172,7 @@ class TestRequiredReadinessGate:
         config.telemetry.cpu_power_exporter = None
         config.frontend.type = "dynamo"
         config.profiling.enabled = False
+        config.reporting = None
         runtime = MagicMock()
         runtime.log_dir = tmp_path
         runtime.job_id = "12345"

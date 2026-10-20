@@ -9,6 +9,6 @@ Runners live here; the shell scripts they launch live under `benchmarks/scripts/
 3. Declare the `BenchmarkConfig` fields the runner reads beyond `SHARED_BENCHMARK_FIELDS` in `config_fields` (`benchmark_config_fields()` combines the two). A field set for a type whose runner does not read it is rejected under schema 2 and warned about under schema 1 (`SrtConfig` validation in `core/schema.py`).
 4. Add the script under `benchmarks/scripts/<name>/`.
 5. Import the module from `benchmarks/__init__.py` so registration runs.
-6. Ship it complete: a `tests/test_benchmarks.py` case, an entry under "Available Benchmark Types" in `docs/config-reference.md`, and regenerated `docs/schema-reference.md` if a field changed.
+6. Ship it complete: a `tests/test_benchmarks.py` case, an entry under "Available Benchmark Types" in `docs/benchmarks.md`, and regenerated `docs/schema-reference.md` if a field changed.
 
 Frontend-specific behavior (sglang-router `slow_down`, Dynamo request tracing) is one of the few name checks the Design Rules allow; do not add new ones.

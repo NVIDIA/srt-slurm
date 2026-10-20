@@ -15,19 +15,18 @@ import threading
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from srtctl.core.health import WorkerHealthResult, probe_direct_server
-from srtctl.frontends.base import agg_leader_nodes, logical_health_expectations, register_frontend
+from srtctl.frontends.base import Frontend, agg_leader_nodes, register_frontend
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Process
-    from srtctl.services.implicit import EffectiveService
 
 logger = logging.getLogger(__name__)
 
 
 @register_frontend("vllm")
-class VLLMFrontend:
+class VLLMFrontend(Frontend):
     """Direct vLLM OpenAI server frontend.
 
     This frontend is intentionally narrow: a single aggregate vLLM worker, with
@@ -37,9 +36,6 @@ class VLLMFrontend:
     """
 
     required_backend: ClassVar[str | None] = "vllm"
-    model_name_role: ClassVar[str | None] = None
-    worker_launch: ClassVar[Literal["dynamo", "direct"]] = "direct"
-    expands_node_local_dp: ClassVar[bool] = False
 
     @property
     def type(self) -> str:
@@ -48,8 +44,6 @@ class VLLMFrontend:
     def worker_api_port(self, mode: str) -> Literal["public", "allocated"]:
         """The one ``vllm serve`` is the endpoint, so it binds the public port in every mode it runs."""
         return "public"
-
-    metrics_path: ClassVar[str] = "/metrics"
 
     def worker_metrics_port(self, process: Process, runtime: RuntimeContext) -> int | None:
         """The aggregate leader binds the public port; its followers serve nothing."""
@@ -79,9 +73,6 @@ class VLLMFrontend:
         """The worker's own /health, then /v1/models must list the model."""
         return probe_direct_server(host, port)
 
-    def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:
-        return logical_health_expectations(config)
-
     def validate(self, config: Any) -> None:
         """The one aggregate ``vllm serve`` owns the public port: no nginx fan-out, no P/D, one worker."""
         if config.frontend.enable_multiple_frontends:
@@ -98,20 +89,6 @@ class VLLMFrontend:
                 "Use frontend.type: dynamo to run multiple aggregate workers, or scale a single "
                 "worker across nodes with roles.agg.nodes."
             )
-
-    def get_backend_health_urls(
-        self,
-        backend: Any,
-        backend_processes: list[Process],
-        network_interface: str | None = None,
-    ) -> list[str]:
-        return []
-
-    def implied_services(self, config: Any) -> list[EffectiveService]:
-        return []
-
-    def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
-        return None
 
     def start_frontends(
         self,

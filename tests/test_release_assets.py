@@ -19,12 +19,15 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / ".github" / "scripts" / "verify_release_assets.sh"
 TOOLS = ("tachometer-scraper", "cpu-power-exporter")
-TARGETS = {"tachometer-scraper": "unknown-linux-gnu", "cpu-power-exporter": "unknown-linux-musl"}
+TARGETS = {
+    "tachometer-scraper": {"x86_64": "unknown-linux-gnu", "aarch64": "unknown-linux-gnu"},
+    "cpu-power-exporter": {"x86_64": "unknown-linux-musl", "aarch64": "unknown-linux-gnu"},
+}
 ARCHES = ("x86_64", "aarch64")
 
 
 def _asset(tool: str, arch: str) -> str:
-    return f"{tool}-{arch}-{TARGETS[tool]}"
+    return f"{tool}-{arch}-{TARGETS[tool][arch]}"
 
 
 def _publish(dist: Path, tool: str, arch: str, *, binary: bool = True, sha256: bool = True) -> None:

@@ -27,8 +27,6 @@ from srtctl.core.power.contract import (
     FATAL_LIFECYCLE_REASONS,
     MANIFEST_FILENAME,
     MAX_SAMPLE_GAP_SECONDS,
-    POWER_METRIC,
-    POWER_SCOPE,
     POWER_UNIT,
     PRODUCER,
     SAMPLES_FILENAME,
@@ -38,6 +36,7 @@ from srtctl.core.power.contract import (
     is_finite_number,
     sha256_file,
 )
+from srtctl.core.power.identity import WorkerGpuIdentity, WorkerIdentityProof, is_gpu_uuid
 from srtctl.core.power.manifest import STATUS_COMPLETE, ArtifactError, ExpectedWindow, WindowValidation
 from srtctl.core.power.samples import ObservedDevice, SampleRow, derive_observed_devices, read_samples
 from srtctl.core.power.topology import (
@@ -57,6 +56,8 @@ _DISK_DERIVED_REASON_CODES = frozenset(
         Reason.SAMPLES_CSV_MALFORMED,
         Reason.DUPLICATE_SAMPLE_ROW,
         Reason.TIMESTAMP_NON_MONOTONIC,
+        Reason.WORKER_IDENTITY_INVALID,
+        Reason.WORKER_GPU_UUID_MISMATCH,
         Reason.UNEXPECTED_DEVICE,
         Reason.EXPECTED_DEVICE_MISSING,
         Reason.GPU_UUID_CHANGED,
@@ -98,6 +99,7 @@ _RUNTIME_ONLY_REASON_CODES = frozenset(
         Reason.COLLECTOR_INTERRUPTED,
         Reason.COLLECTOR_JOIN_TIMEOUT,
         Reason.BENCHMARK_CHILD_REAP_TIMEOUT,
+        Reason.CLOCK_SYNC_UNVERIFIED,
     }
 )
 
@@ -153,6 +155,7 @@ def validate_power_artifacts(
     try:
         expected_devices = _expected_devices(manifest)
         expected_windows = _expected_windows(manifest)
+        worker_identity = _worker_identity(manifest)
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         failures.append(f"manifest malformed: {exc!r}")
         return ArtifactReport(
@@ -166,7 +169,7 @@ def validate_power_artifacts(
     failures += _check_sample_lifecycle(manifest, rows)
 
     observed = derive_observed_devices(rows)
-    devices = validate_devices(expected_devices, observed)
+    devices = validate_devices(expected_devices, observed, worker_identity)
     failures += [f"{reason} (device identity/topology)" for reason in devices.reason_codes]
 
     artifact_errors: list[ArtifactError] = []
@@ -268,15 +271,14 @@ def _check_wire_contract(manifest: dict[str, Any]) -> list[str]:
 
     for key, expected in (
         ("producer", PRODUCER),
-        ("source_metric", POWER_METRIC),
         ("unit", POWER_UNIT),
-        ("power_scope", POWER_SCOPE),
         ("timestamp_source", CLOCK_SOURCE),
     ):
         if manifest.get(key) != expected:
             failures.append(f"{key} is {manifest.get(key)!r}, expected {expected!r}")
 
-    for key in ("producer_version", "job_id", "run_name"):
+    # The exporter config chooses the power metric, so any recorded metric and scope is valid.
+    for key in ("producer_version", "job_id", "run_name", "source_metric", "power_scope"):
         value = manifest.get(key)
         if not (isinstance(value, str) and value):
             failures.append(f"{key} is not a non-empty string")
@@ -325,6 +327,8 @@ def _check_wire_contract(manifest: dict[str, Any]) -> list[str]:
     publication_valid = manifest.get("publication_valid")
     if not isinstance(publication_valid, bool):
         failures.append(f"publication_valid is {publication_valid!r}, expected a boolean")
+    if _clock_sync_failures(manifest) is None:
+        failures.append("clock_sync_failures is not a list of strings")
 
     # NOTE: item types are checked before the set op, or a non-hashable entry raises.
     reasons = manifest.get("reason_codes")
@@ -443,6 +447,12 @@ def _check_stored_evidence(
     windows_valid = bool(expected_windows) and all(validation.power_coverage_valid for validation in validations)
     samples_digest = manifest.get("samples_sha256")
     digest_valid = isinstance(samples_digest, str) and re.fullmatch(r"[0-9a-f]{64}", samples_digest) is not None
+    # Mirrors the producer: the probe itself is runtime-only, but the hosts it
+    # flagged are persisted, so an unverified clock stays unpublishable offline.
+    # A malformed field (None) was already reported by the wire check; it must
+    # not let the package recompute to publishable either.
+    clock_sync_failures = _clock_sync_failures(manifest)
+    clock_sync_clean = clock_sync_failures is not None and not clock_sync_failures
     recomputed_publication_valid = (
         lifecycle_complete
         and startup_recovered
@@ -451,6 +461,7 @@ def _check_stored_evidence(
         and not sample_reason_codes
         and digest_valid
         and not artifact_errors
+        and clock_sync_clean
     )
     stored_publication_valid = manifest.get("publication_valid")
     if isinstance(stored_publication_valid, bool):
@@ -469,6 +480,18 @@ def _check_stored_evidence(
             failures.append(f"{label} contains duplicate keys")
 
     return failures
+
+
+def _clock_sync_failures(manifest: dict[str, Any]) -> list[str] | None:
+    """Hosts the pre-server clock probe flagged, or None when the field is malformed.
+
+    Absent on packages produced before the clock gate existed; those never ran
+    the probe, so "no recorded failures" is the honest reading for them.
+    """
+    value = manifest.get("clock_sync_failures", [])
+    if not isinstance(value, list) or not all(isinstance(node, str) for node in value):
+        return None
+    return list(value)
 
 
 def _same_json_evidence(stored: Any, recomputed: Any) -> bool:
@@ -521,6 +544,57 @@ def _expected_windows(manifest: dict[str, Any]) -> list[ExpectedWindow]:
         )
         for entry in entries
     ]
+
+
+def _worker_identity(manifest: dict[str, Any]) -> WorkerIdentityProof | None:
+    """The persisted worker GPU identity record; absent on packages from before the probe existed."""
+    raw = manifest.get("worker_identity_proof")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) != {"captured_at_unix", "workers", "error"}:
+        raise ValueError(f"worker_identity_proof has invalid fields: {raw!r}")
+    captured = raw["captured_at_unix"]
+    if not is_finite_number(captured) or captured <= 0:
+        raise ValueError(f"worker_identity_proof capture time is invalid: {captured!r}")
+    error = raw["error"]
+    if error is not None:
+        error = _text(error, "worker_identity_proof error")
+    if not isinstance(raw["workers"], list):
+        raise TypeError(f"worker_identity_proof workers is not a list: {raw['workers']!r}")
+    workers = []
+    for entry in raw["workers"]:
+        if not isinstance(entry, dict) or set(entry) != {"hostname", "assignment", "step_name", "step_id", "gpu_uuids"}:
+            raise ValueError(f"worker_identity_proof worker has invalid fields: {entry!r}")
+        assignment = entry["assignment"]
+        if not isinstance(assignment, dict):
+            raise TypeError(f"worker assignment is not an object: {assignment!r}")
+        uuids = entry["gpu_uuids"]
+        if (
+            not isinstance(uuids, list)
+            or not uuids
+            or len(set(uuids)) != len(uuids)
+            or not all(map(is_gpu_uuid, uuids))
+        ):
+            raise ValueError(f"worker gpu_uuids is not a non-empty list of distinct GPU UUIDs: {uuids!r}")
+        workers.append(
+            WorkerGpuIdentity(
+                hostname=_text(entry["hostname"], "hostname"),
+                assignment=DeviceAssignment(
+                    worker_role=_role(assignment["worker_role"]),
+                    worker_index=_whole(assignment["worker_index"], "worker_index", minimum=0),
+                    worker_process=_whole(assignment["worker_process"], "worker_process", minimum=0),
+                    het_group=(
+                        None
+                        if assignment.get("het_group") is None
+                        else _whole(assignment["het_group"], "het_group", minimum=0)
+                    ),
+                ),
+                step_name=_text(entry["step_name"], "step_name"),
+                step_id=_text(entry["step_id"], "step_id"),
+                gpu_uuids=tuple(uuids),
+            )
+        )
+    return WorkerIdentityProof(captured_at_unix=float(captured), workers=tuple(workers), error=error)
 
 
 def _expected_devices(manifest: dict[str, Any]) -> list[ExpectedDevice]:

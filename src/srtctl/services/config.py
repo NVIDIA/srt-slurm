@@ -14,6 +14,7 @@ that supplies defaults and injects the environment that kind needs. See
 import builtins
 import logging
 from dataclasses import field
+from pathlib import Path
 from typing import Any, ClassVar
 
 from marshmallow import Schema, ValidationError, pre_load
@@ -108,6 +109,7 @@ class ServicePlacementConfig:
 class TcpProbe:
     """Ready when ``port`` accepts a TCP connection on the service node."""
 
+    # Port probed on the service node.
     port: int
 
     Schema: ClassVar[type[Schema]] = Schema
@@ -121,8 +123,11 @@ class TcpProbe:
 class HttpProbe:
     """Ready when ``GET http://<node>:<port><path>`` returns ``status``."""
 
+    # Port probed on the service node.
     port: int
+    # URL path requested.
     path: str = "/health"
+    # HTTP status that counts as ready.
     status: int = 200
 
     Schema: ClassVar[type[Schema]] = Schema
@@ -149,9 +154,13 @@ class ServiceMetricsConfig:
     (the exporters) supply theirs; a recipe writes the block for anything else.
     """
 
+    # Port the endpoint is served on.
     port: int
+    # URL path of the endpoint.
     path: str = "/metrics"
+    # `all` scrapes every node the service runs on; `first` only its first node.
     nodes: str = "all"
+    # Endpoint name in the Tachometer parquet (`<name>_<node>`); defaults to the service name.
     name: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
@@ -171,6 +180,7 @@ class ServiceMetricsConfig:
 class LogProbe:
     """Ready when the service's log file contains a line matching the regular expression ``pattern``."""
 
+    # Regular expression searched for in the service log.
     pattern: str
 
     Schema: ClassVar[type[Schema]] = Schema
@@ -185,18 +195,36 @@ class LogProbe:
 
 
 @dataclass(frozen=True)
+class FileProbe:
+    """Ready when a service-owned marker file exists in the run's shared logs directory."""
+
+    # Relative marker path under /logs; service placeholders such as {index} are expanded per instance.
+    # The previous marker is removed before launching that instance, so readiness requires a fresh file.
+    path: str
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        path = Path(self.path)
+        if not self.path.strip() or path.is_absolute() or ".." in path.parts or not path.name:
+            raise ValidationError("readiness.file.path must be a relative file path within the run's logs directory")
+
+
+@dataclass(frozen=True)
 class ServiceReadinessConfig:
     """Readiness gate: the launch blocks until the probe passes on every service node.
 
     Exactly one probe: ``tcp`` (a port accepts connections), ``http`` (a URL
-    returns a status), or ``log`` (the service log matches a pattern). ``port``
-    alone is shorthand for ``tcp``.
+    returns a status), ``log`` (the service log matches a pattern), or ``file``
+    (a fresh marker exists under the run's logs directory). ``port`` alone is
+    shorthand for ``tcp``.
 
     Attributes:
         port: Shorthand for ``tcp: {port: <port>}``.
         tcp: TCP connect probe.
         http: HTTP GET probe.
         log: Log-pattern probe against ``service_<name>.out``.
+        file: Marker-file probe relative to the shared logs directory; removes the old marker before launch.
         timeout_seconds: How long to wait per node before failing the job.
         interval_seconds: Seconds between probe attempts.
     """
@@ -205,6 +233,7 @@ class ServiceReadinessConfig:
     tcp: TcpProbe | None = None
     http: HttpProbe | None = None
     log: LogProbe | None = None
+    file: FileProbe | None = None
     timeout_seconds: int = 120
     interval_seconds: int = 2
 
@@ -215,10 +244,10 @@ class ServiceReadinessConfig:
             if self.tcp is not None:
                 raise ValidationError("services[].readiness: give either port (shorthand) or tcp, not both")
             object.__setattr__(self, "tcp", TcpProbe(port=self.port))
-        probes = [name for name in ("tcp", "http", "log") if getattr(self, name) is not None]
+        probes = [name for name in ("tcp", "http", "log", "file") if getattr(self, name) is not None]
         if len(probes) != 1:
             raise ValidationError(
-                f"services[].readiness needs exactly one probe: port, tcp, http, or log; got {', '.join(probes) or 'none'}"
+                f"services[].readiness needs exactly one probe: port, tcp, http, log, or file; got {', '.join(probes) or 'none'}"
             )
         if self.timeout_seconds <= 0:
             raise ValidationError("services[].readiness.timeout_seconds must be positive")
@@ -226,8 +255,8 @@ class ServiceReadinessConfig:
             raise ValidationError("services[].readiness.interval_seconds must be positive")
 
     @property
-    def probe(self) -> TcpProbe | HttpProbe | LogProbe:
-        for name in ("tcp", "http", "log"):
+    def probe(self) -> TcpProbe | HttpProbe | LogProbe | FileProbe:
+        for name in ("tcp", "http", "log", "file"):
             value = getattr(self, name)
             if value is not None:
                 return value
@@ -245,6 +274,8 @@ class ServiceReadinessConfig:
             what = f"tcp/{probe.port}"
         elif isinstance(probe, HttpProbe):
             what = f"http://<node>:{probe.port}{probe.path} -> {probe.status}"
+        elif isinstance(probe, FileProbe):
+            what = f"file /logs/{probe.path} exists"
         else:
             what = f"log matches /{probe.pattern}/"
         return f"{what}, timeout={self.timeout_seconds}s"
@@ -291,7 +322,7 @@ class ServiceConfig:
             ``workers`` for the exporters).
         start: ``after_frontend`` (default for ``generic``) or
             ``before_workers`` (default for ``mooncake-store``).
-        readiness: Optional TCP port gate; the job waits for it on every
+        readiness: Optional TCP, HTTP, log or marker-file gate; the job waits for it on every
             service node before continuing.
         inherit_discovery_env: Inject ``ETCD_ENDPOINTS`` / ``NATS_SERVER`` so
             the service can register with the job's Dynamo discovery plane.
@@ -317,8 +348,8 @@ class ServiceConfig:
             ``mooncake-master``): use this already-running endpoint and launch
             nothing; the URL is what the job's processes are pointed at.
         options: Kind-specific settings (``nats``: ``max_payload_mb``;
-            ``mooncake-master``: ``store_config`` and ``device_names_by_gpu``
-            for vLLM). Unknown keys are rejected by the kind.
+            ``mooncake-master``: ``store_config`` for vLLM and TRT-LLM,
+            ``device_names_by_gpu`` for vLLM). Unknown keys are rejected by the kind.
         metrics: Prometheus endpoints this service serves: one mapping or a
             list of ``{port, path, nodes, name}`` (``path`` defaults to
             ``/metrics``, ``nodes`` to ``all``). Tachometer scrapes each on every
@@ -422,9 +453,9 @@ class ServiceConfig:
                     f"{label}.placement.per: worker needs placement.node in {', '.join(PER_WORKER_PLACEMENTS)}; "
                     f"got {self.effective_placement!r}"
                 )
-            if self.readiness is not None and self.readiness.log is None:
+            if self.readiness is not None and self.readiness.log is None and self.readiness.file is None:
                 raise ValidationError(
-                    f"{label}.placement.per: worker instances share their node's ports, so readiness must be a log probe"
+                    f"{label}.placement.per: worker instances share their node's ports, so readiness must be a log or file probe"
                 )
         if len(self.metrics) > 1:
             names = [endpoint.name for endpoint in self.metrics]

@@ -351,10 +351,7 @@ class TestExpandObservability:
             SrtConfig.Schema().load(cfg)
 
     def test_retired_build_dashboard_knob_is_rejected(self):
-        """The perf dashboard is built on every run, so the knob that used to gate it
-        is gone. A recipe still carrying it must fail at submit time: silently
-        accepting `build_dashboard: false` would promise a capture-only run and then
-        render one anyway."""
+        """Recipes carrying the retired dashboard-generation knob fail at submit time."""
         cfg = _trtllm_config(enabled=True, build_dashboard=False)
 
         with pytest.raises(ValidationError, match="build_dashboard"):
@@ -462,6 +459,14 @@ class TestTrtllmServeDefaults:
         out = expand_trtllm_serve_defaults(cfg)
         for mode in ("prefill", "decode"):
             assert "return_perf_metrics" not in out["roles"][mode]["args"]
+
+    def test_router_in_front_of_trtllm_serve_gets_the_default(self):
+        """A static router such as smg fronts direct trtllm-serve workers, which need the route too."""
+        cfg = _trtllm_config()
+        cfg["frontend"] = {"type": "smg", "enable_multiple_frontends": False}
+        out = expand_trtllm_serve_defaults(cfg)
+        for mode in ("prefill", "decode"):
+            assert out["roles"][mode]["args"]["return_perf_metrics"] is True
 
     def test_non_trtllm_backend_is_untouched(self):
         cfg = _base_config()

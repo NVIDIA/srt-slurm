@@ -1,10 +1,10 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """
 SGLang backend configuration.
 
-Implements BackendProtocol for SGLang inference serving with prefill/decode disaggregation.
+Backend implementation for SGLang inference serving with prefill/decode disaggregation.
 """
 
 import builtins
@@ -23,27 +23,30 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import BoundRolesField, RoleSettings, role_args, role_env, role_kv_events
+from srtctl.backends.base import (
+    Backend,
+    BoundRolesField,
+    ProcessGroup,
+    RoleSettings,
+    WorkerMode,
+    role_args,
+    role_kv_events,
+)
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
     DIST_INIT_PORTS,
     DYN_SYSTEM_PORT_BASE,
+    GRPC_HTTP_PORTS,
     LMCACHE_SERVER_PORT,
-    MOONCAKE_HTTP_METADATA_PORT,
-    MOONCAKE_MASTER_PORT,
     NCCL_PORTS,
 )
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import DynamoConfig, ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
-
-# Type alias for worker modes
-WorkerMode = Literal["prefill", "decode", "agg"]
 
 
 def _dist_init_port(process: "Process") -> int:
@@ -51,7 +54,7 @@ def _dist_init_port(process: "Process") -> int:
     if process.dist_init_port is None:
         raise ValueError(
             f"process {process.node} rank {process.node_rank} has no dist-init port; "
-            "build the topology with SGLangProtocol.endpoints_to_processes"
+            "build the topology with SGLangBackend.endpoints_to_processes"
         )
     return process.dist_init_port
 
@@ -61,7 +64,7 @@ def _nccl_port(process: "Process") -> int:
     if process.nccl_port is None:
         raise ValueError(
             f"process {process.node} rank {process.node_rank} has no NCCL port; "
-            "build the topology with SGLangProtocol.endpoints_to_processes"
+            "build the topology with SGLangBackend.endpoints_to_processes"
         )
     return process.nccl_port
 
@@ -102,11 +105,11 @@ class MooncakeKVStoreConfig:
 
 
 @dataclass(frozen=True)
-class SGLangProtocol:
-    """SGLang protocol - implements BackendProtocol.
+class SGLangBackend(Backend):
+    """SGLang backend configuration and launch implementation.
 
     This frozen dataclass both holds configuration AND implements the
-    BackendProtocol methods for process allocation and launching.
+    Backend methods for process allocation and launching.
 
     Example YAML:
         engine: sglang
@@ -122,8 +125,17 @@ class SGLangProtocol:
               mem-fraction-static: 0.9
     """
 
+    # Engine type discriminator.
     type: Literal["sglang"] = "sglang"
+    # Accepted for compatibility; srtctl does not read it. Set `resources.gpu_type` instead.
     gpu_type: str | None = None
+    # The engine processes retitle themselves (setproctitle) and so never match dynamo\.sglang.
+    process_exporter_groups: ClassVar[tuple[ProcessGroup, ...]] = (
+        ProcessGroup("sglang_scheduler", cmdline=("sglang::scheduler",)),
+        ProcessGroup("sglang_dp_controller", cmdline=("sglang::data_parallel_controller",)),
+        ProcessGroup("sglang_detokenizer", cmdline=("sglang::detokenizer",)),
+        ProcessGroup("dynamo_sglang", cmdline=(r"dynamo\.sglang",)),
+    )
 
     # Mooncake KV store - launches mooncake_master on infra node and injects
     # MOONCAKE_MASTER env var on all workers automatically
@@ -134,39 +146,15 @@ class SGLangProtocol:
     roles: Mapping[str, RoleSettings] = field(default_factory=dict, metadata={"marshmallow_field": BoundRolesField()})
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
+    # gRPC mode serves /metrics on its HTTP sidecar (Process.grpc_http_port) when --enable-metrics is set.
+    grpc_metrics_path: ClassVar[str | None] = "/metrics"
+    # Scheduler-loop ranges, emitted from the spawned scheduler process; the
+    # batch-overlap operation ranges (SGLANG_ENABLE_NVTX_OPERATIONS) stay opt-in.
+    nvtx_environment: ClassVar[Mapping[str, str]] = {"SGLANG_ENABLE_NVTX_SCHEDULER": "1"}
 
     # =========================================================================
-    # BackendProtocol Implementation
+    # Backend Implementation
     # =========================================================================
-
-    def get_srun_config(self) -> "SrunConfig":
-        """SGLang uses per-process launching (one srun per node)."""
-        from srtctl.backends.base import SrunConfig
-
-        return SrunConfig(mpi=None, oversubscribe=False, launch_per_endpoint=False)
-
-    def fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
-        """The srun step exits with the engine; its exit code is the whole story."""
-        return ()
-
-    @property
-    def failover(self) -> None:
-        """SGLang has no shadow engine recovery."""
-        return None
-
-    def get_failover_environment(self, process: "Process", job_id: str) -> dict[str, str]:
-        return {}
-
-    def should_set_visible_devices(self) -> bool:
-        return True
-
-    def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
-        """The role's engine arguments (``roles.<role>.args``)."""
-        return role_args(self.roles, mode)
-
-    def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
-        """The role's environment (``roles.<role>.env``)."""
-        return role_env(self.roles, mode)
 
     def get_process_environment(self, process: "Process") -> dict[str, str]:
         """Get process-specific environment variables.
@@ -183,35 +171,19 @@ class SGLangProtocol:
             return {}
         return {"LMCACHE_MP_HOST": "127.0.0.1", "LMCACHE_MP_PORT": str(LMCACHE_SERVER_PORT)}
 
-    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
-        """Get mooncake env vars to inject on a specific worker.
-
-        Returns empty dict if mooncake_kv_store is not configured. Otherwise:
-        - MOONCAKE_LOCAL_HOSTNAME defaults to the worker's resolved IP, but the
-          user can override it in mooncake_kv_store.env if they need something
-          custom (e.g. a specific RDMA NIC IP).
-        - MOONCAKE_MASTER and MOONCAKE_TE_META_DATA_SERVER are always set by
-          srtslurm to point at the infra-node mooncake_master, and override any
-          user-supplied value (the user can't know the infra IP at config time).
-
-        Args:
-            infra_node_ip: Resolved IP of the infra node where mooncake_master runs.
-            local_hostname: Resolved IP of the worker's own node, for peer-to-peer
-                transfers. Defaults to the worker's primary network interface IP.
-        """
-        if self.mooncake_kv_store is None:
-            return {}
-        return {
-            "MOONCAKE_LOCAL_HOSTNAME": local_hostname,
-            **self.mooncake_kv_store.env,
-            "MOONCAKE_MASTER": f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}",
-            "MOONCAKE_TE_META_DATA_SERVER": (f"http://{infra_node_ip}:{MOONCAKE_HTTP_METADATA_PORT}/metadata"),
-        }
-
     def is_grpc_mode(self, mode: WorkerMode) -> bool:
         """Check if gRPC mode is enabled for a worker mode."""
         config = self.get_config_for_mode(mode)
         return config.get("grpc-mode", False)
+
+    def num_dp_ranks(self, mode: WorkerMode) -> int:
+        """DP ranks (one scheduler and KV cache each) a worker of ``mode`` runs: replicas x attention-DP width.
+
+        Mirrors upstream's ``num_dp_ranks`` (``dp_size * attn_dp_size``), so it is the same for
+        ``attn-dp-size N`` and the deprecated ``dp-size N`` plus ``enable-dp-attention``.
+        """
+        replicas, attn_dp = _dp_layout(self.get_config_for_mode(mode))
+        return replicas * attn_dp
 
     def get_served_model_name(self, default: str) -> str:
         """Get served model name from the roles' engine args, or return default."""
@@ -261,11 +233,24 @@ class SGLangProtocol:
         frontend_type: str = "dynamo",
         dynamo_sidecar: bool = False,
     ) -> list["Process"]:
-        """Convert endpoints to processes, each with its NCCL rendezvous port and its endpoint's dist-init port."""
+        """Convert endpoints to processes, each with its NCCL rendezvous port and its endpoint's dist-init port.
+
+        A gRPC-mode leader also gets its HTTP sidecar port, which carries /metrics and the profiler routes.
+        """
         from srtctl.core.topology import endpoints_to_processes, port_allocator_for
 
         allocator = port_allocator_for(port_allocator, base_sys_port)
-        processes = endpoints_to_processes(endpoints, port_allocator=allocator, sidecar_grpc=dynamo_sidecar)
+        # SGLang binds each publisher at the configured port plus its global DP
+        # rank (select_kv_publisher_dp_rank), so every process reserves one slot
+        # per DP rank of its worker, as vLLM reserves one per local DP rank.
+        # Otherwise a co-located worker's base lands on this one's rank 1.
+        kv_events_port_sizes = {endpoint.mode: self.num_dp_ranks(endpoint.mode) for endpoint in endpoints}
+        processes = endpoints_to_processes(
+            endpoints,
+            port_allocator=allocator,
+            sidecar_grpc=dynamo_sidecar,
+            kv_events_port_sizes=kv_events_port_sizes,
+        )
         # dist-init is bound by the endpoint's leader; every process of the
         # endpoint names the same port, allocated per leader node so two
         # endpoints led from one node do not collide.
@@ -278,6 +263,11 @@ class SGLangProtocol:
                 process,
                 nccl_port=allocator.next(NCCL_PORTS),
                 dist_init_port=dist_init_ports[(process.endpoint_mode, process.endpoint_index)],
+                grpc_http_port=(
+                    allocator.next(GRPC_HTTP_PORTS, process.node)
+                    if process.is_leader and self.is_grpc_mode(process.endpoint_mode)
+                    else None
+                ),
             )
             for process in processes
         ]
@@ -334,6 +324,14 @@ class SGLangProtocol:
         # allocator assigns each server its own port.
         config.pop("nccl-port", None)
         config.pop("nccl_port", None)
+        # The allocator owns the gRPC-mode HTTP sidecar port (/metrics, profiler routes).
+        for key in (
+            "grpc-http-sidecar-port",
+            "grpc_http_sidecar_port",
+            "smg-http-sidecar-port",
+            "smg_http_sidecar_port",
+        ):
+            config.pop(key, None)
 
         # Determine if multi-node
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
@@ -349,10 +347,7 @@ class SGLangProtocol:
         # Get served model name from config
         served_model_name = self.get_served_model_name(runtime.model_path.name)
 
-        # Determine model path: HF model ID or container mount path
-        # For HF models (hf:prefix), model_path contains the HF model ID (e.g., "facebook/opt-125m")
-        # For local models, model is mounted to /model in the container
-        model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
+        model_arg = runtime.worker_model_arg
 
         # Start with nsys prefix if provided
         cmd: list[str] = list(nsys_prefix) if nsys_prefix else []
@@ -378,6 +373,8 @@ class SGLangProtocol:
         cmd.extend(["--port", str(api_port)])
         if process.nccl_port is not None:
             cmd.extend(["--nccl-port", str(process.nccl_port)])
+        if use_sglang and process.grpc_http_port is not None:
+            cmd.extend(["--grpc-http-sidecar-port", str(process.grpc_http_port)])
 
         # sglang.launch_server serves Prometheus /metrics on its HTTP port only with
         # --enable-metrics; tachometer (on by default) scrapes it there. dynamo.sglang
@@ -474,7 +471,7 @@ class SGLangProtocol:
         grpc_port = sidecar_grpc_port(process)
 
         served_model_name = self.get_served_model_name(runtime.model_path.name)
-        model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
+        model_arg = runtime.worker_model_arg
         engine: list[str] = list(nsys_prefix or [])
         engine.extend(
             [
@@ -489,10 +486,15 @@ class SGLangProtocol:
                 "0.0.0.0",
                 "--port",
                 str(process.http_port),
-                "--nccl-port",
-                str(_nccl_port(process)),
             ]
         )
+
+        # DP replicas are independent TP groups on this node. Let SGLang
+        # allocate their NCCL ports: an explicit port is reused by every group
+        # and causes the second DP rank to fail with EADDRINUSE.
+        replicas, _ = _dp_layout(config)
+        if replicas == 1:
+            engine.extend(["--nccl-port", str(_nccl_port(process))])
 
         if mode != "agg":
             engine.extend(["--disaggregation-mode", mode, "--skip-server-warmup"])
@@ -509,12 +511,13 @@ class SGLangProtocol:
                     str(node_rank),
                 ]
             )
-        if is_leader:
+        kv_cfg = self.get_kv_events_config_for_mode(mode)
+        relay_kv_events = self.needs_telemetry_sidecar(process, endpoint_processes)
+        if is_leader or relay_kv_events:
             engine.extend(["--grpc-port", str(grpc_port)])
 
         # The SGLang sidecar discovers the publisher; SGLang still needs this
         # flag to enable it and advertise the topology-assigned endpoint.
-        kv_cfg = self.get_kv_events_config_for_mode(mode)
         if kv_cfg and process.kv_events_port is not None:
             kv_cfg["endpoint"] = f"tcp://*:{process.kv_events_port}"
             engine.extend(["--kv-events-config", json.dumps(kv_cfg)])
@@ -531,7 +534,7 @@ class SGLangProtocol:
                 process.endpoint_index,
             )
         engine.extend(_config_to_cli_args(config))
-        if not is_leader:
+        if not is_leader and not relay_kv_events:
             return engine
 
         sidecar = (
@@ -540,7 +543,8 @@ class SGLangProtocol:
             else ["python3", "-m", "dynamo.sglang.sidecar"]
         )
         sidecar.extend(["--grpc-endpoint", f"127.0.0.1:{grpc_port}"])
-        if mode == "prefill":
+        # Dynamo selects serving or telemetry mode from the local engine metadata.
+        if is_leader and mode == "prefill":
             sidecar.extend(["--bootstrap-host", leader_ip])
         sidecar.extend(sidecar_config.sidecar_args)
 
@@ -551,6 +555,70 @@ class SGLangProtocol:
             engine_name="SGLang",
             startup_timeout=sidecar_config.sidecar_startup_timeout,
         )
+
+    def needs_telemetry_sidecar(self, process: "Process", endpoint_processes: list["Process"]) -> bool:
+        """Whether a sidecar-enabled endpoint needs a KV relay on this follower."""
+        nodes = list(dict.fromkeys(candidate.node for candidate in endpoint_processes))
+        node_rank = nodes.index(process.node)
+        kv_cfg = self.get_kv_events_config_for_mode(process.endpoint_mode)
+        return (
+            node_rank != 0
+            and kv_cfg is not None
+            and kv_cfg.get("publisher") == "zmq"
+            and process.kv_events_port is not None
+            and _node_has_kv_publisher(self.get_config_for_mode(process.endpoint_mode), len(nodes), node_rank)
+        )
+
+
+def _parallel_size(config: dict[str, Any], long_name: str, short_name: str) -> int:
+    """Read SGLang's long/short parallel-size aliases, including YAML underscores."""
+    aliases = (f"{long_name}-parallel-size", f"{short_name}-size")
+    # Match _config_to_cli_args' order when more than one alias is supplied.
+    value = 1
+    for key, configured in sorted(config.items()):
+        if key.replace("_", "-") in aliases and configured is not None:
+            value = int(configured)
+    if value < 1:
+        raise ValueError(f"SGLang {long_name}-parallel-size must be positive")
+    return value
+
+
+def _dp_layout(config: dict[str, Any]) -> tuple[int, int]:
+    """SGLang's ``(replicas, attention-DP width)`` for a role's engine args.
+
+    ``attn-dp-size`` (alias ``attention-data-parallel-size``) sets the attention-DP
+    width and leaves ``dp-size`` counting replicas. The deprecated ``dp-size N`` plus
+    ``enable-dp-attention``, the only spelling SGLang builds before that split accept,
+    resolves to the same layout as ``attn-dp-size N``:
+    https://github.com/sgl-project/sglang/pull/41818 (a9c97c9f6973c03e778d1fe1e63a6b9f58a55012)
+    """
+    dp = _parallel_size(config, "data", "dp")
+    attn_dp = _parallel_size(config, "attention-data", "attn-dp")
+    deprecated = any(key.replace("_", "-") == "enable-dp-attention" and value for key, value in config.items())
+    if deprecated and attn_dp == 1:
+        return 1, dp
+    return dp, attn_dp
+
+
+def _node_has_kv_publisher(config: dict[str, Any], nnodes: int, node_rank: int) -> bool:
+    """Select the nodes owning PP=0, attention CP=0/TP=0 scheduler ranks.
+
+    Attention DP partitions global TP into contiguous groups; only the first
+    rank of each group publishes. TP-only and later PP-stage followers must
+    stay engine-only because the telemetry sidecar requires a local source.
+    """
+    _, attn_dp = _dp_layout(config)
+    if attn_dp == 1:
+        return node_rank == 0
+    tp = _parallel_size(config, "tensor", "tp")
+    pp = _parallel_size(config, "pipeline", "pp")
+    nodes_per_pp = max(nnodes // pp, 1)
+    if node_rank >= nodes_per_pp:
+        return False
+    if tp % nodes_per_pp or tp % attn_dp:
+        raise ValueError("SGLang attention DP requires TP divisible by attention-DP size and nodes per PP stage")
+    local_tp = tp // nodes_per_pp
+    return any(node_rank * local_tp <= rank < (node_rank + 1) * local_tp for rank in range(0, tp, tp // attn_dp))
 
 
 def _config_to_cli_args(config: dict[str, Any]) -> list[str]:

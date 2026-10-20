@@ -8,7 +8,7 @@ selects, optionally clone and build a ``source`` once, then one ``srun`` per
 instance (one per node, or under ``placement.per: worker`` one per engine worker
 on each node, pinned to that worker's GPUs) with the kind's command and
 environment merged around the recipe's, an optional readiness probe (tcp, http,
-or log; or the kind's default ports), and a ``ManagedProcess`` for the shared
+log, or file; or the kind's default ports), and a ``ManagedProcess`` for the shared
 ``ProcessRegistry`` (which provides crash detection and teardown). The kind
 (``srtctl.services.registry.ServiceKind``) never launches anything itself.
 
@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 import shlex
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -83,10 +84,11 @@ def service_step_name(service: ServiceConfig, node: str, instances: int, process
     """Slurm step name (and log stem) for one instance of a service.
 
     ``service_<name>`` alone for a single instance, ``service_<name>_<node>`` per
-    node, ``service_<name>_<role>_<index>_<node>`` for an instance attached to a worker.
+    node, ``service_<name>_<role>_<index>_<node>`` for an instance attached to a worker
+    (plus ``_dp<r>`` when it attaches to one DP rank of a per-rank worker).
     """
     if process is not None:
-        return f"service_{service.name}_{process.endpoint_mode}_{process.endpoint_index}_{node}"
+        return f"service_{service.name}_{process.endpoint_mode}_{process.endpoint_index}_{node}{process.engine_suffix}"
     suffix = f"_{node}" if instances > 1 else ""
     return f"service_{service.name}{suffix}"
 
@@ -143,7 +145,8 @@ class ServiceStageMixin:
 
     def service_instances(self, service: ServiceConfig) -> list[tuple[str, Process | None]]:
         """The instances a service launches: ``(node, None)`` per placed node, or under
-        ``placement.per: worker`` ``(node, process)`` per engine worker on those nodes.
+        ``placement.per: worker`` ``(node, process)`` per engine worker on those nodes
+        that the kind attaches to (``ServiceKind.attaches_to``).
 
         A worker's instance is attached to its engine 0 process (a worker with shadow
         engines has several processes on a node; the sidecar serves them all).
@@ -155,12 +158,14 @@ class ServiceStageMixin:
             return [(node, None) for node in nodes]
         where = service.effective_placement
         order = {node: i for i, node in enumerate(nodes)}
+        kind = get_service_kind(service.type)
         attached = [
             process
             for process in self.backend_processes
             if process.node in order
             and getattr(process, "engine_id", 0) == 0
             and (where == "workers" or process.endpoint_mode == where)
+            and kind.attaches_to(process)
         ]
         attached.sort(key=lambda p: (order[p.node], p.endpoint_index, p.node_rank))
         return [(process.node, process) for process in attached]
@@ -286,6 +291,17 @@ class ServiceStageMixin:
 
     # -- launch ------------------------------------------------------------------
 
+    @staticmethod
+    def _instance_readiness(service: ServiceConfig, ctx: ServiceLaunchContext) -> ServiceReadinessConfig | None:
+        """Resolve the service's probe and expand this instance's marker path."""
+        readiness = service.readiness or get_service_kind(service.type).readiness(service, ctx)
+        if readiness is not None and readiness.file is not None:
+            readiness = replace(
+                readiness,
+                file=replace(readiness.file, path=render_placeholders(readiness.file.path, ctx.template_vars())),
+            )
+        return readiness
+
     def _service_environment(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> dict[str, str]:
         kind = get_service_kind(service.type)
         template = ctx.template_vars()
@@ -313,6 +329,20 @@ class ServiceStageMixin:
             preamble_parts.append(render_placeholders(service.preamble, template).rstrip())
         step_name = service_step_name(service, ctx.node, instances, ctx.process)
         log_file = self.runtime.log_dir / f"{step_name}.out"
+
+        readiness = self._instance_readiness(service, ctx)
+        if readiness is not None and readiness.file is not None:
+            # Clear on the orchestrator before starting srun: clearing inside the
+            # service would race the first readiness poll against an old marker.
+            marker = log_file.parent / readiness.file.path
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError as exc:
+                reason = "path is a directory" if marker.is_dir() else str(exc)
+                raise RuntimeError(
+                    f"services[{service.name}].readiness.file.path: cannot remove marker {marker}: {reason}; "
+                    "use a dedicated marker file"
+                ) from None
 
         env = self._service_environment(service, ctx)
         if ctx.process is not None and len(ctx.process.gpu_indices) < self.runtime.gpus_per_node:
@@ -380,14 +410,11 @@ class ServiceStageMixin:
 
     def _wait_service_ready(self, proc: ManagedProcess, service: ServiceConfig, ctx: ServiceLaunchContext) -> None:
         """The recipe's ``readiness`` probe, else the kind's per-instance probe, else each default port in turn."""
-        if service.readiness is not None:
-            self._wait_ready(proc, service, service.readiness)
-            return
-        kind = get_service_kind(service.type)
-        instance_probe = kind.readiness(service, ctx)
+        instance_probe = self._instance_readiness(service, ctx)
         if instance_probe is not None:
             self._wait_ready(proc, service, instance_probe)
             return
+        kind = get_service_kind(service.type)
         for port in kind.default_readiness_ports:
             probe = ServiceReadinessConfig(tcp=TcpProbe(port=port), timeout_seconds=kind.default_readiness_timeout)
             self._wait_ready(proc, service, probe)
@@ -427,7 +454,7 @@ class ServiceStageMixin:
                 if skip:
                     logger.warning("services[%s]: %s; skipping", service.name, skip)
                     continue
-                kind.prepare(service, self.runtime)
+                kind.prepare(service, self.runtime, self.config)
                 work_dir = self._clone_service_source(service, nodes[0], registry)
                 if work_dir is not None:
                     self._build_service_source(service, nodes[0], work_dir, registry)

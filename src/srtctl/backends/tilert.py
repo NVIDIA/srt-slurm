@@ -10,26 +10,27 @@ import builtins
 from collections.abc import Mapping, Sequence
 from dataclasses import field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.base import BoundRolesField, RoleSettings, role_args, role_env
+from srtctl.backends.base import Backend, BoundRolesField, RoleSettings
 from srtctl.ports import DYN_SYSTEM_PORT_BASE
 
 if TYPE_CHECKING:
-    from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 
 @dataclass(frozen=True)
-class TileRTProtocol:
+class TileRTBackend(Backend):
     """Launch TileRT's decode server with recipe-owned model and transport settings."""
 
+    # Engine type discriminator.
     type: Literal["tilert"] = "tilert"
+    # Model name the server reports to clients; unset uses the default served name.
     served_model_name: str | None = None
     # The roles this engine runs (`roles.<role>` of the recipe), bound by SrtConfig and
     # never written on `engine:`. The decode role's env and args are read from here.
@@ -37,44 +38,8 @@ class TileRTProtocol:
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
-    def get_srun_config(self) -> SrunConfig:
-        from srtctl.backends.base import SrunConfig
-
-        return SrunConfig()
-
-    def get_config_for_mode(self, mode: str) -> dict[str, Any]:
-        """The role's TileRT server arguments (``roles.<role>.args``)."""
-        return role_args(self.roles, mode)
-
-    def get_environment_for_mode(self, mode: str) -> dict[str, str]:
-        """The role's environment (``roles.<role>.env``)."""
-        return role_env(self.roles, mode)
-
-    def get_process_environment(self, process: Process) -> dict[str, str]:
-        return {}
-
-    def fatal_log_patterns(self, mode: str) -> tuple[str, ...]:
-        return ()
-
     def get_served_model_name(self, default: str) -> str:
         return self.served_model_name or default
-
-    @property
-    def mooncake_kv_store(self) -> None:
-        return None
-
-    @property
-    def failover(self) -> None:
-        return None
-
-    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
-        return {}
-
-    def get_failover_environment(self, process: Process, job_id: str) -> dict[str, str]:
-        return {}
-
-    def should_set_visible_devices(self) -> bool:
-        return True
 
     def allocate_endpoints(
         self,

@@ -1,0 +1,65 @@
+# vLLM disaggregated prefill/decode behind the Shepherd Model Gateway (SMG), over gRPC
+# with the NIXL KV connector.
+#
+# `grpc: true` makes each worker `vllm serve --grpc` (vLLM's gRPC server, provided by
+# the smg-grpc-servicer package, which the vLLM image must have). srtctl advertises the
+# workers as grpc:// URLs; SMG reads each worker's KV connector over gRPC, tags the
+# prefill leg for a remote decode and relays the returned NIXL handoff to the decode
+# worker, which pulls the prompt's KV cache instead of recomputing it. Over HTTP SMG
+# cannot learn a vLLM worker's connector, so vLLM P/D needs gRPC (docs/smg.md).
+#
+# Aliases (`qwen3-0.6b`, `vllm`, `smg`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-vllm-smg-disagg-grpc"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "vllm"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+frontend:
+  type: smg
+  container_image: smg
+  enable_multiple_frontends: false
+
+engine:
+  type: vllm
+  connector: nixl
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      grpc: true
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+  decode:
+    nodes: colocate
+    workers: 1
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      grpc: true
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

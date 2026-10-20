@@ -21,6 +21,7 @@ from pyarrow import ipc
 from srtctl.analysis.metric_catalog import describe_metric
 
 from .engines import MetricDefinition, engine_metrics
+from .point_buffer import PointBuffer
 from .sources import canonical_role
 
 if TYPE_CHECKING:
@@ -347,7 +348,7 @@ def read_metrics(run: Importer) -> list[dict[str, Any]]:
                         "raw_host": raw_host,
                         "host_source": "raw label" if raw_host else "scraper configuration" if host else "unknown",
                         "host_evidence": config_source,
-                        "points": [],
+                        "points": run.point_buffers.buffer(len(series_by_key)) if run.point_buffers else [],
                         "source_ids": set(),
                     }
                     if histogram:
@@ -371,33 +372,42 @@ def read_metrics(run: Importer) -> list[dict[str, Any]]:
         }
         for name, family in sorted(families.items())
     }
+    if run.point_buffers:
+        run.point_buffers.prepare()
     finalize_metrics(run, result, catalog)
+    if run.point_buffers:
+        run.point_buffers.release_raw()
     return result
 
 
 def finalize_metrics(run: Importer, result: list[dict[str, Any]], catalog: dict[str, dict[str, Any]]) -> None:
     """Shared series finalization for captured and log-derived measurements."""
     for series in result:
-        series["points"].sort(key=lambda point: (point[0], point[2], point[3]))
-        points, seen = [], set()
-        for point in series["points"]:
-            # Separate request events can have equal values at a clock tick.
-            # Their source line, not just time/value, is their observation identity.
-            identity = tuple(point) if series.get("temporal") == "event" else tuple(point[:2])
-            if identity not in seen:
-                points.append(point)
-                seen.add(identity)
-            else:
-                run.audit["duplicate_metric_points"] += 1
-        series["points"] = points
-        conflicts = []
-        conflicting_samples = 0
-        if series.get("temporal") != "event":
-            for timestamp, samples in groupby(points, key=lambda point: point[0]):
-                count = sum(1 for _ in samples)
-                if count > 1:
-                    conflicts.append(timestamp)
-                    conflicting_samples += count
+        if isinstance(series["points"], PointBuffer):
+            points = series["points"]
+            duplicates, conflicts, conflicting_samples = points.finalize()
+            run.audit["duplicate_metric_points"] += duplicates
+        else:
+            series["points"].sort(key=lambda point: (point[0], point[2], point[3]))
+            points, seen = [], set()
+            for point in series["points"]:
+                # Separate request events can have equal values at a clock tick.
+                # Their source line, not just time/value, is their observation identity.
+                identity = tuple(point) if series.get("temporal") == "event" else tuple(point[:2])
+                if identity not in seen:
+                    points.append(point)
+                    seen.add(identity)
+                else:
+                    run.audit["duplicate_metric_points"] += 1
+            series["points"] = points
+            conflicts = []
+            conflicting_samples = 0
+            if series.get("temporal") != "event":
+                for timestamp, samples in groupby(points, key=lambda point: point[0]):
+                    count = sum(1 for _ in samples)
+                    if count > 1:
+                        conflicts.append(timestamp)
+                        conflicting_samples += count
         series["conflict_timestamps"] = conflicts
         series["conflicting_samples"] = conflicting_samples
         run.audit["conflicting_metric_samples"] += conflicting_samples

@@ -7,9 +7,11 @@ import platform
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from srtctl.cli import submit
 from srtctl.cli.submit import validate_setup
 from srtctl.core.schema import (
     BenchmarkConfig,
@@ -189,6 +191,40 @@ class TestValidateSetup:
 
         with pytest.raises(SystemExit):
             validate_setup(tmp_path, self._config(cpu_power_enabled=True))
+
+    @pytest.mark.parametrize("binary_state", ["missing", "non_executable", "wrong_arch"])
+    def test_submission_rejects_invalid_cpu_exporter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, binary_state: str
+    ) -> None:
+        self._setup_tree(tmp_path)
+        compute_image, _arch = self._foreign_arch()
+        _install(tmp_path / "bin" / "uv", compute_image)
+        exporter = tmp_path / "bin" / "cpu-power-exporter"
+        if binary_state == "non_executable":
+            exporter.write_bytes(compute_image)
+        elif binary_state == "wrong_arch":
+            if shutil.which("file") is None:
+                pytest.skip("file(1) is not installed")
+            other = ELF_AARCH64 if compute_image is ELF_X86_64 else ELF_X86_64
+            _install(exporter, other)
+        monkeypatch.setattr(
+            submit,
+            "get_srtslurm_setting",
+            lambda key, default=None: str(tmp_path) if key == "srtctl_root" else default,
+        )
+        run = subprocess.run
+        submissions: list[list[str]] = []
+
+        def record_submission(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            if command[0] == "sbatch":
+                submissions.append(command)
+                raise AssertionError("invalid CPU exporter reached sbatch")
+            return run(command, **kwargs)
+
+        monkeypatch.setattr(submit.subprocess, "run", record_submission)
+        with pytest.raises(SystemExit):
+            submit.submit_with_orchestrator(tmp_path / "recipe.yaml", config=self._config(cpu_power_enabled=True))
+        assert submissions == []
 
 
 class TestMakefileArchDetection:

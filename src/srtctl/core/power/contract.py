@@ -14,13 +14,15 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeGuard, cast
 
+from srtctl.core.power.cpu_rails import COMPONENT_RAIL_COLUMN_NAMES
 from srtctl.core.power.cpu_rails import RAIL_COLUMN_NAMES as CPU_RAIL_COLUMN_NAMES
 
 SCHEMA_VERSION = 1
 # The samples CSV is versioned independently: SCHEMA_VERSION is shared with
 # manifest.json and with measurement-window files whose writer keeps its own copy.
 SAMPLES_SCHEMA_VERSION_V1 = 1
-SAMPLES_SCHEMA_VERSION = 2
+SAMPLES_SCHEMA_VERSION_V2 = 2
+SAMPLES_SCHEMA_VERSION = 3
 
 PRODUCER = "srt-slurm.dcgm-power"
 POWER_METRIC = "DCGM_FI_DEV_POWER_USAGE"
@@ -30,6 +32,10 @@ CLOCK_SOURCE = "head_node_unix_clock"
 
 GPU_UTIL_METRIC = "DCGM_FI_DEV_GPU_UTIL"
 SM_ACTIVE_METRIC = "DCGM_FI_PROF_SM_ACTIVE"
+TEMPERATURE_METRIC = "DCGM_FI_DEV_GPU_TEMP"
+# Physical sanity bound for GPU temperature; exporter blank/error sentinels (DCGM's
+# are near 2**31) fall far outside it.
+MAX_TEMPERATURE_C = 200.0
 
 
 @dataclass(frozen=True)
@@ -64,14 +70,18 @@ SAMPLES_HEADER_V1 = (
     "gpu_uuid",
     "power_w",
 )
-SAMPLES_HEADER = (*SAMPLES_HEADER_V1, *(metric.column for metric in UTILIZATION_METRICS))
+SAMPLES_HEADER_V2 = (*SAMPLES_HEADER_V1, *(metric.column for metric in UTILIZATION_METRICS))
+SAMPLES_HEADER = (*SAMPLES_HEADER_V2, "temperature_c")
 
 CPU_SCHEMA_VERSION_V1 = 1
+CPU_SCHEMA_VERSION_V2 = 2
 # v2 pivots to one row per (timestamp, hostname, socket): power_w is the
 # socket's authoritative figure (ACPI "total" envelope or the DCGM value),
 # with the ACPI component rails as their own columns. v1 wrote one row per
 # rail, which left readers to work out which rows were the same socket.
-CPU_SCHEMA_VERSION = 2
+# v3 appends module_w before total_power_w: superchip module power, a superset
+# of power_w (it includes the GPUs), so it is never summed into total_power_w.
+CPU_SCHEMA_VERSION = 3
 CPU_SAMPLES_FILENAME = "samples.csv"  # written under <power_dir>/cpu/
 CPU_MANIFEST_FILENAME = "cpu_manifest.json"  # written under <power_dir>/cpu/, non-authoritative
 
@@ -85,6 +95,7 @@ CPU_SAMPLES_HEADER_V1 = (
     "power_w",
     "total_power_w",
 )
+CPU_SAMPLES_HEADER_V2 = (*CPU_SAMPLES_HEADER_V1[:-1], *COMPONENT_RAIL_COLUMN_NAMES, "total_power_w")
 CPU_SAMPLES_HEADER = (
     "schema_version",
     "timestamp_unix",
@@ -92,18 +103,20 @@ CPU_SAMPLES_HEADER = (
     "source",
     "sensor",  # the sensor that fed power_w (provenance only)
     "socket_id",
-    "power_w",  # ACPI: the socket "total" envelope; DCGM: field 1130
-    *CPU_RAIL_COLUMN_NAMES,  # cpu_rail_w, soc_w, dram_w -- ACPI only, blank for DCGM
+    "power_w",  # ACPI: the socket "total" envelope; DCGM: field 1130 (= the CPU rail; DCGM has no envelope field)
+    *CPU_RAIL_COLUMN_NAMES,  # cpu_rail_w, soc_w, dram_w -- ACPI: from hwmon; DCGM: cpu_rail_w=1130, soc_w=1132; module_w -- NVML
     "total_power_w",  # node aggregate: sum of power_w over sockets
 )
 # NOTE: in ACPI mode, power_w / total_power_w carry only "total"-kind channels
 # (e.g. "Grace Power Socket N" or a platform's generic "Total Power socket N"
 # rail). Real hardware traces show the total rail ~93-104W vs cpu_rail+soc
 # ~53-58W for the same socket -- total is a separate, larger measurement of
-# the whole Grace SoC power boundary, not literally cpu_rail + soc. This has
-# not been verified against NVIDIA hardware/DCGM documentation; if it turns
-# out to be wrong, only the ACPI total is affected, since the component-rail
-# columns and DCGM mode (one already-aggregate value per socket) are unaffected.
+# the whole Grace SoC power boundary, not literally cpu_rail + soc.
+# In DCGM mode power_w is field 1130, which DCGM's sysmon reads from the
+# "CPU Power Socket N" hwmon channel -- the cpu_rail, not the envelope (see
+# cpu_rails.DCGM_FIELD_RAIL_KINDS). DCGM-mode CPU power is therefore about
+# half of ACPI-mode CPU power for the same hardware and must not be compared
+# with it as like-for-like.
 
 MAX_SAMPLE_GAP_SECONDS = 3.0
 MAX_MISSING_SAMPLE_WINDOW_FRACTION = 0.05
@@ -135,6 +148,8 @@ class Reason:
     GPU_INDEX_MISSING = "gpu_index_missing"
     GPU_UUID_MISSING = "gpu_uuid_missing"
     INVALID_POWER_VALUE = "invalid_power_value"
+    WORKER_IDENTITY_INVALID = "worker_identity_invalid"
+    WORKER_GPU_UUID_MISMATCH = "worker_gpu_uuid_mismatch"
     UNEXPECTED_DEVICE = "unexpected_device"
     EXPECTED_DEVICE_MISSING = "expected_device_missing"
     GPU_UUID_CHANGED = "gpu_uuid_changed"
@@ -159,6 +174,9 @@ class Reason:
     MEASUREMENT_WINDOW_NOT_BRACKETED = "measurement_window_not_bracketed"
     SAMPLE_GAP_EXCEEDED = "sample_gap_exceeded"
     SAMPLE_LOSS_EXCEEDED = "sample_loss_exceeded"
+    # A node whose clock feeds an artifact could not prove NTP synchronisation
+    # before servers started; sample and window timestamps are not comparable.
+    CLOCK_SYNC_UNVERIFIED = "clock_sync_unverified"
 
 
 ALL_REASON_CODES: frozenset[str] = frozenset(
@@ -198,6 +216,11 @@ def is_safe_relative_subpath(value: str) -> bool:
 def is_finite_number(value: Any) -> TypeGuard[int | float]:
     """Whether ``value`` is a finite real number; bools are not numbers here."""
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def is_valid_temperature_c(value: float) -> bool:
+    """Shared value domain; scrape and CSV readers own their distinct rejection effects."""
+    return math.isfinite(value) and -273.15 <= value <= MAX_TEMPERATURE_C
 
 
 def dedupe(values: list[str]) -> tuple[str, ...]:

@@ -220,7 +220,15 @@ regression fixture alone. A Chrome/Chromium executable must be on `PATH`.
 
 ## Limits
 
-The importer still materializes normalized inputs during a build. The default
+Progressive builds spool raw Tachometer points into a temporary SQLite database
+next to the output directory. Sorting uses disk-backed indexes; deduplication
+retains only the current timestamp’s distinct values in memory. The normalized
+points stream into the query cache and browser shards without being collected
+into Python lists. Temporary files are removed on success or failure; allow
+additional scratch disk space for raw points, their sorting index and retained
+points while generating a report. `--single-file` and direct `Importer.run()`
+calls retain the in-memory path. Log-derived metrics and other normalized inputs
+also remain in memory. The default
 250,000-event limit per Nsight report and its partial-import warnings are
 unchanged. Request/lifecycle catalogs and shard indexes still grow with the
 capture. SQLite and browser shards duplicate large arrays on disk; this trades

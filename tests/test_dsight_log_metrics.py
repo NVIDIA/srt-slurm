@@ -12,7 +12,7 @@ import pytest
 from test_dsight import write_run
 
 from srtctl.dsight.importer import Importer
-from srtctl.dsight.log_metrics import LogMetricDefinition, LogMetricEvent
+from srtctl.dsight.log_metrics import LogMetricDefinition, LogMetricEvent, LogMetricGenerator
 from srtctl.dsight.log_metrics.reader import read_log_metrics
 from srtctl.dsight.log_metrics.tokenspeed import (
     ACTIVE_DECODE,
@@ -193,8 +193,8 @@ def test_missing_page_fields_are_not_zero(tmp_path):
     assert metrics(data)[ACTIVE_DECODE]["reference"]["series_id"] is None
 
 
-class ExampleGenerator:
-    """Different syntax and rank namespace exercise the shared Protocol boundary."""
+class ExampleGenerator(LogMetricGenerator):
+    """Different syntax and rank namespace exercise the shared base class."""
 
     name = "example"
     definitions = (

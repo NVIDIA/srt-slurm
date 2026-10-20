@@ -26,29 +26,69 @@ Rail kinds
     Component rails. Reference breakdowns only; they are *not* additive to
     ``total`` (real traces show total ~93-104 W vs cpu_rail+soc ~53-58 W).
 ``dcgm``
-    Not an ACPI rail: DCGM field 1130 reports one already-aggregated value
-    per socket. Treated like ``total`` for ``power_w`` purposes. Whether it
-    equals the ACPI ``cpu_rail`` or the ``total`` envelope is unverified, so
-    DCGM rows leave every rail column blank.
+    Not an ACPI rail: the origin tag for DCGM-mode socket power. DCGM has no
+    CPU power backend of its own -- its sysmon module reads the same ACPI
+    hwmon channels by ``power1_oem_info`` label (NVIDIA/DCGM
+    ``modules/sysmon/DcgmSystemMonitor.cpp``), so each DCGM field *is* one
+    ACPI rail; see :data:`DCGM_FIELD_RAIL_KINDS`. Field 1130 is
+    ``CPU Power Socket N`` = ``cpu_rail``; no DCGM field reports the
+    ``Grace Power Socket N`` envelope (1131 is only its cap). DCGM-mode
+    ``power_w`` is therefore the CPU rail, roughly half the ACPI envelope,
+    and is not comparable with ACPI-mode ``power_w``.
+``module``
+    NVML superchip power for one socket, including Grace and its GPUs. It
+    is a reference rail and never adds to ``total_power_w``. An ACPI
+    ``Module Power Socket N`` label remains unclassified.
 """
 
 from __future__ import annotations
 
 import re
+from typing import NamedTuple
 
 TOTAL_KIND = "total"
 DCGM_KIND = "dcgm"
+MODULE_KIND = "module"
 OTHER_KIND = "other"
+
+
+# DCGM CPU-entity power fields and the ACPI rail each one reads. Verified
+# against NVIDIA/DCGM (DcgmSystemMonitor.cpp: label prefix -> file map;
+# DcgmModuleSysmon.cpp: field id -> getter). One record per field so the
+# name, the hwmon label and the rail kind cannot drift apart; producers only
+# ever name the field id, never the label.
+class DcgmPowerField(NamedTuple):
+    field_id: int
+    name: str
+    hwmon_label: str  # the ``power1_oem_info`` prefix DCGM's sysmon matches, with N = socket
+    kind: str  # the COMPONENT_RAIL_KINDS member that hwmon channel is
+
+
+DCGM_POWER_FIELDS: tuple[DcgmPowerField, ...] = (
+    DcgmPowerField(1130, "DCGM_FI_DEV_CPU_POWER_WATTS", "CPU Power Socket N", "cpu_rail"),
+    DcgmPowerField(1132, "DCGM_FI_DEV_SYSIO_POWER_UTIL_CURRENT", "SysIO Power Socket N", "soc"),
+)
+# Deliberately NOT in the table: 1131 DCGM_FI_DEV_CPU_POWER_LIMIT_WATTS reads
+# ``power1_cap`` of "Grace Power Socket N" (the envelope's limit, not its
+# draw); 1133 DCGM_FI_DEV_MODULE_POWER_UTIL_CURRENT reads "Module Power
+# Socket N", whose scope on GB200/GB300 (Grace-only vs. Grace+Blackwell
+# superchip) is unverified on live hardware, so it is excluded until measured.
+DCGM_PRIMARY_FIELD_ID = 1130  # the value filed as DCGM-mode power_w
+DCGM_FIELD_BY_ID: dict[int, DcgmPowerField] = {field.field_id: field for field in DCGM_POWER_FIELDS}
+DCGM_FIELD_RAIL_KINDS: dict[int, str] = {field.field_id: field.kind for field in DCGM_POWER_FIELDS}
+DCGM_POWER_FIELD_IDS: tuple[int, ...] = tuple(field.field_id for field in DCGM_POWER_FIELDS)
 
 # Component rails, in wide-CSV column order.
 COMPONENT_RAIL_KINDS: tuple[str, ...] = ("cpu_rail", "soc", "dram")
+REFERENCE_RAIL_KINDS: tuple[str, ...] = (*COMPONENT_RAIL_KINDS, MODULE_KIND)
 # Every kind an ACPI channel can classify to.
 ACPI_RAIL_KINDS: frozenset[str] = frozenset((TOTAL_KIND, *COMPONENT_RAIL_KINDS))
 
-# Wide-CSV column name per component rail. ``total`` has no column of its
+# Wide-CSV column name per reference rail. ``total`` has no column of its
 # own: it *is* ``power_w``.
-RAIL_COLUMNS: dict[str, str] = {kind: f"{kind}_w" for kind in COMPONENT_RAIL_KINDS}
-RAIL_COLUMN_NAMES: tuple[str, ...] = tuple(RAIL_COLUMNS[kind] for kind in COMPONENT_RAIL_KINDS)
+RAIL_COLUMNS: dict[str, str] = {kind: f"{kind}_w" for kind in REFERENCE_RAIL_KINDS}
+RAIL_COLUMN_NAMES: tuple[str, ...] = tuple(RAIL_COLUMNS[kind] for kind in REFERENCE_RAIL_KINDS)
+COMPONENT_RAIL_COLUMN_NAMES: tuple[str, ...] = tuple(RAIL_COLUMNS[kind] for kind in COMPONENT_RAIL_KINDS)
 
 # Sensor-name suffix per kind (``CPU<socket>:<suffix>``). The host collector
 # has always written these; the scraper wrote raw OEM labels before v2.
@@ -57,6 +97,7 @@ SENSOR_SUFFIXES: dict[str, str] = {
     "cpu_rail": "cpuRailPowerUsageW",
     "soc": "socPowerUsageW",
     "dram": "dramPowerUsageW",
+    MODULE_KIND: "modulePowerUsageW",
     DCGM_KIND: "cpuPowerUsageW",
 }
 _KIND_BY_SUFFIX = {suffix: kind for kind, suffix in SENSOR_SUFFIXES.items()}
@@ -66,7 +107,8 @@ LEGACY_TYPE_ALIASES: dict[str, str] = {"grace": TOTAL_KIND, "cpu": "cpu_rail", "
 
 # Firmware OEM label -> rail kind. Ordered: the first match wins, so the
 # specific Grace forms precede the generic ones and "CPU Power Socket N"
-# (a Grace *component* rail) is matched after every "total" form.
+# (a Grace *component* rail) is matched after every "total" form. Mirrors
+# ``OEM_KINDS`` in the Rust exporter.
 ACPI_LABEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (TOTAL_KIND, re.compile(r"\bGrace\s+Power\s+Socket\s+(\d+)\b", re.IGNORECASE)),
     (TOTAL_KIND, re.compile(r"\bTotal(?:\s+Input)?\s+Power(?:\s+in\s+uW)?\s+Socket\s+(\d+)\b", re.IGNORECASE)),
@@ -79,7 +121,7 @@ ACPI_LABEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 
 def classify_acpi_label(label: str) -> tuple[str, int] | None:
-    """Firmware OEM label -> ``(kind, socket_id)``; None for unrecognised rails (NVSwitch, module, ...)."""
+    """Firmware OEM label -> ``(kind, socket_id)``; None for unrecognised rails (NVSwitch, ...)."""
     for kind, pattern in ACPI_LABEL_PATTERNS:
         match = pattern.search(label)
         if match is not None:
@@ -115,7 +157,7 @@ def classify_sensor(sensor: str) -> str:
 
 # Preference when a legacy long-format CSV holds several rails for one socket
 # and exactly one must feed the per-socket power series.
-LEGACY_RAIL_PREFERENCE: tuple[str, ...] = (TOTAL_KIND, DCGM_KIND, *COMPONENT_RAIL_KINDS, OTHER_KIND)
+LEGACY_RAIL_PREFERENCE: tuple[str, ...] = (TOTAL_KIND, DCGM_KIND, *REFERENCE_RAIL_KINDS, OTHER_KIND)
 
 
 def legacy_rail_rank(sensor: str) -> int:

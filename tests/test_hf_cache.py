@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.core.config import load_config
-from srtctl.core.runtime import RuntimeContext
+from srtctl.core.runtime import HF_MODEL_CACHE_MOUNT, RuntimeContext
 
 # Fixtures
 
@@ -61,6 +61,51 @@ def _make_orchestrator(config_path: str, hf_model: bool = True) -> SweepOrchestr
         config = load_config(Path(config_path))
         runtime = RuntimeContext.from_config(config, "99999", log_dir_base=Path(config_path).parent / "outputs")
         return SweepOrchestrator(config=config, runtime=runtime)
+
+
+def test_runtime_preserves_local_hf_snapshot_layout(tmp_path: Path):
+    cache_root = tmp_path / "models--Inferact--Qwen"
+    blob = cache_root / "blobs" / "config-digest"
+    snapshot = cache_root / "snapshots" / "revision"
+    blob.parent.mkdir(parents=True)
+    snapshot.mkdir(parents=True)
+    blob.write_text("{}")
+    (snapshot / "config.json").symlink_to(Path("../../blobs") / blob.name)
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        f"""
+schema: 2
+name: local-hf-snapshot
+model:
+  path: {snapshot}
+  container: test-image:latest
+  precision: fp16
+resources:
+  gpu_type: h100
+  gpus_per_node: 4
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+benchmark:
+  type: manual
+"""
+    )
+
+    with (
+        patch.dict(os.environ, TestCluster.slurm_env()),
+        patch("subprocess.run", TestCluster.mock_scontrol()),
+    ):
+        runtime = RuntimeContext.from_config(
+            load_config(config_file),
+            "99999",
+            log_dir_base=tmp_path / "outputs",
+        )
+
+    assert runtime.container_mounts[cache_root.resolve()] == HF_MODEL_CACHE_MOUNT
+    assert runtime.worker_model_arg == str(HF_MODEL_CACHE_MOUNT / "snapshots" / "revision")
+    assert snapshot not in runtime.container_mounts
 
 
 # Tests for _get_hf_home
@@ -666,6 +711,7 @@ resources:
             patch.object(orch, "run_benchmark", return_value=0),
             patch.object(orch, "run_postprocess"),
             patch("srtctl.cli.do_sweep.StatusReporter"),
+            patch("srtctl.cli.do_sweep.start_process_monitor"),
         ):
             orch.run()
             mock_clean.assert_not_called()

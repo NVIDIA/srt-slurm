@@ -92,7 +92,7 @@ for final performance, unless the intended target explicitly includes monitoring
 overhead. Never compare an instrumented candidate with an uninstrumented baseline
 as evidence of a fix. Treat additional debug logging and profiling as measured
 conditions too. In srt-slurm, consult the
-[observability configuration](../../../docs/config-reference.md#observability)
+[observability configuration](../../../docs/observability.md#observability)
 for the supported controls; enabling observability alone does not establish
 that every requested trace or metric was captured. Check the resolved recipes
 in both modes: observability can also enable engine settings or event emission.
