@@ -54,7 +54,16 @@ exit "${MC_TEST_VERSION_RC:-1}"
     )
     executable(
         "timeout",
-        'while [[ $1 == --* ]]; do shift; done\nif [[ $1 == -k ]]; then shift 2; fi\nshift\nexec "$@"\n',
+        r"""
+printf '%s\n' "$*" >> "$MC_TEST_TIMEOUT_LOG"
+if [[ $1 == --signal=TERM && $2 == --kill-after=10s && ${MC_TEST_SETUP_TIMEOUT:-0} == 1 ]]; then
+    exit 124
+fi
+while [[ $1 == --* ]]; do shift; done
+if [[ $1 == -k ]]; then shift 2; fi
+shift
+exec "$@"
+""",
     )
     executable(
         "apt-get",
@@ -100,6 +109,7 @@ printf '%s\n' "$@" > "$MC_TEST_WORKER_ARGS"
         "PATH": str(binaries),
         "MC_TEST_BIN": str(binaries),
         "MC_TEST_APT_LOG": str(tmp_path / "apt.log"),
+        "MC_TEST_TIMEOUT_LOG": str(tmp_path / "timeout.log"),
         "MC_TEST_WORKER_ARGS": str(tmp_path / "worker.args"),
         "MC_TEST_PYTHON": sys.executable,
         "MC_TEST_PERFTEST_SOURCE": str(binaries / "fake-perftest"),
@@ -173,12 +183,68 @@ def test_setup_apt_failure_publishes_failed_inventory_and_preserves_the_error(
     inventory = json.loads((run_dir / "logs/agents/synthetic-node.inventory.json").read_text())
     assert inventory["ready"] is False and inventory["errors"]
     assert inventory["setup_log"]
+    assert inventory["errors"] == ["apt installation inside the container failed (exit 42)"]
+    assert "timed out" not in result.stderr
     setup_log = Path(inventory["setup_log"])
     if not setup_log.is_absolute():
         setup_log = run_dir / setup_log
     assert "synthetic apt repository failure" in setup_log.read_text()
     calls = Path(environment["MC_TEST_APT_LOG"]).read_text().splitlines()
     assert len(calls) == 1 and calls[0].split()[-1] == "update"
+
+
+@pytest.mark.parametrize("setup_timeout", [None, "420"])
+def test_setup_timeout_uses_configured_budget_and_publishes_timeout_reason(
+    setup_environment: tuple[Path, Path, dict[str, str]], setup_timeout: str | None
+) -> None:
+    run_dir, _, environment = setup_environment
+    environment.pop("MC_RAIL_SETUP_TIMEOUT", None)
+    if setup_timeout is not None:
+        environment["MC_RAIL_SETUP_TIMEOUT"] = setup_timeout
+    environment["MC_TEST_SETUP_TIMEOUT"] = "1"
+
+    result = subprocess.run(
+        ["/bin/bash", str(SETUP), str(run_dir), "synthetic-node"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    expected_timeout = setup_timeout or "240"
+    assert result.returncode != 0
+    inventory = json.loads((run_dir / "logs/agents/synthetic-node.inventory.json").read_text())
+    assert inventory["ready"] is False
+    assert inventory["errors"] == [f"apt installation inside the container timed out after {expected_timeout} seconds"]
+    timeout_calls = Path(environment["MC_TEST_TIMEOUT_LOG"]).read_text().splitlines()
+    assert timeout_calls[0].startswith(f"--signal=TERM --kill-after=10s {expected_timeout}s bash -c")
+    assert not Path(environment["MC_TEST_APT_LOG"]).exists()
+    assert not Path(environment["MC_TEST_WORKER_ARGS"]).exists()
+
+
+@pytest.mark.parametrize("setup_timeout", ["0", "-1", "bad", "1.5"])
+def test_setup_rejects_invalid_budget_before_installing_packages(
+    setup_environment: tuple[Path, Path, dict[str, str]], setup_timeout: str
+) -> None:
+    run_dir, _, environment = setup_environment
+    environment["MC_RAIL_SETUP_TIMEOUT"] = setup_timeout
+
+    result = subprocess.run(
+        ["/bin/bash", str(SETUP), str(run_dir), "synthetic-node"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    inventory = json.loads((run_dir / "logs/agents/synthetic-node.inventory.json").read_text())
+    assert inventory["ready"] is False
+    assert inventory["errors"] == [f"MC_RAIL_SETUP_TIMEOUT must be a positive integer, got: {setup_timeout}"]
+    assert not Path(environment["MC_TEST_APT_LOG"]).exists()
+    assert not Path(environment["MC_TEST_WORKER_ARGS"]).exists()
 
 
 @pytest.mark.parametrize("failure", ["loader", "malformed_version"])

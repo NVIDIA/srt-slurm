@@ -23,6 +23,10 @@ controller budget and a 30-minute allocation. This keeps blocked cross-rail
 pairs from consuming the whole allocation before other pairs are checked.
 Container extraction uses at most eight workers by default
 (`ENROOT_MAX_PROCESSORS=8`), independently of the test's full CPU allocation.
+Essential package setup has a seven-minute timeout (`MC_RAIL_SETUP_TIMEOUT=420`),
+and inventory may take up to ten minutes (`MC_RAIL_INVENTORY_TIMEOUT=600`),
+including container startup, optional tools and topology collection. These
+phases count toward the controller budget; slow setup can leave cases NOT RUN.
 `submitted.sbatch` preserves the Hecate wrapper alongside the common launcher.
 
 The result answers whether every one of the eight selected NICs can exchange
@@ -84,10 +88,12 @@ container so the installed tools remain available. Already installed tools are
 reused. The source SquashFS image and host OS are not modified; package changes
 belong to the temporary container filesystem.
 
-Setup has a four-minute timeout and saves `logs/agents/<node>.install.log`.
+Essential setup uses `MC_RAIL_SETUP_TIMEOUT` (240 seconds in the common launcher,
+420 seconds in the Hecate wrapper) and saves `logs/agents/<node>.install.log`.
 APT repositories must be reachable from the container. Setup failure is published
 as a failed inventory so the controller stops with a report rather than waiting
-for the full test budget. Preflight then records tool paths, versions/help and
+for the full test budget. Timeout and other APT failures have distinct messages,
+with the latter preserving the failed command's exit code. Preflight then records tool paths, versions/help and
 NUMA/NIC inventory; invalid binding or NIC state remains a clear preflight failure.
 Ubuntu perftest 6.20 exits 1 after printing `Version: 6.20`. Setup accepts a
 version probe returning 0 or 1 only when it prints a valid version line; the
@@ -131,10 +137,11 @@ the child process's listening socket through procfs without opening a probe
 connection, because perftest accepts only one client connection.
 
 The default traffic duration totals about 11 minutes, plus process setup and
-cleanup. The existing 22-minute controller budget includes container apt setup
+cleanup. The common launcher's 22-minute controller budget includes container apt setup
 (up to four minutes, plus one minute for optional tools, concurrently on the
 two nodes). Inventory waits up to seven minutes for container startup, apt
-setup and collection. Per-case timeouts bound unhealthy tests; any remaining
+setup and collection; the Hecate wrapper uses the longer limits described above.
+Per-case timeouts bound unhealthy tests; any remaining
 cases are explicitly NOT RUN. Three minutes remain for
 cleanup and reporting, following the repository's
 [job-sizing skill](../src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md).
@@ -190,7 +197,9 @@ MC_RAIL_IMAGE=/path/to/image-with-perftest.sqsh sbatch tools/check_mooncake_rail
 Optional overrides: `MC_RAIL_READER`, `MC_RAIL_DONOR`, `MC_RAIL_NICS`,
 `MC_RAIL_IMAGE`, `MC_RAIL_OUTPUT_ROOT`, `MC_RAIL_TOOL_DIR`,
 `MC_RAIL_DURATION`, `MC_RAIL_CASE_TIMEOUT`, `MC_RAIL_BUDGET`,
-`MC_RAIL_INVENTORY_TIMEOUT`, `MC_RAIL_CLUSTER`, and `ENROOT_MAX_PROCESSORS`.
+`MC_RAIL_SETUP_TIMEOUT`, `MC_RAIL_INVENTORY_TIMEOUT`, `MC_RAIL_CLUSTER`, and `ENROOT_MAX_PROCESSORS`.
+If extending essential setup, also allow inventory time for container startup,
+the optional one-minute package setup and topology collection.
 Keep the controller budget below the submitted walltime with three minutes reserved for cleanup; increase
 the walltime and controller budget together if extending traffic. The selected
 reader/donor must belong to the two-node allocation.

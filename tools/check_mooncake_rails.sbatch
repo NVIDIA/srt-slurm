@@ -23,6 +23,7 @@ export ENROOT_MAX_PROCESSORS=${ENROOT_MAX_PROCESSORS:-8}
 export MC_RAIL_IMAGE=${MC_RAIL_IMAGE:-/home/_shared/tensorrt-llm-release-arm64-f1bdd25-user_imant_glm5-rubin-30428.sqsh}
 export MC_RAIL_NICS=${MC_RAIL_NICS:-mlx5_0,mlx5_1,mlx5_2,mlx5_5,mlx5_6,mlx5_7,mlx5_8,mlx5_11}
 export MC_RAIL_BUDGET=${MC_RAIL_BUDGET:-1320}
+export MC_RAIL_SETUP_TIMEOUT=${MC_RAIL_SETUP_TIMEOUT:-240}
 export MC_RAIL_INVENTORY_TIMEOUT=${MC_RAIL_INVENTORY_TIMEOUT:-420}
 RUN_DIR=${MC_RAIL_OUTPUT_ROOT:-${SLURM_SUBMIT_DIR}/outputs}/mooncake-rails-${SLURM_JOB_ID}
 LOG_DIR=$RUN_DIR/logs

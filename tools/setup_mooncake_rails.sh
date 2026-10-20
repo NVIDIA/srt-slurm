@@ -6,6 +6,7 @@ set -euo pipefail
 run_dir=${1:?Shared run directory is required}
 node=${2:?Slurm node name is required}
 install_log=$run_dir/logs/agents/$node.install.log
+setup_timeout=${MC_RAIL_SETUP_TIMEOUT:-240}
 apt_updated=0
 mkdir -p "$run_dir/logs/agents"
 
@@ -31,6 +32,11 @@ PY
     exit 1
 }
 
+if [[ ! $setup_timeout =~ ^[1-9][0-9]*$ ]]; then
+    printf 'MC_RAIL_SETUP_TIMEOUT must be a positive integer, got: %s\n' "$setup_timeout" > "$install_log"
+    fail_setup "MC_RAIL_SETUP_TIMEOUT must be a positive integer, got: $setup_timeout"
+fi
+
 if command -v ib_read_bw >/dev/null && command -v ib_write_bw >/dev/null && command -v numactl >/dev/null; then
     printf 'Required tools already installed in the container.\n' > "$install_log"
 else
@@ -40,13 +46,17 @@ else
     fi
     printf 'Installing perftest and numactl inside the container on %s.\n' "$node"
     export DEBIAN_FRONTEND=noninteractive
-    if ! timeout --signal=TERM --kill-after=10s 240s bash -c '
+    apt_rc=0
+    timeout --signal=TERM --kill-after=10s "${setup_timeout}s" bash -c '
         set -euo pipefail
         apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
         apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 \
             install -y --no-install-recommends perftest numactl
-    ' > "$install_log" 2>&1; then
-        fail_setup 'apt installation inside the container failed or exceeded 240 seconds'
+    ' > "$install_log" 2>&1 || apt_rc=$?
+    if [[ $apt_rc == 124 ]]; then
+        fail_setup "apt installation inside the container timed out after $setup_timeout seconds"
+    elif [[ $apt_rc != 0 ]]; then
+        fail_setup "apt installation inside the container failed (exit $apt_rc)"
     fi
     apt_updated=1
 fi

@@ -144,6 +144,8 @@ def test_hecate_wrapper_reuses_one_persistent_step_with_full_node_resources(
     assert env["MC_RAIL_CLUSTER"] == "hecate"
     assert env["MC_RAIL_CPUS_PER_TASK"] == str(cpus)
     assert env["ENROOT_MAX_PROCESSORS"] == "8"
+    assert env["MC_RAIL_SETUP_TIMEOUT"] == "420"
+    assert env["MC_RAIL_INVENTORY_TIMEOUT"] == "600"
     assert env["MC_RAIL_NICS"].split(",") == [
         "mlx5_0",
         "mlx5_1",
@@ -161,7 +163,7 @@ def test_hecate_wrapper_reuses_one_persistent_step_with_full_node_resources(
         ("--duration", "3"),
         ("--case-timeout", "8"),
         ("--budget", "1620"),
-        ("--inventory-timeout", "420"),
+        ("--inventory-timeout", "600"),
     ):
         assert controller[controller.index(flag) + 1] == expected
     assert (run_dir / "submitted.sbatch").read_text() == LAUNCHER.read_text()
@@ -179,6 +181,7 @@ def test_hecate_runtime_overrides_reach_the_shared_launcher(tmp_path: Path) -> N
             "MC_RAIL_DURATION": "5",
             "MC_RAIL_CASE_TIMEOUT": "12",
             "MC_RAIL_BUDGET": "1500",
+            "MC_RAIL_SETUP_TIMEOUT": "300",
             "MC_RAIL_INVENTORY_TIMEOUT": "400",
             "ENROOT_MAX_PROCESSORS": "4",
         },
@@ -188,6 +191,7 @@ def test_hecate_runtime_overrides_reach_the_shared_launcher(tmp_path: Path) -> N
     assert "--container-image=/images/custom.sqsh" in step["argv"]
     assert step["env"]["MC_RAIL_NICS"] == "mlx5_0,mlx5_6"
     assert step["env"]["ENROOT_MAX_PROCESSORS"] == "4"
+    assert step["env"]["MC_RAIL_SETUP_TIMEOUT"] == "300"
     controller = json.loads(controller_capture.read_text())
     for flag, expected in (
         ("--nics", "mlx5_0,mlx5_6"),
