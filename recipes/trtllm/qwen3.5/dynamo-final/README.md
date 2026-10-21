@@ -5,6 +5,25 @@ These recipes target the `q35repro-09607ea47b` image: TRT-LLM release
 overlays from source revision `09607ea47b`. The image records its provenance at
 `/opt/qwen35_pareto_repro/`.
 
+The directory contains ten Pareto configurations. The low-concurrency additions
+are TEP16 with concurrency 8/batch 1 and concurrency 16/batch 2, and TEP8 with
+concurrency 28/batch 4. Their engine tuning and worker placement follow the
+supplied recipes.
+
+## Cluster paths
+
+The Dynamo recipes use the current Hecate configuration: model and runtime image
+under `/lustre/fsw/coreai_comparch_inferencex/rihuo/`, a `/lustre` mount, and
+`install_dynamo_wheel.sh` with the local `dynamo_wheels` directory mounted at
+`/dynamo_wheels`. They inherit Slurm account, partition and walltime from the
+cluster configuration. `identity.container.image` retains the original image
+provenance; `model.container` selects the image used at runtime.
+
+The benchmark installs AIPerf from the local `agentx-harness` directory, keeps
+Hugging Face downloads in `hf_cache` and dataset mmap data in
+`aiperf_mmap_cache`, all beneath the same Lustre directory. Real-time AIPerf
+metrics remain enabled and OTEL remains disabled.
+
 ## Default filesystem caching
 
 The recipes omit the six cache-location overrides below and use the libraries'
