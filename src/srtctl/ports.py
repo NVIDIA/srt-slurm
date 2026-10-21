@@ -22,8 +22,6 @@ FRONTEND_INTERNAL_PORT = 8180
 # Shared worker endpoint ports.
 # SGLang uses this for --kv-events-config; vLLM uses it for
 # DYN_VLLM_KV_EVENT_PORT.
-# Keep publisher blocks below the 9000-based ephemeral range used on some clusters
-# and clear of node monitoring listeners in the 5200 range.
 KV_EVENTS_PORT_BASE = 3000
 
 # SGLang backend ports.
