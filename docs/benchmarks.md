@@ -98,11 +98,15 @@ benchmark:
 ```
 
 The launcher checks these seven values before downloading anything. It clones InferenceX `main`
-and its AIPerf submodule into temporary storage, runs InferenceX's `srt_agentic.sh` against the
-ready srt-slurm frontend, and removes the checkout afterward. AIPerf artifacts and the aggregate
-JSON are written under `/logs/agentic` by default. The benchmark container needs network access
-to GitHub, package downloads, and the AgentX trace dataset. The launch log records the resolved
-InferenceX and AIPerf commits.
+into temporary storage, runs InferenceX's `srt_agentic.sh` against the ready srt-slurm frontend,
+and removes the checkout afterward. InferenceX installs the `agentx-harness` release pinned in its
+`requirements.txt`; for InferenceX commits before
+[SemiAnalysisAI/InferenceX#3940](https://github.com/SemiAnalysisAI/InferenceX/pull/3940), which
+still vendor the harness as the `utils/aiperf` submodule, the launcher also fetches that
+submodule. AIPerf artifacts and the aggregate JSON are written under `/logs/agentic` by default.
+The benchmark container needs network access to GitHub, package downloads, and the AgentX trace
+dataset. The launch log records the resolved InferenceX commit and the pinned `agentx-harness`
+version or AIPerf submodule commit.
 
 Set `AGENTX_INFERENCEX_REF` in `benchmark.env` to pin an InferenceX commit for repeatable runs.
 `CONC_LIST` can specify multiple space-separated concurrency values; `CONC` is still required.
