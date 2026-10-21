@@ -96,6 +96,7 @@ class TokenSpeedBackend(Backend):
         gpus_per_node: int,
         available_nodes: Sequence[str],
         spread_workers: bool = False,
+        gpu_indices_by_mode: Mapping[WorkerMode, Sequence[frozenset[int]]] | None = None,
     ) -> list[Endpoint]:
         from srtctl.core.topology import allocate_endpoints
 
@@ -109,6 +110,7 @@ class TokenSpeedBackend(Backend):
             gpus_per_node=gpus_per_node,
             available_nodes=available_nodes,
             spread_workers=spread_workers,
+            gpu_indices_by_mode=gpu_indices_by_mode,
         )
 
     def endpoints_to_processes(

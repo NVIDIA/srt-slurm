@@ -18,7 +18,7 @@ After (Python):
         print(f"{endpoint.mode} worker {endpoint.index} on {endpoint.nodes}")
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from srtctl.backends.base import WorkerMode
@@ -275,6 +275,7 @@ def allocate_endpoints(
     spread_workers: bool = False,
     allow_prefill_decode_colocation: bool = False,
     pack_multinode_workers: bool = False,
+    gpu_indices_by_mode: Mapping[WorkerMode, Sequence[frozenset[int]]] | None = None,
 ) -> list[Endpoint]:
     """Allocate endpoints to nodes based on GPU requirements.
 
@@ -296,6 +297,12 @@ def allocate_endpoints(
             workers, allowing adjacent workers to share a partially filled node.
         allow_prefill_decode_colocation: If True, decode workers may use
             remaining GPUs on a node already used by prefill workers.
+        gpu_indices_by_mode: The GPU layout of a node for a mode, as the physical
+            GPU set of each worker slot on the node, for partial-node workers
+            whose GPUs must not be the first contiguous ones (one GPU per socket,
+            for example). One slot means one worker per node; two slots such as
+            ({0, 2}, {1, 3}) put two workers on each node. Workers fill the slots
+            in order and move to the next node when the slots are used up.
 
     Returns:
         List of Endpoint objects with node assignments
@@ -394,6 +401,41 @@ def allocate_endpoints(
         result = []
 
         nodes_per_worker = (gpus_per_worker + gpus_per_node - 1) // gpus_per_node
+        slots = tuple((gpu_indices_by_mode or {}).get(mode) or ())
+        if slots:
+            # The explicit layout is the node's: workers fill its slots in order and
+            # take a fresh node when the slots are used up, whatever the packing
+            # policy, so the mask and the GPU-local bindings follow the named GPUs.
+            used: set[int] = set()
+            for slot in slots:
+                if len(slot) != gpus_per_worker:
+                    raise ValueError(f"{mode} workers use GPUs {sorted(slot)} but need {gpus_per_worker} GPUs each")
+                if max(slot) >= gpus_per_node or min(slot) < 0:
+                    raise ValueError(f"{mode} GPU indices {sorted(slot)} do not fit a {gpus_per_node}-GPU node")
+                if used & slot:
+                    raise ValueError(f"{mode} GPU layouts overlap on GPUs {sorted(used & slot)}")
+                used |= slot
+            if gpu_offset > 0:
+                node_idx += 1
+                gpu_offset = 0
+            nodes_needed = (count + len(slots) - 1) // len(slots)
+            if node_idx + nodes_needed > len(available_nodes):
+                raise ValueError(
+                    f"Not enough nodes: {mode} needs {nodes_needed} node(s) for {count} worker(s) "
+                    f"at {len(slots)} per node, but only {len(available_nodes) - node_idx} remain"
+                )
+            for i in range(count):
+                result.append(
+                    Endpoint(
+                        mode=mode,
+                        index=i,
+                        nodes=(available_nodes[node_idx + i // len(slots)],),
+                        gpu_indices=frozenset(slots[i % len(slots)]),
+                        gpus_per_node=gpus_per_node,
+                    )
+                )
+            node_idx += nodes_needed
+            return result
 
         for i in range(count):
             if pack_multinode_workers:
@@ -518,6 +560,7 @@ def allocate_endpoints_het(
     decode_nodes: Sequence[str],
     gpus_per_node: int,
     pack_multinode_workers: bool = False,
+    gpu_indices_by_mode: Mapping[WorkerMode, Sequence[frozenset[int]]] | None = None,
 ) -> list[Endpoint]:
     """Allocate endpoints for a SLURM heterogeneous job.
 
@@ -541,6 +584,7 @@ def allocate_endpoints_het(
         gpus_per_node=gpus_per_node,
         available_nodes=prefill_nodes,
         pack_multinode_workers=pack_multinode_workers,
+        gpu_indices_by_mode=gpu_indices_by_mode,
     )
     decode_eps = allocate_endpoints(
         num_prefill=0,
@@ -552,6 +596,7 @@ def allocate_endpoints_het(
         gpus_per_node=gpus_per_node,
         available_nodes=decode_nodes,
         pack_multinode_workers=pack_multinode_workers,
+        gpu_indices_by_mode=gpu_indices_by_mode,
     )
     # Endpoint is frozen; re-emit with het_group set.
     tagged: list[Endpoint] = []

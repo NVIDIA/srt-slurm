@@ -1,0 +1,60 @@
+# TRT-LLM aggregated TP2 behind the Dynamo frontend, with the worker's two GPUs
+# on different sockets.
+#
+# A 2-GPU worker normally takes GPUs 0 and 1 of its node. `gpu_indices: [0, 4]`
+# puts one rank on each socket of an 8-GPU H100 node instead, so each rank's host
+# memory and CPUs are local to its GPU. srtctl exports CUDA_VISIBLE_DEVICES=0,4 to
+# the worker and the role runs one worker per node.
+#
+# Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-trtllm-dynamo-agg-gpu-indices"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "trtllm"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+dynamo:
+  install: false
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: "kv"
+
+engine:
+  type: trtllm
+  served_model_name: "Qwen/Qwen3-0.6B"
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 2
+    gpu_indices: [0, 4]
+    env:
+      PYTHONUNBUFFERED: "1"
+      TLLM_LOG_LEVEL: "INFO"
+    args:
+      backend: "pytorch"
+      tensor_parallel_size: 2
+      max_batch_size: 64
+      max_num_tokens: 8192
+      max_seq_len: 4096
+      trust_remote_code: true
+      kv_cache_config:
+        free_gpu_memory_fraction: 0.5
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

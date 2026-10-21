@@ -842,6 +842,14 @@ class RoleConfig(RoleSettings):
     workers: int | None = None
     # GPUs per worker. Defaults to `nodes * gpus_per_node // workers`; required when decode colocates.
     gpus: int | None = None
+    # The node's GPU layout for this role's partial-node workers, when they must not take the
+    # first contiguous GPUs: one list is the physical GPUs of the single worker on each node
+    # (`[0, 2]` puts a TP2 worker on one GPU per socket of a 4-GPU node); a list of lists is the
+    # GPUs of each worker slot on a node (`[[0, 2], [1, 3]]` runs two such workers per node).
+    # Every list has `gpus` distinct entries below `resources.gpus_per_node`, the lists do not
+    # overlap, and workers fill the slots in order before moving to the next node. The device
+    # mask, vLLM `--device-ids`, the Mooncake device map and the NUMA binding follow it.
+    gpu_indices: list[int] | list[list[int]] | None = None
     # Merged over the recipe srun_options on this role's worker steps only (e.g. a per-step mem cap).
     srun_options: dict[str, str] = field(default_factory=dict)
     # Environment for every worker of this role.
@@ -886,6 +894,23 @@ class RoleConfig(RoleSettings):
             raise ValidationError(f"nodes must be a positive integer or {COLOCATE!r}; got {nodes!r}")
         if self.container is not None and not self.container.strip():
             raise ValidationError("container must be a non-empty string")
+
+    @property
+    def gpu_layout(self) -> tuple[frozenset[int], ...] | None:
+        """``gpu_indices`` as one GPU set per worker slot on a node, or None when unset."""
+        if self.gpu_indices is None:
+            return None
+        slots: list[frozenset[int]] = []
+        flat: list[int] = []
+        for entry in self.gpu_indices:
+            if isinstance(entry, list):
+                slots.append(frozenset(entry))
+            else:
+                flat.append(entry)
+        if slots and flat:
+            # Mixed forms are rejected by validation; keep both so the message can name them.
+            slots.append(frozenset(flat))
+        return tuple(slots) if slots else (frozenset(flat),)
 
     @property
     def colocated(self) -> bool:
@@ -967,6 +992,17 @@ class Topology:
             # A colocated decode shares the prefill nodes and inherits the prefill worker size.
             return self.gpus_per_worker("prefill")
         return self.gpus_per_node
+
+    @property
+    def gpu_indices_by_mode(self) -> dict[WorkerMode, tuple[frozenset[int], ...]]:
+        """``roles.<role>.gpu_indices`` by worker mode, one GPU set per worker slot on a node."""
+        # Role names are the allocator's worker modes (``prefill``, ``decode``, ``agg``).
+        by_mode: dict[WorkerMode, tuple[frozenset[int], ...]] = {}
+        for role, spec in self.roles.items():
+            layout = spec.gpu_layout
+            if layout is not None and role in ROLE_TO_MODE:
+                by_mode[cast("WorkerMode", role)] = layout
+        return by_mode
 
     def worker_critical(self, mode: str) -> bool:
         """Whether a worker of ``mode`` (``prefill``, ``decode``, ``agg``) failing fails the run."""
@@ -2957,6 +2993,57 @@ class SrtConfig:
             if spec.kv_events is not None and engine_type not in ("sglang", "vllm"):
                 raise ValidationError(f"roles.{role}.kv_events is not supported by the {engine_type} engine")
 
+        for role, spec in self.roles.items():
+            if spec.gpu_indices is None:
+                continue
+            gpus_per_node = self.resources.gpus_per_node
+            raw = spec.gpu_indices
+            if not raw or (any(isinstance(e, list) for e in raw) and not all(isinstance(e, list) for e in raw)):
+                raise ValidationError(
+                    f"roles.{role}.gpu_indices must be a list of GPU indices or a list of such lists; got {raw}"
+                )
+            layout = spec.gpu_layout or ()
+            flat = [index for slot in raw for index in (slot if isinstance(slot, list) else [slot])]
+            if not layout or any(not slot for slot in layout) or len(set(flat)) != len(flat):
+                raise ValidationError(
+                    f"roles.{role}.gpu_indices must list distinct GPU indices, with no GPU in two slots; got {raw}"
+                )
+            if any(index < 0 or index >= gpus_per_node for index in flat):
+                raise ValidationError(
+                    f"roles.{role}.gpu_indices {raw} must lie in 0..{gpus_per_node - 1} "
+                    f"(resources.gpus_per_node is {gpus_per_node})"
+                )
+            if spec.gpus is None:
+                raise ValidationError(f"roles.{role}.gpu_indices needs an explicit gpus: on the role")
+            sizes = sorted({len(slot) for slot in layout})
+            if sizes != [spec.gpus]:
+                raise ValidationError(
+                    f"roles.{role}.gpu_indices lists {' and '.join(str(n) for n in sizes)} GPUs per worker "
+                    f"but gpus: is {spec.gpus}; every slot must have gpus: entries"
+                )
+            if spec.gpus >= gpus_per_node:
+                raise ValidationError(
+                    f"roles.{role}.gpu_indices only applies to a partial-node worker; "
+                    f"gpus: {spec.gpus} already covers the {gpus_per_node}-GPU node"
+                )
+            if spec.colocated:
+                raise ValidationError(f"roles.{role}.gpu_indices cannot be combined with nodes: colocate")
+            decode_spec = self.roles.get("decode")
+            if role == "prefill" and decode_spec is not None and decode_spec.colocated:
+                # The layout owns the node, so a colocated decode would find no free GPUs.
+                raise ValidationError(
+                    "roles.prefill.gpu_indices takes the prefill nodes whole; roles.decode.nodes: colocate "
+                    "cannot share them"
+                )
+            if isinstance(spec.nodes, int) and spec.workers is not None:
+                per_node = len(layout)
+                needed = -(-spec.workers // per_node)
+                if spec.nodes != needed:
+                    raise ValidationError(
+                        f"roles.{role}.gpu_indices places {per_node} worker(s) per node, so workers: {spec.workers} "
+                        f"needs nodes: {needed}; got nodes: {spec.nodes}"
+                    )
+
         decode = self.roles.get("decode")
         if decode is not None and decode.colocated:
             # A colocated split cannot be derived: the per-node formula would hand prefill every GPU
@@ -3543,11 +3630,12 @@ class SrtConfig:
         # use a contiguous subset. Actual placement/ports are resolved later,
         # and _profiling_worker_endpoints checks the selector against that topology.
         local_gpus = resources.gpus_per_node if nodes_per_worker > 1 else gpus_per_worker
+        layout = resources.gpu_indices_by_mode.get(mode)
         endpoint = Endpoint(
             mode=mode,
             index=0,
             nodes=tuple(f"profiling-node-{rank}" for rank in range(nodes_per_worker)),
-            gpu_indices=frozenset(range(local_gpus)),
+            gpu_indices=layout[0] if layout else frozenset(range(local_gpus)),
             gpus_per_node=resources.gpus_per_node,
         )
         # Validation-only expansion uses a fresh port allocator; it neither
@@ -3775,6 +3863,7 @@ class SrtConfig:
             gpus_per_node=resources.gpus_per_node,
             available_nodes=nodes,
             spread_workers=self.resources.spread_workers,
+            gpu_indices_by_mode=resources.gpu_indices_by_mode,
         )
         processes = self.backend.endpoints_to_processes(
             endpoints,

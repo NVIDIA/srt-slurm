@@ -135,6 +135,7 @@ class SweepOrchestrator(
                 decode_nodes=self.runtime.nodes.decode_group,
                 gpus_per_node=r.gpus_per_node,
                 pack_multinode_workers=self.backend.type == "trtllm",
+                gpu_indices_by_mode=r.gpu_indices_by_mode,
             )
         return self.config.allocate_worker_endpoints(self.runtime.nodes.worker)
 

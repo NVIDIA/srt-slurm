@@ -244,8 +244,13 @@ class Backend(ABC):
         gpus_per_node: int,
         available_nodes: Sequence[str],
         spread_workers: bool = False,
+        gpu_indices_by_mode: Mapping[WorkerMode, Sequence[frozenset[int]]] | None = None,
     ) -> list["Endpoint"]:
-        """Allocate logical endpoints based on resource requirements."""
+        """Allocate logical endpoints based on resource requirements.
+
+        ``gpu_indices_by_mode`` carries ``roles.<role>.gpu_indices``: the physical
+        GPU set of each worker slot on a node of that mode.
+        """
         raise NotImplementedError
 
     @abstractmethod

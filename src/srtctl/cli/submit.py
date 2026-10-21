@@ -269,6 +269,13 @@ def show_config_details(config: SrtConfig) -> None:
     visible_devices_env = get_srtslurm_setting("visible_devices_env", "CUDA_VISIBLE_DEVICES")
     console.print(f"GPU subset visibility variable: {visible_devices_env}")
     for role, spec in config.roles.items():
+        layout = spec.gpu_layout
+        if layout:
+            slots = " | ".join(",".join(str(i) for i in sorted(slot)) for slot in layout)
+            console.print(
+                f"{role}: gpu_indices={slots} ({visible_devices_env} per worker; {len(layout)} worker(s) per node)",
+                crop=False,
+            )
         policy = spec.restart
         if policy.enabled:
             console.print(

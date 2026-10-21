@@ -1339,3 +1339,90 @@ def test_explicit_profiling_explains_observability_precedence(capsys):
     output = capsys.readouterr().out
     assert "superseded by profiling" in output
     assert "nsys targets" not in output
+
+
+class TestRoleGpuIndices:
+    """``roles.<role>.gpu_indices`` is validated at load and visible in the dry run."""
+
+    AGG_ONLY = {"prefill": None, "decode": None}
+
+    def _agg(self, **agg):
+        return _make_config(
+            {
+                "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
+                "engine": {"type": "trtllm", "served_model_name": "test"},
+                "roles": {**self.AGG_ONLY, "agg": {"nodes": 1, "workers": 1, **agg}},
+            }
+        )
+
+    def test_mask_follows_the_named_gpus(self) -> None:
+        config = self._agg(gpus=2, gpu_indices=[0, 2])
+        assert config.topology.gpu_indices_by_mode == {"agg": (frozenset({0, 2}),)}
+        endpoints = config.allocate_worker_endpoints(["node0"])
+        assert endpoints[0].gpu_indices == frozenset({0, 2})
+        from srtctl.core.worker_backends import worker_processes
+
+        assert [p.cuda_visible_devices for p in worker_processes(config, endpoints)] == ["0,2"]
+
+    def test_visible_in_dry_run(self, capsys) -> None:
+        show_config_details(self._agg(gpus=2, gpu_indices=[0, 2]))
+        output = " ".join(capsys.readouterr().out.split())
+        assert "agg: gpu_indices=0,2 (CUDA_VISIBLE_DEVICES per worker; 1 worker(s) per node)" in output
+
+    @pytest.mark.parametrize(
+        ("agg", "message"),
+        [
+            ({"gpus": 2, "gpu_indices": [0, 0]}, "distinct GPU indices"),
+            ({"gpus": 2, "gpu_indices": [0, 4]}, "must lie in 0..3"),
+            ({"gpu_indices": [0, 2]}, "needs an explicit gpus"),
+            ({"gpus": 2, "gpu_indices": [0, 1, 2]}, "lists 3 GPUs per worker but gpus: is 2"),
+            ({"gpus": 4, "gpu_indices": [0, 1, 2, 3]}, "only applies to a partial-node worker"),
+            ({"nodes": 1, "workers": 2, "gpus": 2, "gpu_indices": [0, 2]}, "needs nodes: 2; got nodes: 1"),
+            ({"nodes": 1, "workers": 2, "gpus": 2, "gpu_indices": [[0, 2], [2, 3]]}, "no GPU in two slots"),
+            ({"nodes": 1, "workers": 2, "gpus": 2, "gpu_indices": [[0, 2], [1]]}, "lists 1 and 2 GPUs per worker"),
+            # A mixed form fails marshmallow's union field before the recipe validator runs.
+            ({"nodes": 1, "workers": 2, "gpus": 2, "gpu_indices": [0, [1, 3]]}, "Not a valid"),
+        ],
+    )
+    def test_rejected_at_load(self, agg, message) -> None:
+        from marshmallow import ValidationError
+
+        with pytest.raises(ValidationError, match=message):
+            self._agg(**agg)
+
+    def test_prefill_set_rejects_colocated_decode(self) -> None:
+        from marshmallow import ValidationError
+
+        with pytest.raises(ValidationError, match="cannot share them"):
+            _make_config(
+                {
+                    "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
+                    "engine": {"type": "trtllm", "served_model_name": "test"},
+                    "roles": {
+                        "prefill": {"nodes": 1, "workers": 1, "gpus": 2, "gpu_indices": [0, 2]},
+                        "decode": {"nodes": "colocate", "workers": 1, "gpus": 2},
+                    },
+                }
+            )
+
+    def test_two_slots_per_node(self, capsys) -> None:
+        config = _make_config(
+            {
+                "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
+                "engine": {"type": "trtllm", "served_model_name": "test"},
+                "roles": {
+                    **self.AGG_ONLY,
+                    "agg": {"nodes": 2, "workers": 4, "gpus": 2, "gpu_indices": [[0, 2], [1, 3]]},
+                },
+            }
+        )
+        endpoints = config.allocate_worker_endpoints(["node0", "node1"])
+        assert [(e.nodes[0], sorted(e.gpu_indices)) for e in endpoints] == [
+            ("node0", [0, 2]),
+            ("node0", [1, 3]),
+            ("node1", [0, 2]),
+            ("node1", [1, 3]),
+        ]
+        show_config_details(config)
+        output = " ".join(capsys.readouterr().out.split())
+        assert "agg: gpu_indices=0,2 | 1,3 (CUDA_VISIBLE_DEVICES per worker; 2 worker(s) per node)" in output
