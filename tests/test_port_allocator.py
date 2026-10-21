@@ -8,7 +8,9 @@ topology of every topology example under ``examples/`` and asserts that no two
 processes on a node share a port and that job-global kinds never repeat.
 """
 
+import socket
 from collections import Counter
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
@@ -223,3 +225,49 @@ def test_sglang_dp_workers_sharing_a_node_get_disjoint_kv_events_blocks(dp_args:
             bound[(process.node, process.kv_events_port + rank)] += 1
     duplicates = {key: count for key, count in bound.items() if count > 1}
     assert not duplicates, f"KV-event ports bound twice on one node: {duplicates}"
+
+
+@pytest.mark.parametrize("prefill_workers,decode_dp", [(5, 16), (6, 32), (16, 32)])
+def test_sglang_decode_publishers_bind_with_node_monitor_on_5252(prefill_workers: int, decode_dp: int):
+    data = {
+        "schema": 2,
+        "engine": "sglang",
+        "name": "sglang-kv-events-monitor",
+        "model": {"path": "hf:Qwen/Qwen3-0.6B", "container": "lmsysorg/sglang:latest", "precision": "bf16"},
+        "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
+        "roles": {
+            "prefill": {
+                "nodes": (prefill_workers + 1) // 2,
+                "workers": prefill_workers,
+                "gpus": 2,
+                "kv_events": True,
+                "args": {"tensor-parallel-size": 2, "data-parallel-size": 2, "enable-dp-attention": True},
+            },
+            "decode": {
+                "nodes": decode_dp // 4,
+                "workers": 1,
+                "gpus": decode_dp,
+                "kv_events": True,
+                "args": {
+                    "tensor-parallel-size": decode_dp,
+                    "data-parallel-size": decode_dp,
+                    "enable-dp-attention": True,
+                },
+            },
+        },
+    }
+    config = SrtConfig.Schema().load(resolve_config_with_defaults(data, None))
+    processes = _example_processes(config)
+    decode = [p for p in processes if p.endpoint_mode == "decode"]
+    assert len(decode) == decode_dp // 4
+    with ExitStack() as stack:
+        monitor = stack.enter_context(socket.socket())
+        monitor.bind(("127.0.0.1", 5252))
+        monitor.listen()
+        for node_rank, process in enumerate(decode):
+            for rank in range(node_rank * 4, (node_rank + 1) * 4):
+                publisher = stack.enter_context(socket.socket())
+                port = process.kv_events_port + rank
+                assert not 9000 <= port <= 65000, "publisher overlaps the cluster ephemeral range"
+                publisher.bind(("0.0.0.0", port))
+                publisher.listen()
