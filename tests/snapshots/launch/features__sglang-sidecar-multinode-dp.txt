@@ -105,7 +105,7 @@ command: |
         exit "${status}"
     }
     trap cleanup EXIT INT TERM
-    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17500 --dist-init-addr 127.0.0.1:8300 --nnodes 2 --node-rank 0 --grpc-port 19000 --kv-events-config '"'"'{"publisher": "zmq", "topic": "kv-events", "endpoint": "tcp://*:5200"}'"'"' --incremental-streaming-output --context-length 2048 --data-parallel-size 2 --disable-cuda-graph --enable-dp-attention --max-running-requests 8 --mem-fraction-static 0.3 --page-size 64 --tensor-parallel-size 2 &
+    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17500 --dist-init-addr 127.0.0.1:8300 --nnodes 2 --node-rank 0 --grpc-port 19000 --kv-events-config '"'"'{"publisher": "zmq", "topic": "kv-events", "endpoint": "tcp://*:3000"}'"'"' --incremental-streaming-output --context-length 2048 --data-parallel-size 2 --disable-cuda-graph --enable-dp-attention --max-running-requests 8 --mem-fraction-static 0.3 --page-size 64 --tensor-parallel-size 2 &
     ENGINE_PID=$!
     port_ready=0
     for _ in $(seq 1 3600); do
@@ -197,7 +197,7 @@ command: |
         exit "${status}"
     }
     trap cleanup EXIT INT TERM
-    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 0 --nccl-port 17501 --dist-init-addr 127.0.0.1:8300 --nnodes 2 --node-rank 1 --grpc-port 19001 --kv-events-config '"'"'{"publisher": "zmq", "topic": "kv-events", "endpoint": "tcp://*:5202"}'"'"' --incremental-streaming-output --context-length 2048 --data-parallel-size 2 --disable-cuda-graph --enable-dp-attention --max-running-requests 8 --mem-fraction-static 0.3 --page-size 64 --tensor-parallel-size 2 &
+    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 0 --nccl-port 17501 --dist-init-addr 127.0.0.1:8300 --nnodes 2 --node-rank 1 --grpc-port 19001 --kv-events-config '"'"'{"publisher": "zmq", "topic": "kv-events", "endpoint": "tcp://*:3002"}'"'"' --incremental-streaming-output --context-length 2048 --data-parallel-size 2 --disable-cuda-graph --enable-dp-attention --max-running-requests 8 --mem-fraction-static 0.3 --page-size 64 --tensor-parallel-size 2 &
     ENGINE_PID=$!
     port_ready=0
     for _ in $(seq 1 3600); do

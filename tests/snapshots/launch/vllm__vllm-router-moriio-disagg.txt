@@ -12,7 +12,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5200
+    DYN_VLLM_KV_EVENT_PORT: 3000
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
 bash_preamble: |
@@ -33,7 +33,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5201
+    DYN_VLLM_KV_EVENT_PORT: 3001
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
 bash_preamble: |
