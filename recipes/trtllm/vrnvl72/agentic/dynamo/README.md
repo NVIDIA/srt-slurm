@@ -13,8 +13,9 @@ TRT-LLM engine settings, per-role arguments and TRT-LLM environment tuning match
 the corresponding RapLab Dynamo recipes. Hecate relies on its default
 `NCCL_NVLINK_UTIL_CENTRIC_SCHED_ENABLE=0` and retains its Lustre paths,
 cache and wheel locations, host setup and network configuration, including
-`UCX_NET_DEVICES=all`. Mooncake device affinity remains enabled only in the DEP8
-recipe.
+`UCX_NET_DEVICES=all`. The Mooncake recipes omit destination-device affinity
+overrides and additional Transfer Engine device filters, retaining the Store's
+`device_name` NIC list.
 
 Seven recipes set `engine.numa_memory_bind: local` and `engine.numa_cpu_bind: true`
 to bind worker memory and CPUs to the task GPU's NUMA node. The DEP8 recipe omits
