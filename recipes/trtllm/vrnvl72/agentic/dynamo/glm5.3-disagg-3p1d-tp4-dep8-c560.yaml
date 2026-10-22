@@ -353,7 +353,7 @@ services:
   - -c
   - |
     set -euo pipefail
-    exec trtllm-serve mooncake_donor --config /logs/mooncake_store_config_prefill.json --segment_size 1000GiB --ready_file /logs/mooncake_donor_{index}.ready
+    exec trtllm-serve mooncake_donor --config /logs/mooncake_store_config_prefill.json --segment_size 1100GiB --ready_file /logs/mooncake_donor_{index}.ready
   readiness:
     file:
       path: mooncake_donor_{index}.ready
