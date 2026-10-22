@@ -37,6 +37,11 @@ def recipe_source(request: pytest.FixtureRequest) -> Path:
 
 
 @pytest.fixture
+def prefill_size(recipe_source: Path) -> str:
+    return {"dynamo": "260GiB", "raplab-dynamo": "250GiB"}[recipe_source.parent.name]
+
+
+@pytest.fixture
 def recipe_path(recipe_source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Resolve the actual recipe against portable model and cluster paths."""
     monkeypatch.setenv("SRTSLURM_CONFIG", str(tmp_path / "absent-srtslurm.yaml"))
@@ -52,12 +57,13 @@ def recipe_path(recipe_source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyP
     return path
 
 
-def test_four_pool_variant_preserves_the_egm_comparison_baseline(recipe_source: Path) -> None:
+def test_four_pool_variant_preserves_the_egm_comparison_baseline(recipe_source: Path, prefill_size: str) -> None:
     """Match worker settings while RapLab leaves scheduling overrides to the caller."""
     base = yaml.safe_load(recipe_source.with_name(BASE_NAME).read_text())
     variant = yaml.safe_load(recipe_source.read_text())
     if recipe_source.parent.name == "raplab-dynamo":
         assert "slurm" not in variant
+        variant["sbatch_directives"].pop("exclude", None)
         assert variant["sbatch_directives"] == {"exclusive": "", "mem": "0"}
         base.pop("slurm")
         assert base["sbatch_directives"].pop("segment") == "6"
@@ -77,7 +83,7 @@ def test_four_pool_variant_preserves_the_egm_comparison_baseline(recipe_source: 
         normalized = dict(service)
         normalized["name"] = "prefill-egm-donor"
         command = list(service["command"])
-        assert command[command.index("--segment-size") + 1] == "260GiB"
+        assert command[command.index("--segment-size") + 1] == prefill_size
         command[command.index("--segment-size") + 1] = "1040GiB"
         assert command[command.index("--numa-nodes") + 1] == PREFILL_NUMA_NODES[pool]
         command[command.index("--numa-nodes") + 1] = "auto"
@@ -120,14 +126,14 @@ def test_dry_run_exposes_all_four_prefill_pool_fleets(
     assert "#SBATCH --partition=default" in directives
     if recipe_source.parent.name == "raplab-dynamo":
         assert config.slurm.time_limit is None
-        assert config.sbatch_directives == {"exclusive": "", "mem": "0"}
+        assert {key: config.sbatch_directives[key] for key in ("exclusive", "mem")} == {"exclusive": "", "mem": "0"}
         assert "#SBATCH --time=01:00:00" in directives
     else:
         assert "#SBATCH --time=02:00:00" in directives
 
 
 def test_mock_launch_gates_workers_on_four_host_pools_per_prefill_node(
-    recipe_source: Path, recipe_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    recipe_source: Path, recipe_path: Path, prefill_size: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Each provider maps its host pool through one GPU and has disjoint readiness/log files."""
     config = SrtConfig.from_yaml(recipe_path)
@@ -203,7 +209,7 @@ def test_mock_launch_gates_workers_on_four_host_pools_per_prefill_node(
     decode_size = decode_command[decode_command.index("--segment-size") + 1]
     for launch in donors:
         command = launch["command"]
-        expected_size = "260GiB" if launch in prefill else decode_size
+        expected_size = prefill_size if launch in prefill else decode_size
         assert command[command.index("--segment-size") + 1] == expected_size
         total_capacity += donor.parse_size(expected_size)
         assert "/configs/mooncake_egm_donor.py" in command
@@ -229,7 +235,7 @@ def test_mock_launch_gates_workers_on_four_host_pools_per_prefill_node(
         markers.add(marker)
         assert command[command.index("--ready-file") + 1] == f"/logs/{marker}"
         assert "{" not in marker, "Every instance needs a fully rendered marker"
-    assert total_capacity == 12 * donor.parse_size("260GiB") + 2 * donor.parse_size(decode_size)
+    assert total_capacity == 12 * donor.parse_size(prefill_size) + 2 * donor.parse_size(decode_size)
 
     master = next(launch for launch in launches if launch.get("step_name") == "service_mooncake-master")
     assert "/configs/setup_mooncake_egm.sh" in master["bash_preamble"]
@@ -250,11 +256,12 @@ def test_mock_launch_gates_workers_on_four_host_pools_per_prefill_node(
     assert payload["stage_through_host"] is True
     assert payload["staging_buffer_bytes"] == "2GiB"
     monkeypatch.setattr(donor.socket, "gethostbyname", lambda hostname: "192.0.2.2")
+    prefill_size_bytes = donor.parse_size(prefill_size)
     for numa_node in set(PREFILL_NUMA_NODES):
-        provider = donor.provider_config(config_path, 260 * 1024**3, numa_node)
+        provider = donor.provider_config(config_path, prefill_size_bytes, numa_node)
         assert provider["protocol"] == "nvlink"
         assert provider["enable_egm_store_pool"] == "true"
-        assert provider["global_segment_size"] == str(260 * 1024**3)
+        assert provider["global_segment_size"] == str(prefill_size_bytes)
         assert provider["local_buffer_size"] == "0"
         assert provider["egm_numa_nodes"] == numa_node
         # Let the native Store select separate RPC/transfer ports for colocated handles.

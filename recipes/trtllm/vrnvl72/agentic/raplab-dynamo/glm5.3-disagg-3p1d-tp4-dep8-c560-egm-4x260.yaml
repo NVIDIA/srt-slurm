@@ -8,7 +8,7 @@
 # db195f7f7cad61a0a3c3141b8ecf6ca399a54fca or its upstream equivalent,
 # built with USE_VRAM_SEGMENT=OFF (the default). See README.md#egm-over-nvlink.
 # Connector/allocator checked against tekit 7890925ea10e613cd787c82a406a8fdc088eabc8.
-# Preserve 5320GiB capacity: 3 x (4 x 260GiB) prefill + 2 x 1100GiB decode.
+# Capacity: 5200GiB = 3 x (4 x 250GiB) prefill + 2 x 1100GiB decode.
 # Four independent providers per prefill node contribute 12 prefill pool owners.
 # Pin whole pools: donors 0/1 on host NUMA 0, donors 2/3 on host NUMA 1.
 # Each prefill provider sees one physical GPU; its exported host pool remains shared.
@@ -401,7 +401,7 @@ services:
   - --config
   - /logs/mooncake_store_config_prefill.json
   - --segment-size
-  - 260GiB
+  - 250GiB
   - --numa-nodes
   - '0'
   - --ready-file
@@ -445,7 +445,7 @@ services:
   - --config
   - /logs/mooncake_store_config_prefill.json
   - --segment-size
-  - 260GiB
+  - 250GiB
   - --numa-nodes
   - '0'
   - --ready-file
@@ -489,7 +489,7 @@ services:
   - --config
   - /logs/mooncake_store_config_prefill.json
   - --segment-size
-  - 260GiB
+  - 250GiB
   - --numa-nodes
   - '1'
   - --ready-file
@@ -533,7 +533,7 @@ services:
   - --config
   - /logs/mooncake_store_config_prefill.json
   - --segment-size
-  - 260GiB
+  - 250GiB
   - --numa-nodes
   - '1'
   - --ready-file
