@@ -202,10 +202,9 @@ For every actual cluster run, write `<run_dir>/logs/perf-analysis.md` following
 is an EGM variant derived directly from this directory's DEP8 c560 recipe.
 It preserves its Lustre paths, image, kernel and engine tuning, host clock setup,
 container reuse, NIXL prefill/decode handoff, disabled exporters and full AgentX
-workload. Nominal Mooncake capacity is `5300GiB`: one `1100GiB` EGM provider
+workload. Nominal Mooncake capacity remains `5120GiB`: one `1040GiB` EGM provider
 on each of three prefill nodes replaces four `260GiB` rank pools, and each of the
-two decode nodes contributes `1000GiB`. This adds `180GiB` over the original
-recipe's `5120GiB` pool.
+two decode nodes contributes `1000GiB`.
 The EGM variant sets `engine.numa_cpu_bind: true` and
 `engine.numa_memory_bind: local` to bind inference worker CPUs and memory to
 their task GPU's NUMA node.

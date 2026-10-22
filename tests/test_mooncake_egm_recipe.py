@@ -137,10 +137,10 @@ def test_mock_launch_bootstraps_each_donor_and_renders_the_host_staging_config(
     decode_donors = [
         launch for launch in donor_launches if launch["step_name"].startswith("service_decode-mooncake-donor")
     ]
-    # Each prefill node contributes one 1100GiB EGM pool.
+    # Four former 260GiB worker pools become one 1040GiB EGM pool per prefill node.
     assert len(prefill_donors) == 3
     assert len(decode_donors) == 2
-    assert all("--segment-size 1100GiB" in " ".join(launch["command"]) for launch in prefill_donors)
+    assert all("--segment-size 1040GiB" in " ".join(launch["command"]) for launch in prefill_donors)
     decode_size = "1100GiB" if recipe_source.parent.name == "raplab-dynamo" else "1000GiB"
     assert all(f"--segment-size {decode_size}" in " ".join(launch["command"]) for launch in decode_donors)
     recipe = yaml.safe_load(recipe_source.read_text())
@@ -187,9 +187,9 @@ def test_mock_launch_bootstraps_each_donor_and_renders_the_host_staging_config(
     assert payload["staging_buffer_bytes"] == "2GiB"
     assert payload["global_segment_size"] == 0
     monkeypatch.setattr(donor.socket, "gethostbyname", lambda hostname: "192.0.2.2")
-    provider = donor.provider_config(config_paths[0], 1100 * 1024**3, "auto")
+    provider = donor.provider_config(config_paths[0], 1040 * 1024**3, "auto")
     assert provider["protocol"] == "nvlink"
-    assert provider["global_segment_size"] == str(1100 * 1024**3)
+    assert provider["global_segment_size"] == str(1040 * 1024**3)
     assert provider["local_buffer_size"] == "0"
     assert provider["enable_egm_store_pool"] == "true"
     assert provider["egm_numa_nodes"] == "auto"
