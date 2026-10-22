@@ -21,14 +21,8 @@ resources:
   gpu_type: vrnvl72
   gpus_per_node: 4
   het_jobs: false
-slurm:
-  account: root
-  partition: batch-r42
-  # Full 60-minute load point plus existing warmup, startup and drain.
-  time_limit: '02:00:00'
 sbatch_directives:
   # Five worker nodes plus the colocated frontend/client; one NVLink domain.
-  segment: '6'
   exclusive: ''
   mem: '0'
 environment:
