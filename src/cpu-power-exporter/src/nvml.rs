@@ -10,7 +10,7 @@
 //! All symbols are resolved at runtime so the binary starts on hosts without
 //! the NVIDIA driver; unavailability is a soft `NvmlUnavailable` error.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::{c_void, CStr};
 use std::fmt::{self, Write as _};
 use std::fs;
@@ -27,6 +27,13 @@ const POWER_FIELD_AVERAGE: u32 = 185;
 /// cannot establish the meter's scope; that rests on the unequal-load
 /// measurement in `docs/cpu-power-telemetry.md`.
 const MODULE_SPREAD_TOLERANCE: f64 = 0.05;
+
+/// During a load step a socket's GPUs can report the shared meter further
+/// apart than the tolerance. In a CI sweep on GB200 and GB300, 592 of 593 such
+/// disagreements lasted 3 reads or fewer. A longer one is withheld from its 4th
+/// read, even when a load phase-locked to the poll keeps a valid meter
+/// disagreeing.
+const MAX_TRANSIENT_DISAGREEMENT_READS: u32 = 3;
 
 /// NVML_POWER_SCOPE_MODULE. Scope 0 (NVML_POWER_SCOPE_GPU) is the GPU chip alone.
 const SCOPE_MODULE: u32 = 1;
@@ -273,16 +280,27 @@ struct GpuSample {
 
 #[derive(Debug, PartialEq)]
 struct Disagreement {
-    socket: u32,
-    gpus: Vec<u32>,
+    reading: ModuleReading,
     watts: Vec<f64>,
+}
+
+#[derive(Default)]
+struct SocketState {
+    mapped_gpus: usize,
+    /// Consecutive disagreeing reads since all of the socket's GPUs last agreed.
+    disagreeing: u32,
+}
+
+impl SocketState {
+    fn withheld(&self) -> bool {
+        self.disagreeing > MAX_TRANSIENT_DISAGREEMENT_READS
+    }
 }
 
 pub struct NvmlModuleReader {
     session: Session,
     gpus: Vec<Gpu>,
-    /// Warned sockets stay here until a valid reading confirms recovery.
-    disagreeing: BTreeSet<u32>,
+    sockets: BTreeMap<u32, SocketState>,
 }
 
 impl NvmlModuleReader {
@@ -294,8 +312,8 @@ impl NvmlModuleReader {
         }
         let mut reader = Self {
             session,
+            sockets: socket_states(gpus.iter().map(|gpu| gpu.socket)),
             gpus,
-            disagreeing: BTreeSet::new(),
         };
         if reader.read().is_empty() {
             return Err(NvmlUnavailable("no socket reports module power".into()));
@@ -308,13 +326,15 @@ impl NvmlModuleReader {
     }
 
     pub fn sockets(&self) -> Vec<u32> {
-        let mut sockets: Vec<u32> = self.gpus.iter().map(|g| g.socket).collect();
-        sockets.sort_unstable();
-        sockets.dedup();
-        sockets
+        self.sockets.keys().copied().collect()
     }
 
     pub fn read(&mut self) -> Vec<ModuleReading> {
+        let samples = self.sample();
+        publish(&mut self.sockets, &samples)
+    }
+
+    fn sample(&self) -> Vec<GpuSample> {
         let mut samples = Vec::with_capacity(self.gpus.len());
         for gpu in &self.gpus {
             let mut value = FieldValue::module_power_average();
@@ -339,35 +359,65 @@ impl NvmlModuleReader {
                 ),
             }
         }
-        let (readings, disagreements) = group_by_socket(&samples);
-        report_disagreements(&mut self.disagreeing, &readings, &disagreements);
-        readings
+        samples
     }
 }
 
-fn report_disagreements(
-    active: &mut BTreeSet<u32>,
-    readings: &[ModuleReading],
-    disagreements: &[Disagreement],
-) {
-    for disagreement in disagreements {
-        if active.insert(disagreement.socket) {
-            tracing::warn!(
-                socket = disagreement.socket,
-                gpus = ?disagreement.gpus,
-                watts = ?disagreement.watts,
-                "GPUs disagree on their module power; skipping socket until they agree"
-            );
-        }
+fn socket_states(gpu_sockets: impl IntoIterator<Item = u32>) -> BTreeMap<u32, SocketState> {
+    let mut sockets: BTreeMap<u32, SocketState> = BTreeMap::new();
+    for socket in gpu_sockets {
+        sockets.entry(socket).or_default().mapped_gpus += 1;
     }
+    sockets
+}
+
+/// Publish each agreeing socket, and a disagreeing one's mean until the
+/// disagreement outlasts a load step.
+fn publish(sockets: &mut BTreeMap<u32, SocketState>, samples: &[GpuSample]) -> Vec<ModuleReading> {
+    let (readings, disagreements) = group_by_socket(samples);
+    let mut published = Vec::new();
     for reading in readings {
-        if active.remove(&reading.socket) {
+        let Some(state) = sockets.get_mut(&reading.socket) else {
+            continue;
+        };
+        // Only a read of all the socket's GPUs can show that they agree again.
+        if reading.gpus.len() == state.mapped_gpus && state.disagreeing > 0 {
             tracing::info!(
                 socket = reading.socket,
                 "GPUs agree on their module power again"
             );
+            state.disagreeing = 0;
+        }
+        if !state.withheld() {
+            published.push(reading);
         }
     }
+    for Disagreement { reading, watts } in disagreements {
+        let Some(state) = sockets.get_mut(&reading.socket) else {
+            continue;
+        };
+        state.disagreeing += 1;
+        if !state.withheld() {
+            if state.disagreeing == 1 {
+                tracing::info!(
+                    socket = reading.socket,
+                    gpus = ?reading.gpus,
+                    ?watts,
+                    "GPUs disagree on their module power; publishing their mean"
+                );
+            }
+            published.push(reading);
+        } else if state.disagreeing == MAX_TRANSIENT_DISAGREEMENT_READS + 1 {
+            tracing::warn!(
+                socket = reading.socket,
+                gpus = ?reading.gpus,
+                ?watts,
+                "GPUs disagree on their module power; skipping socket until they agree"
+            );
+        }
+    }
+    published.sort_by_key(|reading| reading.socket);
+    published
 }
 
 fn map_gpus(session: &Session, pci_root: &Path) -> Result<Vec<Gpu>, NvmlUnavailable> {
@@ -421,18 +471,15 @@ fn group_by_socket(samples: &[GpuSample]) -> (Vec<ModuleReading>, Vec<Disagreeme
         let mean = watts.iter().sum::<f64>() / watts.len() as f64;
         let spread = watts.iter().copied().fold(f64::MIN, f64::max)
             - watts.iter().copied().fold(f64::MAX, f64::min);
+        let reading = ModuleReading {
+            socket,
+            gpus,
+            watts: mean,
+        };
         if spread > MODULE_SPREAD_TOLERANCE * mean {
-            disagreements.push(Disagreement {
-                socket,
-                gpus,
-                watts,
-            });
+            disagreements.push(Disagreement { reading, watts });
         } else {
-            readings.push(ModuleReading {
-                socket,
-                gpus,
-                watts: mean,
-            });
+            readings.push(reading);
         }
     }
     (readings, disagreements)
@@ -463,40 +510,147 @@ mod tests {
     use crate::test_support::capture_logs;
     use tempfile::TempDir;
 
-    #[test]
-    fn disagreement_warns_once_and_recovers_only_on_a_valid_socket_reading() {
-        let disagreements = [Disagreement {
+    // GPUs 0 and 1 share socket 0 and GPUs 2 and 3 socket 1, as on GB200. A
+    // split's mean differs from its socket's agreeing reading, so the tests
+    // see which one was published.
+    const AGREE_0: &[(u32, f64)] = &[(0, 600.0), (1, 600.0)];
+    const SPLIT_0: &[(u32, f64)] = &[(0, 550.0), (1, 750.0)];
+    const AGREE_1: &[(u32, f64)] = &[(2, 610.0), (3, 610.0)];
+    const SPLIT_1: &[(u32, f64)] = &[(2, 560.0), (3, 760.0)];
+
+    const SPLIT_0_PUBLISHED: &str = "INFO GPUs disagree on their module power; publishing their mean socket=0 gpus=[0, 1] watts=[550.0, 750.0]";
+    const SPLIT_0_WITHHELD: &str = "WARN GPUs disagree on their module power; skipping socket until they agree socket=0 gpus=[0, 1] watts=[550.0, 750.0]";
+    const SOCKET_0_AGREES: &str = "INFO GPUs agree on their module power again socket=0";
+
+    fn poll(parts: &[&[(u32, f64)]]) -> Vec<GpuSample> {
+        parts
+            .concat()
+            .into_iter()
+            .map(|(gpu, watts)| GpuSample {
+                gpu,
+                socket: gpu / 2,
+                watts,
+            })
+            .collect()
+    }
+
+    fn socket_0(watts: f64) -> ModuleReading {
+        ModuleReading {
             socket: 0,
             gpus: vec![0, 1],
-            watts: vec![500.0, 700.0],
-        }];
-        let readings = [ModuleReading {
-            socket: 0,
-            gpus: vec![0, 1],
-            watts: 600.0,
-        }];
+            watts,
+        }
+    }
+
+    fn socket_1(watts: f64) -> ModuleReading {
+        ModuleReading {
+            socket: 1,
+            gpus: vec![2, 3],
+            watts,
+        }
+    }
+
+    fn publish_polls(polls: &[(Vec<GpuSample>, Vec<ModuleReading>)]) -> Vec<String> {
         let logs = capture_logs(|| {
-            let mut active = BTreeSet::new();
-            report_disagreements(&mut active, &[], &disagreements);
-            report_disagreements(&mut active, &[], &disagreements);
-            report_disagreements(&mut active, &[], &[]);
-            report_disagreements(&mut active, &readings, &[]);
-            report_disagreements(&mut active, &readings, &[]);
-            report_disagreements(&mut active, &[], &disagreements);
+            let mut sockets = socket_states([0, 0, 1, 1]);
+            for (index, (samples, expected)) in polls.iter().enumerate() {
+                assert_eq!(&publish(&mut sockets, samples), expected, "poll {index}");
+            }
         });
+        logs.lines().map(|line| line.trim().to_owned()).collect()
+    }
+
+    #[test]
+    fn a_disagreeing_socket_is_published_until_the_disagreement_persists() {
+        let agree = || poll(&[AGREE_0, AGREE_1]);
+        let split = || poll(&[SPLIT_0, AGREE_1]);
+        let agreed = || vec![socket_0(600.0), socket_1(610.0)];
+        let averaged = || vec![socket_0(650.0), socket_1(610.0)];
+        let withheld = || vec![socket_1(610.0)];
+        let logs = publish_polls(&[
+            // Even a first read that disagrees is published.
+            (split(), averaged()),
+            (split(), averaged()),
+            (agree(), agreed()),
+            // The agreement reset the count: 3 splits publish, the 4th is withheld.
+            (split(), averaged()),
+            (split(), averaged()),
+            (split(), averaged()),
+            (split(), withheld()),
+            (split(), withheld()),
+            (agree(), agreed()),
+        ]);
         assert_eq!(
-            logs.matches("GPUs disagree on their module power").count(),
-            2,
-            "{logs}"
+            logs,
+            [
+                SPLIT_0_PUBLISHED,
+                SOCKET_0_AGREES,
+                SPLIT_0_PUBLISHED,
+                SPLIT_0_WITHHELD,
+                SOCKET_0_AGREES,
+            ]
         );
+    }
+
+    #[test]
+    fn a_lone_gpu_reading_neither_counts_nor_ends_a_disagreement() {
+        let split = || poll(&[SPLIT_0, AGREE_1]);
+        let lone = || poll(&[&[(1, 620.0)], AGREE_1]);
+        let lone_published = || {
+            vec![
+                ModuleReading {
+                    socket: 0,
+                    gpus: vec![1],
+                    watts: 620.0,
+                },
+                socket_1(610.0),
+            ]
+        };
+        let agreed = || vec![socket_0(600.0), socket_1(610.0)];
+        let averaged = || vec![socket_0(650.0), socket_1(610.0)];
+        let only_1 = || vec![socket_1(610.0)];
+        let logs = publish_polls(&[
+            // A GPU that has never reported leaves its partner published alone.
+            (lone(), lone_published()),
+            (split(), averaged()),
+            // Neither the lone nor the absent read counts, so the next two
+            // splits are the 2nd and 3rd.
+            (lone(), lone_published()),
+            (poll(&[AGREE_1]), only_1()),
+            (split(), averaged()),
+            (split(), averaged()),
+            (split(), only_1()),
+            // Nor does a lone reading end the withholding.
+            (lone(), only_1()),
+            (poll(&[AGREE_0, AGREE_1]), agreed()),
+        ]);
+        assert_eq!(logs, [SPLIT_0_PUBLISHED, SPLIT_0_WITHHELD, SOCKET_0_AGREES]);
+    }
+
+    #[test]
+    fn sockets_disagree_independently() {
+        let both_split = || poll(&[SPLIT_0, SPLIT_1]);
+        let both_averaged = || vec![socket_0(650.0), socket_1(660.0)];
+        let logs = publish_polls(&[
+            (both_split(), both_averaged()),
+            (
+                poll(&[SPLIT_0, AGREE_1]),
+                vec![socket_0(650.0), socket_1(610.0)],
+            ),
+            (both_split(), both_averaged()),
+            (both_split(), vec![socket_1(660.0)]),
+        ]);
+        let split_1_published = "INFO GPUs disagree on their module power; publishing their mean socket=1 gpus=[2, 3] watts=[560.0, 760.0]";
         assert_eq!(
-            logs.matches("GPUs agree on their module power again")
-                .count(),
-            1,
-            "{logs}"
+            logs,
+            [
+                SPLIT_0_PUBLISHED,
+                split_1_published,
+                "INFO GPUs agree on their module power again socket=1",
+                split_1_published,
+                SPLIT_0_WITHHELD,
+            ]
         );
-        assert_eq!(logs.matches("WARN").count(), 2, "{logs}");
-        assert_eq!(logs.matches("INFO").count(), 1, "{logs}");
     }
 
     const HEADER: &str = "# HELP cpu_power_nvml_watts Superchip module power per Grace socket via NVML (W, 1 s average): Grace, its GPUs and the rest of the module.\n# TYPE cpu_power_nvml_watts gauge\n";
@@ -564,7 +718,7 @@ mod tests {
     }
 
     #[test]
-    fn group_by_socket_drops_a_socket_whose_gpus_disagree() {
+    fn group_by_socket_separates_a_socket_whose_gpus_disagree() {
         let sample = |gpu, socket, watts| GpuSample { gpu, socket, watts };
         let samples = [
             sample(1, 0, 540.0),
@@ -581,8 +735,11 @@ mod tests {
                     watts: 534.5,
                 }],
                 vec![Disagreement {
-                    socket: 0,
-                    gpus: vec![0, 1],
+                    reading: ModuleReading {
+                        socket: 0,
+                        gpus: vec![0, 1],
+                        watts: 635.0,
+                    },
                     watts: vec![540.0, 730.0],
                 }]
             )
