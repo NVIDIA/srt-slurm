@@ -38,7 +38,7 @@ def recipe_source(request: pytest.FixtureRequest) -> Path:
 
 @pytest.fixture
 def prefill_size(recipe_source: Path) -> str:
-    return {"dynamo": "224GiB", "raplab-dynamo": "250GiB"}[recipe_source.parent.name]
+    return {"dynamo": "260GiB", "raplab-dynamo": "224GiB"}[recipe_source.parent.name]
 
 
 @pytest.fixture

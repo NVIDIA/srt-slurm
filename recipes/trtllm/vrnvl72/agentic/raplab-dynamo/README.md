@@ -317,18 +317,18 @@ mock and unit checks do not establish hardware compatibility or performance.
 [`glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml`](glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml)
 adapts the [Dynamo four-provider recipe](../dynamo/glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml)
 to RapLab's model/image paths, wheel directories, caches, pip and UCX/MPI/NCCL
-settings. It starts four separate `250GiB` EGM providers on
+settings. It starts four separate `224GiB` EGM providers on
 each prefill node, with this placement:
 
 | Prefill donor | `CUDA_VISIBLE_DEVICES` | Host NUMA node | Pool capacity |
 | --- | --- | --- | --- |
-| `prefill-egm-donor-0` | `0` | `0` | `250GiB` |
-| `prefill-egm-donor-1` | `1` | `0` | `250GiB` |
-| `prefill-egm-donor-2` | `2` | `1` | `250GiB` |
-| `prefill-egm-donor-3` | `3` | `1` | `250GiB` |
+| `prefill-egm-donor-0` | `0` | `0` | `224GiB` |
+| `prefill-egm-donor-1` | `1` | `0` | `224GiB` |
+| `prefill-egm-donor-2` | `2` | `1` | `224GiB` |
+| `prefill-egm-donor-3` | `3` | `1` | `224GiB` |
 
 The existing `4x260` filename is retained; the configured prefill capacity is
-now `1000GiB` per node, with `500GiB` on each host NUMA node.
+now `896GiB` per node, with `448GiB` on each host NUMA node.
 
 Each provider sees one physical GPU, numbered as CUDA device 0 in its process,
 and allocates its whole pool on the explicit `--numa-nodes` host node. The mapping
@@ -337,9 +337,9 @@ the topology before using this mapping on another system. Readers independently
 import the exported Fabric allocations. All pools remain shared; the GPU masks
 and NUMA settings do not create exclusive reader-to-donor assignments.
 
-The three prefill nodes contribute 12 owners and `3000GiB`; the two decode
+The three prefill nodes contribute 12 owners and `2688GiB`; the two decode
 providers retain `1100GiB` each, all four visible GPUs and NUMA `auto`. Total
-capacity is `5200GiB` across 14 owners, `120GiB` below the RapLab baseline. Each provider
+capacity is `4888GiB` across 14 owners, `432GiB` below the RapLab baseline. Each provider
 publishes its own readiness file, and all providers become ready before inference
 workers start. The master remains available until provider cleanup completes.
 
