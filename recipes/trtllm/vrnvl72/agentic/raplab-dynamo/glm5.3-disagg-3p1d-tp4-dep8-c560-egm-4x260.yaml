@@ -38,6 +38,7 @@ environment:
 observability:
   enable_otel: false
 setup_script: setup_mooncake_egm.sh
+reuse_container: true
 dynamo:
   install: false
   request_plane: tcp

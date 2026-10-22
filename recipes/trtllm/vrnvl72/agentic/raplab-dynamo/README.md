@@ -342,6 +342,7 @@ providers retain `1100GiB` each, all four visible GPUs and NUMA `auto`. Total
 capacity is `4888GiB` across 14 owners, `432GiB` below the RapLab baseline. Each provider
 publishes its own readiness file, and all providers become ready before inference
 workers start. The master remains available until provider cleanup completes.
+Container reuse is enabled with `reuse_container: true`.
 
 This variant retains the single-provider RapLab recipe's host-only Mooncake
 payloads, inference NUMA CPU/local memory binding, engine tuning and complete

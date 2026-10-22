@@ -62,6 +62,7 @@ def test_four_pool_variant_preserves_the_egm_comparison_baseline(recipe_source: 
     base = yaml.safe_load(recipe_source.with_name(BASE_NAME).read_text())
     variant = yaml.safe_load(recipe_source.read_text())
     if recipe_source.parent.name == "raplab-dynamo":
+        assert variant.pop("reuse_container") is True
         assert "slurm" not in variant
         variant["sbatch_directives"].pop("exclude", None)
         assert variant["sbatch_directives"] == {"exclusive": "", "mem": "0"}
@@ -125,6 +126,8 @@ def test_dry_run_exposes_all_four_prefill_pool_fleets(
     assert "#SBATCH --account=default" in directives
     assert "#SBATCH --partition=default" in directives
     if recipe_source.parent.name == "raplab-dynamo":
+        assert config.reuse_container is True
+        assert "reuse_container: true" in output
         assert config.slurm.time_limit is None
         assert {key: config.sbatch_directives[key] for key in ("exclusive", "mem")} == {"exclusive": "", "mem": "0"}
         assert "#SBATCH --time=01:00:00" in directives
