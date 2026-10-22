@@ -61,6 +61,11 @@ path. The test records GPU, topology, Fabric and IMEX inventory from each node.
 
 ## Allocation failure diagnostics
 
+To investigate a second donor failing while the first donor remains alive, use
+the [one-node EGM reclamation diagnostic](check_mooncake_egm_reclaim.md). It
+compares concurrent host pools, NUMA placement, GPU startup order and allocation
+chunks, with memory/reclaim counters sampled during setup.
+
 Allocation checks run by default before the original small transfer test. On
 the provider node, four fresh processes try this matrix sequentially:
 
