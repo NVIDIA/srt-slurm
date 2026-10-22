@@ -439,7 +439,7 @@ services:
   - --config
   - /logs/mooncake_store_config_prefill.json
   - --segment-size
-  - 1000GiB
+  - 1100GiB
   - --numa-nodes
   - auto
   - --ready-file
