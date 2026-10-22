@@ -289,3 +289,28 @@ workload and hardware placement.
 ```bash
 srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/dynamo/glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml
 ```
+
+The DEP32 variant,
+[`glm5.3-disagg-3p1d-tp4-dep32-c560-egm-4x224.yaml`](glm5.3-disagg-3p1d-tp4-dep32-c560-egm-4x224.yaml),
+preserves the DEP32 baseline's `224GiB` per prefill rank as four separate EGM
+providers on each prefill node. It uses the same per-provider GPU visibility and
+NUMA mapping shown above: GPU masks `0`, `1`, `2`, `3` and host NUMA nodes
+`0`, `0`, `1`, `1`. Each pool resides entirely on its selected NUMA node, giving
+`448GiB` per NUMA node and `896GiB` per prefill node.
+
+The three prefill nodes contribute 12 providers and `2688GiB`; one `768GiB` EGM
+provider on each of eight decode nodes contributes `6144GiB`. Total capacity is
+`8832GiB` across 20 owners, matching the original DEP32 recipe. Decode providers
+see all four GPUs and use NUMA `auto`. Prefill readers retain pinned host staging
+and zero global Store capacity. The same EGM wheel and setup requirements apply.
+
+Model and image paths, DEP32 engine tuning, NIXL handoff, NUMA CPU/local memory
+binding and the complete AgentX workload are inherited from the DEP32 baseline.
+The allocation requests 12 exclusive nodes in one NVLink segment: three prefill,
+eight decode and one shared frontend/client node. Its two-hour walltime follows
+the same fallback budget for the retained 60-minute measurement, warmup,
+startup and drain.
+
+```bash
+srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/dynamo/glm5.3-disagg-3p1d-tp4-dep32-c560-egm-4x224.yaml
+```
