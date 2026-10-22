@@ -5,7 +5,7 @@ These eight baseline recipes are Dynamo counterparts of
 prefill/decode workers behind `dynamo.frontend`, with Dynamo installed from
 the local wheels in `/home/rihuo/dynamo_wheels`.
 Filenames and point names match the native recipes.
-An additional [EGM variant](#egm-over-nvlink) uses Mooncake Store over NVLink.
+Additional [EGM variants](#egm-over-nvlink) use Mooncake Store over NVLink.
 
 The conversion keeps the worker counts, GPU allocations, TRT-LLM engine tuning,
 kernel environment, MTP acceptance controls, prefill Mooncake capacity
@@ -311,3 +311,44 @@ baseline at the same workload. Provider ready files and logs record the NVLink
 configuration and allocated EGM capacity. This experiment changes the
 transport and pool allocation while retaining host staging. Local schema,
 mock and unit checks do not establish hardware compatibility or performance.
+
+### Four prefill providers per node
+
+[`glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml`](glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml)
+adapts the [Dynamo four-provider recipe](../dynamo/glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml)
+to RapLab's model/image paths, wheel directories, account, partition, caches,
+pip and UCX/MPI/NCCL settings. It starts four separate `260GiB` EGM providers on
+each prefill node, with this placement:
+
+| Prefill donor | `CUDA_VISIBLE_DEVICES` | Host NUMA node | Pool capacity |
+| --- | --- | --- | --- |
+| `prefill-egm-donor-0` | `0` | `0` | `260GiB` |
+| `prefill-egm-donor-1` | `1` | `0` | `260GiB` |
+| `prefill-egm-donor-2` | `2` | `1` | `260GiB` |
+| `prefill-egm-donor-3` | `3` | `1` | `260GiB` |
+
+Each provider sees one physical GPU, numbered as CUDA device 0 in its process,
+and allocates its whole pool on the explicit `--numa-nodes` host node. The mapping
+assumes GPUs 0/1 are attached to host NUMA 0 and GPUs 2/3 to host NUMA 1; check
+the topology before using this mapping on another system. Readers independently
+import the exported Fabric allocations. All pools remain shared; the GPU masks
+and NUMA settings do not create exclusive reader-to-donor assignments.
+
+The three prefill nodes contribute 12 owners and `3120GiB`; the two decode
+providers retain `1100GiB` each, all four visible GPUs and NUMA `auto`. Total
+capacity is `5320GiB` across 14 owners, matching the RapLab baseline. Each provider
+publishes its own readiness file, and all providers become ready before inference
+workers start. The master remains available until provider cleanup completes.
+
+This variant retains the single-provider RapLab recipe's host-only Mooncake
+payloads, inference NUMA CPU/local memory binding, engine tuning and complete
+AgentX workload. It uses `/home/rihuo/mooncake_egm_wheels` with the build requirements
+above. If that path changes, update the global environment and all six Mooncake
+service environments. RapLab's pip overrides are present in each service.
+Allocation remains six exclusive nodes in one NVLink segment, all allocatable
+memory and two hours for the retained 60-minute measurement, warmup, startup and
+drain.
+
+```bash
+srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/raplab-dynamo/glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml
+```

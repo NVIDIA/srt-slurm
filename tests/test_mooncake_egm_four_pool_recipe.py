@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Validate the four-provider EGM comparison recipe without Slurm or CUDA."""
+"""Validate the four-provider EGM comparison recipes without Slurm or CUDA."""
 
 from __future__ import annotations
 
@@ -17,26 +17,31 @@ from rich.console import Console
 from configs import mooncake_egm_donor as donor
 from srtctl.cli import submit
 from srtctl.cli.mixins.service_stage import ServiceStageMixin
-from srtctl.cli.submit import show_config_details
+from srtctl.cli.submit import generate_minimal_sbatch_script, show_config_details
 from srtctl.core.processes import ManagedProcess
 from srtctl.core.schema import SrtConfig
 from srtctl.mock import MockOptions, run_mock_sweep
 from srtctl.services.config import ServiceConfig, ServiceReadinessConfig
 
 ROOT = Path(__file__).resolve().parents[1]
-RECIPE_DIR = ROOT / "recipes/trtllm/vrnvl72/agentic/dynamo"
-BASE_RECIPE = RECIPE_DIR / "glm5.3-disagg-3p1d-tp4-dep8-c560-egm.yaml"
-FOUR_POOL_RECIPE = RECIPE_DIR / "glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml"
+RECIPE_DIR = ROOT / "recipes/trtllm/vrnvl72/agentic"
+BASE_NAME = "glm5.3-disagg-3p1d-tp4-dep8-c560-egm.yaml"
+FOUR_POOL_NAME = "glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml"
 PREFILL_NAMES = tuple(f"prefill-egm-donor-{pool}" for pool in range(4))
 PREFILL_NUMA_NODES = ("0", "0", "1", "1")
 
 
+@pytest.fixture(params=["dynamo", "raplab-dynamo"])
+def recipe_source(request: pytest.FixtureRequest) -> Path:
+    return RECIPE_DIR / request.param / FOUR_POOL_NAME
+
+
 @pytest.fixture
-def recipe_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def recipe_path(recipe_source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Resolve the actual recipe against portable model and cluster paths."""
     monkeypatch.setenv("SRTSLURM_CONFIG", str(tmp_path / "absent-srtslurm.yaml"))
     monkeypatch.setenv("SRTCTL_SOURCE_DIR", str(ROOT))
-    recipe = yaml.safe_load(FOUR_POOL_RECIPE.read_text())
+    recipe = yaml.safe_load(recipe_source.read_text())
     model = tmp_path / "model"
     model.mkdir()
     recipe["model"].update(path=str(model), container="trtllm-egm.sqsh")
@@ -45,10 +50,10 @@ def recipe_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
-def test_four_pool_variant_preserves_the_egm_comparison_baseline() -> None:
+def test_four_pool_variant_preserves_the_egm_comparison_baseline(recipe_source: Path) -> None:
     """Only prefill pool ownership and placement change; worker settings stay matched."""
-    base = yaml.safe_load(BASE_RECIPE.read_text())
-    variant = yaml.safe_load(FOUR_POOL_RECIPE.read_text())
+    base = yaml.safe_load(recipe_source.with_name(BASE_NAME).read_text())
+    variant = yaml.safe_load(recipe_source.read_text())
     assert variant["name"] == "glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260"
     assert {key: value for key, value in variant.items() if key not in ("name", "services")} == {
         key: value for key, value in base.items() if key not in ("name", "services")
@@ -83,10 +88,11 @@ def test_four_pool_variant_preserves_the_egm_comparison_baseline() -> None:
 
 
 def test_dry_run_exposes_all_four_prefill_pool_fleets(
-    recipe_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    recipe_source: Path, recipe_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(submit, "console", Console(width=180))
-    show_config_details(SrtConfig.from_yaml(recipe_path))
+    config = SrtConfig.from_yaml(recipe_path)
+    show_config_details(config)
     output = capsys.readouterr().out
     for name in PREFILL_NAMES:
         assert name in output
@@ -95,10 +101,23 @@ def test_dry_run_exposes_all_four_prefill_pool_fleets(
     assert '"global_segment_size": 0' in output
     assert '"stage_through_host": true' in output
     assert '"staging_buffer_bytes": "2GiB"' in output
+    script = generate_minimal_sbatch_script(config=config, config_path=recipe_path)
+    directives = [line for line in script.splitlines() if line.startswith("#SBATCH ")]
+    assert "#SBATCH --nodes=6" in directives
+    assert "#SBATCH --segment=6" in directives
+    assert "#SBATCH --exclusive" in directives
+    assert "#SBATCH --mem=0" in directives
+    assert "#SBATCH --time=02:00:00" in directives
+    if recipe_source.parent.name == "raplab-dynamo":
+        assert "#SBATCH --account=root" in directives
+        assert "#SBATCH --partition=batch-r42" in directives
+    else:
+        assert config.slurm.account is None
+        assert config.slurm.partition is None
 
 
 def test_mock_launch_gates_workers_on_four_host_pools_per_prefill_node(
-    recipe_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    recipe_source: Path, recipe_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Each provider maps its host pool through one GPU and has disjoint readiness/log files."""
     config = SrtConfig.from_yaml(recipe_path)
@@ -167,9 +186,14 @@ def test_mock_launch_gates_workers_on_four_host_pools_per_prefill_node(
     assert len({launch["output"] for launch in donors}) == 14
     markers: set[str] = set()
     total_capacity = 0
+    baseline = yaml.safe_load(recipe_source.with_name(BASE_NAME).read_text())
+    decode_command = next(
+        service["command"] for service in baseline["services"] if service["name"] == "decode-mooncake-donor"
+    )
+    decode_size = decode_command[decode_command.index("--segment-size") + 1]
     for launch in donors:
         command = launch["command"]
-        expected_size = "260GiB" if launch in prefill else "1000GiB"
+        expected_size = "260GiB" if launch in prefill else decode_size
         assert command[command.index("--segment-size") + 1] == expected_size
         total_capacity += donor.parse_size(expected_size)
         assert "/configs/mooncake_egm_donor.py" in command
@@ -195,7 +219,7 @@ def test_mock_launch_gates_workers_on_four_host_pools_per_prefill_node(
         markers.add(marker)
         assert command[command.index("--ready-file") + 1] == f"/logs/{marker}"
         assert "{" not in marker, "Every instance needs a fully rendered marker"
-    assert total_capacity == 5120 * 1024**3
+    assert total_capacity == 12 * donor.parse_size("260GiB") + 2 * donor.parse_size(decode_size)
 
     master = next(launch for launch in launches if launch.get("step_name") == "service_mooncake-master")
     assert "/configs/setup_mooncake_egm.sh" in master["bash_preamble"]
