@@ -195,3 +195,55 @@ worker. See the [custom benchmark endpoint variables](../../../../../docs/benchm
 
 For every actual cluster run, write `<run_dir>/logs/perf-analysis.md` following
 [`docs/perf-analysis.md`](../../../../../docs/perf-analysis.md).
+
+## EGM over NVLink
+
+[`glm5.3-disagg-3p1d-tp4-dep8-c560-egm.yaml`](glm5.3-disagg-3p1d-tp4-dep8-c560-egm.yaml)
+is an EGM variant derived directly from this directory's DEP8 c560 recipe.
+It preserves its Lustre paths, image, kernel and engine tuning, host clock setup,
+container reuse, NIXL prefill/decode handoff, disabled exporters and full AgentX
+workload. Nominal Mooncake capacity remains `5120GiB`: one `1040GiB` EGM provider
+on each of three prefill nodes replaces four `260GiB` rank pools, and each of the
+two decode nodes contributes `1000GiB`.
+The EGM variant sets `engine.numa_cpu_bind: true` and
+`engine.numa_memory_bind: local` to bind inference worker CPUs and memory to
+their task GPU's NUMA node.
+
+Prefill clients use `protocol: nvlink`, `stage_through_host: true`, a `2GiB`
+host staging budget and zero ordinary Store capacity. TRT-LLM registers pinned
+host slots with Mooncake; it copies active GPU KV into these slots before a
+Store write and copies back after a read. The native providers allocate
+Fabric-exportable host DRAM with `enable_egm_store_pool=true`,
+`egm_numa_nodes=auto` and zero local buffer. Both ends of the Mooncake payload
+transfer therefore use host memory. The master starts before providers, which
+become ready before inference workers start.
+For a two-node check before serving, use the
+[EGM/NVLink smoke test](../../../../../tools/check_mooncake_egm.md), which
+requires pinned host source/destination buffers, verifies their CUDA memory
+type, and compares the complete returned payload on the CPU.
+
+Supply exactly one ARM64 CUDA 13 Mooncake wheel built from
+the EGM stack at `db195f7f7cad61a0a3c3141b8ecf6ca399a54fca` or its upstream
+squash `9c0528d9`, with `WITH_STORE=ON`, `USE_CUDA=ON`, `USE_MNNVL=ON` and
+`USE_VRAM_SEGMENT=OFF`, in
+`/lustre/fsw/coreai_comparch_inferencex/rihuo/mooncake_egm_wheels/`.
+The directory is covered by the existing Lustre mount. To change it, update
+`SRT_MOONCAKE_EGM_WHEEL_DIR` in the global environment and all three Mooncake
+service environments. The setup script installs this wheel alongside the
+existing Dynamo wheels; the published Mooncake `0.3.13` wheel lacks EGM pooling.
+`USE_VRAM_SEGMENT=OFF` keeps the connector's separate `64MiB` Store local buffer
+in host memory; the upstream ARM64 CUDA 13 nightly profile uses this default.
+Host staging avoids registering GPU KV pages with Mooncake. Active model/KV
+memory and CUDA context/stream resources still use the GPUs.
+See the [EGM integration and hardware requirements](../raplab-dynamo/README.md#egm-over-nvlink)
+for the source trace, IMEX/Fabric prerequisites and setup checks.
+
+The allocation requests six exclusive nodes in one segment and all allocatable
+memory. Account and partition come from cluster configuration. Its explicit
+two-hour walltime uses the job-sizing fallback for the retained 60-minute
+measurement, warmup, startup and drain; no comparable EGM serving history is
+available. Validate the launch with:
+
+```bash
+srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/dynamo/glm5.3-disagg-3p1d-tp4-dep8-c560-egm.yaml
+```

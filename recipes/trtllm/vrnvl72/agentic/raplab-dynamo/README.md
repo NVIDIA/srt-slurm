@@ -185,14 +185,77 @@ For every actual cluster run, write `<run_dir>/logs/perf-analysis.md` following
 ## EGM over NVLink
 
 [`glm5.3-disagg-3p1d-tp4-dep8-c560-egm.yaml`](glm5.3-disagg-3p1d-tp4-dep8-c560-egm.yaml)
-is an experimental variant of the DEP8 c560 recipe. It requires an ARM64 CUDA 13
+is an experimental variant of the RapLab DEP8 c560 recipe. The original
+[`../dynamo` recipe](../dynamo/glm5.3-disagg-3p1d-tp4-dep8-c560.yaml) contributes
+`5120GiB` nominal capacity (`3 × 4 × 260 + 2 × 1000`). This variant follows the
+RapLab baseline's `1100GiB` decode donors, totaling `5320GiB`; use `1000GiB` for
+each decode EGM provider to match the original recipe's capacity.
+
+### TRT-LLM integration and transport choice
+
+The connector path was checked against tekit commit
+`7890925ea10e613cd787c82a406a8fdc088eabc8`, in
+`tensorrt_llm/_torch/pyexecutor/connectors/mooncake_store/`:
+
+- `config.py` reads `MOONCAKE_CONFIG_PATH`; `worker.py::_open_store` forwards
+  the selected protocol, capacity and master address to the Python Store's
+  positional `setup` API. The master coordinates the pool; providers own its
+  memory.
+- `worker.py::register_kv_cache_layout` opens `staging.py::HostStagingPool`
+  when `stage_through_host` is true. The pool registers pinned CPU slots with
+  Store. Local CUDA copies gather active GPU KV into those slots before a
+  write and scatter it back after a read. This variant uses that path, so
+  Mooncake receives host pointers rather than GPU KV addresses.
+- `donor.py::donate_segment` and `trtllm-serve mooncake_donor` use positional
+  setup without EGM allocation options. Setting their protocol to `nvlink`
+  does not turn an ordinary host pool into exportable EGM memory. The dedicated
+  native providers below use the dictionary setup API to request that memory.
+
+EGM supplies Fabric-exportable host DRAM. This is the Mooncake Store data path
+in the variant:
+
+```mermaid
+flowchart LR
+    P[Prefill GPU KV cache] -->|Local gather copy| H[Reader pinned host slots]
+    H -->|NVLink Store put| E[Provider EGM host DRAM]
+    E -->|NVLink Store get| H
+    H -->|Local scatter copy| P
+    P -->|Existing NIXL handoff| D[Decode GPU KV cache]
+```
+
+Both Mooncake payload endpoints use host memory: pinned slots on the reader
+and Fabric-exportable HOST_NUMA DRAM on the provider. Classic NVLink accepts
+local pinned host initiators and submits their pointers directly to CUDA
+batched copies; it does not need a separate GPU payload staging buffer or a
+TENT build. GPUs still supply CUDA contexts, streams and copy submission.
+Active inference KV remains in GPU memory. UCX/NIXL settings control other
+communication paths; they do not select the Mooncake Store transport.
+This was checked in Mooncake `042ab8a18b0e`: its
+[`NvlinkTransport::registerLocalMemory`](https://github.com/kvcache-ai/Mooncake/blob/042ab8a18b0e6ccfe87782261a5556a3dd4446e4/mooncake-transfer-engine/src/transport/nvlink_transport/nvlink_transport.cpp#L1035)
+accepts local buffers without exportable VMM handles; only the provider pool
+needs Fabric export. The recipe retains the classic transport required by
+native EGM Store setup.
+
+### Required Mooncake build
+
+The recipe requires an ARM64 CUDA 13
 Mooncake wheel built from commit
 [`db195f7f7cad61a0a3c3141b8ecf6ca399a54fca`](https://github.com/kvcache-ai/Mooncake/commit/db195f7f7cad61a0a3c3141b8ecf6ca399a54fca)
-or a descendant containing the merged EGM stack, with `WITH_STORE=ON`,
-`USE_CUDA=ON` and `USE_MNNVL=ON`. The image's published `0.3.13` wheel lacks
+or its upstream squash `9c0528d9` containing the merged EGM stack, with
+`WITH_STORE=ON`, `USE_CUDA=ON`, `USE_MNNVL=ON` and `USE_VRAM_SEGMENT=OFF`
+(the upstream default). The image's published `0.3.13` wheel lacks
 this feature. The upstream changes are
 [EGM Store pooling](https://github.com/kvcache-ai/Mooncake/pull/3335) and
 [direct remote GPU reads](https://github.com/kvcache-ai/Mooncake/pull/3431).
+This pins a combined stack: tekit uses `batch_get_into_multi_buffers`, whose
+memory-replica path forwards the supplied host destinations directly; the
+latter change also removes remote-read staging in other Store read APIs.
+The install check verifies the native EGM API rather than the exact source
+revision or build flags; use the specified build to reproduce this
+configuration. The upstream ARM64 CUDA 13 nightly profile leaves
+`USE_VRAM_SEGMENT=OFF`, keeping ordinary Store local buffers in host memory.
+See the [wheel build profile](https://github.com/kvcache-ai/Mooncake/blob/042ab8a18b0e6ccfe87782261a5556a3dd4446e4/.github/workflows/_build-wheel.yaml)
+and the [default build options](https://github.com/kvcache-ai/Mooncake/blob/042ab8a18b0e6ccfe87782261a5556a3dd4446e4/docs/source/getting_started/build.md).
 
 Place exactly one matching wheel in `/home/rihuo/mooncake_egm_wheels/`, which is
 already covered by the recipe's home-directory mount. To change the directory,
@@ -207,9 +270,11 @@ container runs its own Mooncake setup. The master launches through
 The cache path changes as follows:
 
 - Prefill ranks use `protocol: nvlink`, zero ordinary Store capacity and
-  `stage_through_host: false`, passing GPU KV addresses directly to Store.
+  `stage_through_host: true`, with `staging_buffer_bytes: 2GiB`, passing pinned
+  host slots to Store.
   Their `64MiB` local buffer satisfies this TRT-LLM connector's positive-size
-  validation; it is not a host staging pool for the direct GPU transfers.
+  validation and is host memory with `USE_VRAM_SEGMENT=OFF`; it is separate
+  from the connector's pinned staging slots.
 - One EGM provider per prefill node contributes `1040GiB`, replacing the four
   ordinary `260GiB` rank pools. Each decode-node provider contributes `1100GiB`.
   Total nominal capacity remains `3 × 1040 + 2 × 1100 = 5320GiB`, subject to
@@ -242,6 +307,6 @@ srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/raplab-dynamo/glm5.3-disagg-3p1
 
 Compare TTFT percentiles, cache hits and async-load diagnostics with the RDMA
 baseline at the same workload. Provider ready files and logs record the NVLink
-configuration and allocated EGM capacity. This experiment changes both the
-transport and host staging, so any improvement needs that context. Local schema,
+configuration and allocated EGM capacity. This experiment changes the
+transport and pool allocation while retaining host staging. Local schema,
 mock and unit checks do not establish hardware compatibility or performance.

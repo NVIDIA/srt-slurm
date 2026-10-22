@@ -230,6 +230,32 @@ Keys every server of the pool must agree on (`model_key`, `namespace`, `metadata
 - Leave `local_hostname` unset so each rank uses its own address; a value in `store_config` would apply to every rank of the role. TensorRT-LLM does not read `MOONCAKE_LOCAL_HOSTNAME`, `MOONCAKE_MASTER`, or `MOONCAKE_TE_META_DATA_SERVER`; srtslurm still stamps them, and they are inert for these workers.
 - Engine-side limits depend on the TensorRT-LLM build. These examples select KV cache manager v2 and the Python NIXL transceiver with `cache_transceiver_config: {backend: NIXL, transceiver_runtime: PYTHON}`. Check the installed engine's support before enabling attention DP or speculative decoding. On a cluster without GPUDirect RDMA, set `stage_through_host: true`.
 
+## Test EGM host memory over NVLink
+
+`tools/check_mooncake_egm.sbatch` runs a standalone two-node functional test
+without loading a model. It starts one native EGM host-memory provider and
+checks remote pinned-host Put/Get operations with complete CPU payload
+verification on the other node. The client contributes no Store capacity and
+allocates no GPU payload tensors. Success requires CPU/pinned tensor checks,
+CUDA pointer attributes identifying host memory, remote memory replica
+descriptors and actual NVLink transfer logs, in addition to the provider's
+native HOST_NUMA/Fabric allocation checks. CUDA contexts and copy submission
+still require GPUs.
+
+Submit from the repository root with the site's account and partition:
+
+```bash
+sbatch --account=<account> --partition=<partition> tools/check_mooncake_egm.sbatch
+```
+
+The test requests two exclusive four-GPU nodes in one segment for 15 minutes,
+uses a 4 GiB EGM pool, and writes its evidence and required performance report
+under `outputs/mooncake-egm-<job_id>/logs/`. Set `MC_EGM_IMAGE` and
+`MC_EGM_WHEEL_DIR` for the image and compatible ARM64/CUDA 13 EGM wheel.
+`tools/check_mooncake_egm.md` describes the controls, build requirements,
+pass criteria and limits. This validates the byte-transfer path; it does not
+qualify inference performance or a full serving allocation.
+
 ## What srtslurm Owns vs What You Set
 
 | Concern                                         | Owner     | Notes                                                                                                |

@@ -5,8 +5,10 @@
 # Dynamo from local wheels on the GLM-5.3 Rubin image and the local AgentX client.
 # Model, image and wheel paths are explicit; configure cluster settings in srtslurm.yaml.
 # EGM/NVLink variant; requires a custom ARM64 CUDA 13 Mooncake wheel containing
-# db195f7f7cad61a0a3c3141b8ecf6ca399a54fca. See README.md#egm-over-nvlink.
-# Preserve 5320GiB nominal cache capacity in separate EGM provider processes.
+# db195f7f7cad61a0a3c3141b8ecf6ca399a54fca or its upstream equivalent,
+# built with USE_VRAM_SEGMENT=OFF (the default). See README.md#egm-over-nvlink.
+# Connector/allocator checked against tekit 7890925ea10e613cd787c82a406a8fdc088eabc8.
+# Preserve the RapLab baseline's 5320GiB in separate EGM provider processes.
 # MTP forced acceptance follows acceptance_length.json: AL(depth) - 1.
 
 schema: 2
@@ -157,6 +159,8 @@ roles:
       moe_config:
         backend: MEGAMOE_CUTEDSL
       kv_connector_config:
+        # EGM allocation belongs to the native providers, not TRT-LLM's
+        # connector config. Store IO uses pinned host slots over NVLink.
         connector: mooncake-store
       cuda_graph_config: null
   decode:
@@ -345,12 +349,16 @@ services:
       device_name: ''
       metadata_server: P2PHANDSHAKE
       protocol: nvlink
-      # All capacity lives in the EGM providers below. Clients keep a small
-      # positive local buffer because this TRT-LLM connector validates > 0.
+      # All cache capacity lives in the providers' HOST_NUMA DRAM. Keep the
+      # connector's required positive local buffer in host memory as well.
       global_segment_size: 0
       local_buffer_size: 64MiB
       transfer_batch_size: 512
-      stage_through_host: false
+      # Only pinned CPU staging slots are registered with Mooncake. NVLink
+      # copies these host payloads directly to/from the providers' host DRAM;
+      # TRT-LLM still copies active inference KV between GPU and local slots.
+      stage_through_host: true
+      staging_buffer_bytes: 2GiB
       async_load: true
       async_load_workers: 2
       role: both
