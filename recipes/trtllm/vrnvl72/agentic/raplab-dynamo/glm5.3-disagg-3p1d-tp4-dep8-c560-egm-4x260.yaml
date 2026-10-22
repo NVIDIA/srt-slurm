@@ -25,7 +25,7 @@ resources:
   gpus_per_node: 4
   het_jobs: false
 sbatch_directives:
-  exclude: vr-r41-cn04,vr-r41-cn05
+  exclude: vr-r41-cn04,vr-r41-cn05,vr-r41-cn11
   exclusive: ''
   mem: '0'
 environment:
