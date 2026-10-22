@@ -187,9 +187,9 @@ For every actual cluster run, write `<run_dir>/logs/perf-analysis.md` following
 [`glm5.3-disagg-3p1d-tp4-dep8-c560-egm.yaml`](glm5.3-disagg-3p1d-tp4-dep8-c560-egm.yaml)
 is an experimental variant of the RapLab DEP8 c560 recipe. The original
 [`../dynamo` recipe](../dynamo/glm5.3-disagg-3p1d-tp4-dep8-c560.yaml) contributes
-`5120GiB` nominal capacity (`3 × 4 × 260 + 2 × 1000`). This variant follows the
-RapLab baseline's `1100GiB` decode donors, totaling `5320GiB`; use `1000GiB` for
-each decode EGM provider to match the original recipe's capacity.
+`5120GiB` nominal capacity (`3 × 4 × 260 + 2 × 1000`). This variant uses
+`1100GiB` on each of the three prefill and two decode providers, totaling
+`5500GiB`. This adds `180GiB` over the RapLab baseline's `5320GiB` pool.
 
 ### TRT-LLM integration and transport choice
 
@@ -275,9 +275,9 @@ The cache path changes as follows:
   Their `64MiB` local buffer satisfies this TRT-LLM connector's positive-size
   validation and is host memory with `USE_VRAM_SEGMENT=OFF`; it is separate
   from the connector's pinned staging slots.
-- One EGM provider per prefill node contributes `1040GiB`, replacing the four
+- One EGM provider per prefill node contributes `1100GiB`, replacing the four
   ordinary `260GiB` rank pools. Each decode-node provider contributes `1100GiB`.
-  Total nominal capacity remains `3 × 1040 + 2 × 1100 = 5320GiB`, subject to
+  Total nominal capacity is `3 × 1100 + 2 × 1100 = 5500GiB`, subject to
   native allocation alignment. Providers call the dictionary setup API with
   `enable_egm_store_pool=true`, `egm_numa_nodes=auto`, and a zero local buffer.
 - Providers expose all four GPUs so automatic discovery includes both host

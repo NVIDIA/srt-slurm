@@ -8,7 +8,7 @@
 # db195f7f7cad61a0a3c3141b8ecf6ca399a54fca or its upstream equivalent,
 # built with USE_VRAM_SEGMENT=OFF (the default). See README.md#egm-over-nvlink.
 # Connector/allocator checked against tekit 7890925ea10e613cd787c82a406a8fdc088eabc8.
-# Preserve the RapLab baseline's 5320GiB in separate EGM provider processes.
+# Nominal 5500GiB capacity across five 1100GiB EGM provider processes.
 # MTP forced acceptance follows acceptance_length.json: AL(depth) - 1.
 
 schema: 2
@@ -404,7 +404,7 @@ services:
   - --config
   - /logs/mooncake_store_config_prefill.json
   - --segment-size
-  - 1040GiB
+  - 1100GiB
   - --numa-nodes
   - auto
   - --ready-file

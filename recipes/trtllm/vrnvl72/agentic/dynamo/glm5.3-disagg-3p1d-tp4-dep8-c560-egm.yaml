@@ -8,7 +8,7 @@
 # Requires an ARM64 CUDA 13 Mooncake wheel containing
 # db195f7f7cad61a0a3c3141b8ecf6ca399a54fca or its upstream equivalent,
 # built with USE_VRAM_SEGMENT=OFF (the default); see README.md#egm-over-nvlink.
-# Preserve 5120GiB capacity: 3 x 1040GiB prefill + 2 x 1000GiB decode.
+# Nominal 5300GiB capacity: 3 x 1100GiB prefill + 2 x 1000GiB decode.
 # MTP forced acceptance follows acceptance_length.json: AL(depth) - 1.
 
 schema: 2
@@ -397,7 +397,7 @@ services:
   - --config
   - /logs/mooncake_store_config_prefill.json
   - --segment-size
-  - 1040GiB
+  - 1100GiB
   - --numa-nodes
   - auto
   - --ready-file
