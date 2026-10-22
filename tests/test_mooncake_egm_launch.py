@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,7 @@ def launch(
     # Run the real report command: this must work on the batch host even when
     # container setup, Mooncake imports or srun fail before producing results.
     shutil.copyfile(ROOT / "tools/check_mooncake_egm.py", source / "check_mooncake_egm.py")
+    shutil.copyfile(ROOT / "tools/mooncake_egm_alloc_diagnostics.py", source / "mooncake_egm_alloc_diagnostics.py")
     configs = tmp_path / "configs"
     configs.mkdir(exist_ok=True)
     for name in ("mooncake_egm_donor.py", "setup_mooncake_egm.sh"):
@@ -133,9 +135,16 @@ def test_one_step_uses_allocated_cpus_and_read_only_wheel_mount(tmp_path: Path, 
     assert env["MC_EGM_CPUS_PER_TASK"] == str(cpus)
     assert env["MC_EGM_TIMEOUT"] == "720"
     assert env["MC_EGM_POOL_SIZE"] == "4GiB"
+    assert env["MC_EGM_ALLOC_DIAGNOSTICS"] == "1"
+    assert env["MC_EGM_ALLOC_SIZES"] == "4GiB,260GiB"
+    assert env["MC_EGM_ALLOC_GPU"] == "0"
+    assert env["MC_EGM_ALLOC_NUMA_NODES"] == "0,auto"
+    assert env["MC_EGM_ALLOC_TIMEOUT"] == "30"
+    assert env["MC_EGM_ALLOC_BUDGET"] == "150"
     assert env["ENROOT_MAX_PROCESSORS"] == "8"
     for source, copied in (
         (ROOT / "tools/check_mooncake_egm.py", run_dir / "tools/check_mooncake_egm.py"),
+        (ROOT / "tools/mooncake_egm_alloc_diagnostics.py", run_dir / "tools/mooncake_egm_alloc_diagnostics.py"),
         (ROOT / "configs/mooncake_egm_donor.py", run_dir / "configs/mooncake_egm_donor.py"),
         (ROOT / "configs/setup_mooncake_egm.sh", run_dir / "configs/setup_mooncake_egm.sh"),
         (LAUNCHER, run_dir / "submitted.sbatch"),
@@ -246,3 +255,146 @@ def test_wrapper_clears_conflicting_transport_and_mpi_settings_before_setup(tmp_
     assert installed_env["CUDA_VISIBLE_DEVICES"] == "0,1,2,3"
     assert args_file.read_text().splitlines() == ["--mooncake-only"]
     assert "exit_code=27 cleanup_failed=0" in (run_dir / "logs/shutdown-1.txt").read_text()
+
+
+@pytest.mark.parametrize(
+    ("enabled", "diagnostic_rc", "interrupt"), [(True, 0, False), (True, 7, False), (False, 0, False), (True, 0, True)]
+)
+def test_provider_wrapper_runs_allocation_diagnostics_before_smoke_and_stops_owned_children(
+    tmp_path: Path, enabled: bool, diagnostic_rc: int, interrupt: bool
+) -> None:
+    result, run_dir, _ = launch(tmp_path)
+    assert result.returncode == 1, result.stdout + result.stderr
+    (run_dir / "configs/setup_mooncake_egm.sh").write_text("exit 0\n")
+    capture = tmp_path / "wrapper-events.jsonl"
+    python = tmp_path / "bin/python3"
+    python.unlink()
+    executable(
+        python,
+        f"#!{sys.executable}\n"
+        "import json, os, signal, sys, time\n"
+        "from pathlib import Path\n"
+        "def event(name):\n"
+        "    with open(os.environ['WRAPPER_CAPTURE'], 'a') as stream:\n"
+        "        stream.write(json.dumps({'name': name, 'args': sys.argv[1:], 'env': dict(os.environ)}) + '\\n')\n"
+        "def hold(name):\n"
+        "    def stop(signum, frame):\n"
+        "        event(name + '-stop')\n"
+        "        raise SystemExit(0)\n"
+        "    signal.signal(signal.SIGTERM, stop)\n"
+        "    event(name + '-waiting')\n"
+        "    while True: time.sleep(0.02)\n"
+        "if sys.argv[1] == '-':\n"
+        "    source = sys.stdin.read()\n"
+        "    if 'with ExitStack()' in source:\n"
+        "        run_dir = Path(sys.argv[2])\n"
+        "        (run_dir / 'master-config.json').write_text(json.dumps({'master_server_address': '127.0.0.1:12345', "
+        "'provider_hostname': 'provider-node', 'metrics_port': 12346}))\n"
+        "        (run_dir / 'master-ports').write_text('12345 12346\\n')\n"
+        "    else: event('master-ready')\n"
+        "elif sys.argv[1:3] == ['-m', 'mooncake.cli']:\n"
+        "    event('master-start')\n"
+        "    hold('master')\n"
+        "elif sys.argv[1].endswith('mooncake_egm_alloc_diagnostics.py'):\n"
+        "    event('allocation-diagnostics')\n"
+        "    output = Path(sys.argv[sys.argv.index('--output-dir') + 1])\n"
+        "    output.mkdir(parents=True, exist_ok=True)\n"
+        "    (output / 'summary.json').write_text(json.dumps({'cases': [{'status': 'allocation_failed', "
+        "'cuda_result': 2}], 'cleanup_confirmed': True}))\n"
+        "    if os.environ['WRAPPER_INTERRUPT'] == '1': hold('allocation-diagnostics')\n"
+        "    raise SystemExit(int(os.environ['WRAPPER_DIAGNOSTIC_RC']))\n"
+        "elif sys.argv[1].endswith('mooncake_egm_donor.py'):\n"
+        "    event('provider-start')\n"
+        "    ready = Path(sys.argv[sys.argv.index('--ready-file') + 1])\n"
+        "    ready.write_text('{}')\n"
+        "    (ready.parents[1] / 'client.done').touch()\n"
+        "    hold('provider')\n"
+        "else: raise SystemExit('Unexpected Python invocation: ' + repr(sys.argv))\n",
+    )
+    executable(tmp_path / "bin/nvidia-smi", "#!/bin/bash\nexit 0\n")
+    executable(tmp_path / "bin/cat", '#!/bin/bash\ncase "$1" in /proc/*) exit 0 ;; esac\nexec /bin/cat "$@"\n')
+    env = os.environ | {
+        "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
+        "SLURM_PROCID": "0",
+        "MC_EGM_SETUP_TIMEOUT": "1",
+        "MC_EGM_READY_TIMEOUT": "1",
+        "MC_EGM_CLIENT_TIMEOUT": "1",
+        "MC_EGM_POOL_SIZE": "4GiB",
+        "MC_EGM_ALLOC_DIAGNOSTICS": "1" if enabled else "0",
+        "MC_EGM_ALLOC_SIZES": "4GiB,260GiB",
+        "MC_EGM_ALLOC_GPU": "0",
+        "MC_EGM_ALLOC_NUMA_NODES": "0,auto",
+        "MC_EGM_ALLOC_TIMEOUT": "30",
+        "MC_EGM_ALLOC_BUDGET": "150",
+        "WRAPPER_CAPTURE": str(capture),
+        "WRAPPER_DIAGNOSTIC_RC": str(diagnostic_rc),
+        "WRAPPER_INTERRUPT": "1" if interrupt else "0",
+        "MC_USE_NVLINK_IPC": "0",
+        "MC_USE_TENT": "1",
+        "MC_TE_FILTERS": "rdma",
+        "MOONCAKE_STORE_BACKEND": "rs",
+    }
+    with subprocess.Popen(
+        [BASH, str(run_dir / "launch-node.sh"), str(run_dir)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as process:
+        if interrupt:
+            deadline = time.monotonic() + 4
+            while not capture.exists() or '"name": "allocation-diagnostics-waiting"' not in capture.read_text():
+                assert process.poll() is None, process.communicate()
+                assert time.monotonic() < deadline, "Allocation diagnostics never started"
+                time.sleep(0.02)
+            process.terminate()
+        stdout, stderr = process.communicate(timeout=10)
+    expected_rc = 143 if interrupt else diagnostic_rc if enabled else 0
+    assert process.returncode == expected_rc, stdout + stderr
+    calls = [json.loads(line) for line in capture.read_text().splitlines()]
+    names = [call["name"] for call in calls]
+    assert "master-ready" in names
+    if enabled:
+        diagnostics = next(call for call in calls if call["name"] == "allocation-diagnostics")
+        assert diagnostics["args"] == [
+            str(run_dir / "tools/mooncake_egm_alloc_diagnostics.py"),
+            "--config",
+            str(run_dir / "master-config.json"),
+            "--output-dir",
+            str(run_dir / "logs/allocation-diagnostics"),
+            "--sizes",
+            "4GiB,260GiB",
+            "--gpu",
+            "0",
+            "--numa-nodes",
+            "0,auto",
+            "--timeout-seconds",
+            "30",
+            "--budget-seconds",
+            "150",
+        ]
+        assert names.index("master-ready") < names.index("allocation-diagnostics")
+        # The helper narrows its allocation children to physical GPU 0. The
+        # surrounding container keeps all GPUs visible for the original smoke.
+        assert diagnostics["env"]["CUDA_VISIBLE_DEVICES"] == "0,1,2,3"
+        assert diagnostics["env"]["MC_USE_TENT"] == "0"
+        assert diagnostics["env"]["MOONCAKE_STORE_BACKEND"] == "cpp"
+        assert "MC_USE_NVLINK_IPC" not in diagnostics["env"]
+        assert "MC_TE_FILTERS" not in diagnostics["env"]
+    else:
+        assert "allocation-diagnostics" not in names
+    if expected_rc:
+        assert "provider-start" not in names
+        assert not (run_dir / "client.done").exists()
+    else:
+        provider = next(call for call in calls if call["name"] == "provider-start")
+        assert provider["args"][provider["args"].index("--segment-size") + 1] == "4GiB"
+        assert provider["args"][provider["args"].index("--numa-nodes") + 1] == "auto"
+        assert provider["env"]["CUDA_VISIBLE_DEVICES"] == "0,1,2,3"
+        if enabled:
+            assert names.index("allocation-diagnostics") < names.index("provider-start")
+        assert names.index("provider-stop") < names.index("master-stop")
+    assert "master-stop" in names
+    if interrupt:
+        assert names.index("allocation-diagnostics-stop") < names.index("master-stop")
+    assert f"exit_code={expected_rc} cleanup_failed=0" in (run_dir / "logs/shutdown-0.txt").read_text()

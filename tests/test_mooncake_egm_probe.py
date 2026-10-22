@@ -109,6 +109,7 @@ def test_report_without_client_results_is_cpu_only(tmp_path: Path, monkeypatch: 
     assert "agentic Pareto/SLO metrics: **N/A**" in report
     assert "no measured successful sample" in report
     assert "slurm-job-sizing" in report
+    assert "Allocation diagnostic status: **UNAVAILABLE**" in report
 
 
 @pytest.mark.parametrize("arguments", [["--iterations", "0"], ["--warmup", "-1"], ["--sizes", "0"]])
@@ -310,7 +311,106 @@ def test_full_host_workflow_preserves_buffers_and_cleans_owned_keys(
     )
     assert state["closed"] and state["buffers_live_at_close"]
     assert len(state["removed"]) == 12 and not state["remaining_keys"]
-    assert "Status: **PASS**" in (tmp_path / "logs/perf-analysis.md").read_text()
+    assert "Host-transfer status: **PASS**" in (tmp_path / "logs/perf-analysis.md").read_text()
+
+
+def test_report_separates_large_allocation_failure_from_verified_host_transfers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, _ = fake_runtime(tmp_path, monkeypatch)
+    assert probe.run_client(config) == 0
+    diagnostics = tmp_path / "logs/allocation-diagnostics"
+    diagnostics.mkdir()
+    (diagnostics / "inventory.json").write_text('{"cgroup_memory_max": "max"}\n')
+    cases = []
+    for size, status, returncode in [(4, "passed", 0), (260, "setup_failed", 1)]:
+        name = f"{size}GiB-numa-0"
+        (diagnostics / f"{name}.log").write_text("Native allocation result\n")
+        probe.write_json(diagnostics / f"{name}.json", {"status": status, "setup_result": returncode})
+        cases.append(
+            {
+                "name": name,
+                "segment_size_bytes": size * 1024**3,
+                "numa_nodes": "0",
+                "gpu_selector": "0",
+                "status": status,
+                "cleanup_confirmed": True,
+                "returncode": returncode,
+                "log": f"{name}.log",
+                "result": f"{name}.json",
+                "cuda_errors": [{"code": 2, "name": "CUDA_ERROR_OUT_OF_MEMORY"}] if returncode else [],
+            }
+        )
+    probe.write_json(
+        diagnostics / "summary.json",
+        {
+            "status": "complete",
+            "hostname": "provider",
+            "gpu_selector": "0",
+            "inventory": "inventory.json",
+            "cases": cases,
+        },
+    )
+
+    def no_runtime_import(name: str) -> None:
+        raise AssertionError(f"Report imported a runtime dependency: {name}")
+
+    monkeypatch.setattr(probe.importlib, "import_module", no_runtime_import)
+    probe.write_report(tmp_path, 0)
+    report = (tmp_path / "logs/perf-analysis.md").read_text()
+    assert "Host-transfer status: **PASS**" in report
+    assert "Allocation diagnostic status: **FAILED CASES**" in report
+    assert "| 0 | 0 | 260 | setup_failed | 1 | 2 (CUDA_ERROR_OUT_OF_MEMORY) | True |" in report
+    assert "allocation-diagnostics/260GiB-numa-0.log" in report
+    assert "allocation-diagnostics/inventory.json" in report
+    assert "does not identify the limiting resource" in report
+    assert "Sequential pool successes do not prove that four concurrent pools" in report
+    assert "TTFT p50/p95/p99" in report and "agentic Pareto/SLO metrics: **N/A**" in report
+
+
+@pytest.mark.parametrize("summary", ["{", '{"status": "complete", "cases": "invalid"}'])
+def test_report_preserves_failure_analysis_with_unreadable_allocation_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, summary: str
+) -> None:
+    diagnostic_path = tmp_path / "logs/allocation-diagnostics/summary.json"
+    diagnostic_path.parent.mkdir(parents=True)
+    diagnostic_path.write_text(summary)
+
+    def no_runtime_import(name: str) -> None:
+        raise AssertionError(f"Report imported a runtime dependency: {name}")
+
+    monkeypatch.setattr(probe.importlib, "import_module", no_runtime_import)
+    assert probe.main(["report", "--run-dir", str(tmp_path), "--exit-code", "9"]) == 0
+    report = (tmp_path / "logs/perf-analysis.md").read_text()
+    assert "Host-transfer status: **FAIL / INCOMPLETE**" in report
+    assert "Allocation diagnostic status: **INCOMPLETE**" in report
+    assert "saved summary could not be read" in report
+    assert "TTFT p50/p95/p99" in report
+
+
+def test_report_labels_missing_allocation_case_evidence_as_incomplete(tmp_path: Path) -> None:
+    probe.write_json(
+        tmp_path / "logs/allocation-diagnostics/summary.json",
+        {
+            "status": "complete",
+            "cases": [
+                {
+                    "segment_size_bytes": 260 * 1024**3,
+                    "numa_nodes": "0",
+                    "status": "passed",
+                    "cleanup_confirmed": True,
+                    "returncode": 0,
+                    "log": "260GiB-numa-0.log",
+                    "result": "260GiB-numa-0.json",
+                }
+            ],
+        },
+    )
+    probe.write_report(tmp_path, 1)
+    report = (tmp_path / "logs/perf-analysis.md").read_text()
+    assert "Allocation diagnostic status: **INCOMPLETE**" in report
+    assert "Allocation inventory: unavailable" in report
+    assert "log unavailable; result unavailable" in report
 
 
 @pytest.mark.parametrize(

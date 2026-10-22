@@ -26,7 +26,14 @@ export MC_EGM_WARMUP=${MC_EGM_WARMUP:-2}
 export MC_EGM_SETUP_TIMEOUT=${MC_EGM_SETUP_TIMEOUT:-240}
 export MC_EGM_READY_TIMEOUT=${MC_EGM_READY_TIMEOUT:-180}
 export MC_EGM_CLIENT_TIMEOUT=${MC_EGM_CLIENT_TIMEOUT:-180}
-# Twelve minutes for extraction/setup/traffic, leaving three minutes for cleanup/reporting.
+# Reproduce large HOST_NUMA allocation failures before the small transfer test.
+export MC_EGM_ALLOC_DIAGNOSTICS=${MC_EGM_ALLOC_DIAGNOSTICS:-1}
+export MC_EGM_ALLOC_SIZES=${MC_EGM_ALLOC_SIZES:-4GiB,260GiB}
+export MC_EGM_ALLOC_GPU=${MC_EGM_ALLOC_GPU:-0}
+export MC_EGM_ALLOC_NUMA_NODES=${MC_EGM_ALLOC_NUMA_NODES:-0,auto}
+export MC_EGM_ALLOC_TIMEOUT=${MC_EGM_ALLOC_TIMEOUT:-30}
+export MC_EGM_ALLOC_BUDGET=${MC_EGM_ALLOC_BUDGET:-150}
+# Twelve minutes for extraction/setup/allocation/traffic; reserve three for cleanup/reporting.
 export MC_EGM_TIMEOUT=${MC_EGM_TIMEOUT:-720}
 
 RUN_DIR=${MC_EGM_OUTPUT_ROOT:-${SLURM_SUBMIT_DIR:?Submit from the repository root}/outputs}/mooncake-egm-${SLURM_JOB_ID:?Missing job ID}
@@ -44,6 +51,9 @@ cat > "$LOG_DIR/perf-analysis.md" <<'REPORT'
 Goal: verify cross-node pinned-host writes to and reads from EGM host DRAM over
 NVLink, with full payload checks and no local Store capacity on the client.
 Both payload endpoints use host memory; GPUs submit the CUDA transfers.
+Before transfer, compare small and large EGM allocations on one visible GPU,
+using explicit NUMA 0 and CUDA host NUMA discovery. Inspect allocation-diagnostics
+for same-container NUMA memory, process/cgroup limits and native failure logs.
 No completed transfer is established yet. Inspect controller.log and node logs.
 TTFT p50/p95/p99 (ms), ITL p50/p99 (ms/token), input/output/total throughput
 (tokens/s), and agentic Pareto/SLO metrics are N/A: no model requests are served.
@@ -117,6 +127,7 @@ export MC_EGM_CPUS_PER_TASK
 TOOL_DIR=${MC_EGM_TOOL_DIR:-$SLURM_SUBMIT_DIR/tools}
 CONFIG_DIR=${MC_EGM_CONFIG_DIR:-$SLURM_SUBMIT_DIR/configs}
 cp "$TOOL_DIR/check_mooncake_egm.py" "$RUN_DIR/tools/"
+cp "$TOOL_DIR/mooncake_egm_alloc_diagnostics.py" "$RUN_DIR/tools/"
 cp "$CONFIG_DIR/mooncake_egm_donor.py" "$CONFIG_DIR/setup_mooncake_egm.sh" "$RUN_DIR/configs/"
 cp "${BASH_SOURCE[0]}" "$RUN_DIR/submitted.sbatch"
 if [[ ! -d $MC_EGM_WHEEL_DIR ]]; then
@@ -145,7 +156,9 @@ with wheel.open("rb") as stream:
 if digest is None:
     digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
 keys = ("SLURM_JOB_ID", "SLURM_JOB_NODELIST", "MC_EGM_IMAGE", "MC_EGM_POOL_SIZE", "MC_EGM_TIMEOUT",
-        "MC_EGM_GPU_IDS", "MC_EGM_SIZES", "MC_EGM_ITERATIONS", "MC_EGM_WARMUP")
+        "MC_EGM_GPU_IDS", "MC_EGM_SIZES", "MC_EGM_ITERATIONS", "MC_EGM_WARMUP",
+        "MC_EGM_ALLOC_DIAGNOSTICS", "MC_EGM_ALLOC_SIZES", "MC_EGM_ALLOC_GPU",
+        "MC_EGM_ALLOC_NUMA_NODES", "MC_EGM_ALLOC_TIMEOUT", "MC_EGM_ALLOC_BUDGET", "MC_MAX_MR_SIZE")
 metadata = {key: os.environ.get(key) for key in keys}
 metadata.update(wheel=wheel.name, wheel_sha256=digest, buffer_memory="pinned_host")
 (run_dir / "logs" / "launch.json").write_text(json.dumps(metadata, indent=2) + "\n")
@@ -158,7 +171,7 @@ cat > "$RUN_DIR/launch-node.sh" <<'WRAPPER'
 set -euo pipefail
 run_dir=${1:?Run directory is required}
 rank=${SLURM_PROCID:?Missing Slurm task rank}
-master_pid= provider_pid=
+master_pid= provider_pid= diagnostic_pid=
 
 stop_child() {
     local pid=$1 label=$2 deadline child_rc=0
@@ -183,6 +196,7 @@ cleanup() {
     trap '' INT TERM
     set +e
     cleanup_failed=0
+    stop_child "$diagnostic_pid" diagnostics
     stop_child "$provider_pid" provider
     stop_child "$master_pid" master
     if (( cleanup_failed != 0 && rc == 0 )); then rc=1; fi
@@ -213,11 +227,18 @@ timeout --signal=TERM --kill-after=10s "${MC_EGM_SETUP_TIMEOUT}s" \
 
 {
     hostname
-    nvidia-smi --query-gpu=index,uuid,pci.bus_id,name,memory.total,driver_version --format=csv
-    nvidia-smi topo -m
-    nvidia-smi -q -d FABRIC || true
+    nvidia-smi --query-gpu=index,uuid,pci.bus_id,name,memory.total,driver_version --format=csv || true
+    nvidia-smi topo -m || true
+    # Some driver versions reject '-d FABRIC'; the full query includes Fabric state.
+    nvidia-smi -q || true
     ls -l /dev/nvidia-caps-imex-channels/ || true
     command -v numactl >/dev/null && numactl --hardware || true
+    cat /proc/self/status /proc/self/limits /proc/self/cgroup || true
+    cat /proc/meminfo /proc/buddyinfo || true
+    for memory_info in /sys/devices/system/node/node*/meminfo; do
+        [[ ! -f $memory_info ]] || cat "$memory_info" || true
+    done
+    dmesg --ctime 2>&1 | tail -n 100 || true
 } > "$run_dir/logs/inventory-$rank.txt" 2>&1
 
 if [[ $rank == 0 ]]; then
@@ -266,6 +287,34 @@ else:
     raise SystemExit("Mooncake master RPC readiness timed out; see logs/master.log")
 PY
     kill -0 "$master_pid"
+    if [[ $MC_EGM_ALLOC_DIAGNOSTICS == 1 ]]; then
+        # Each allocation runs in a fresh child with just MC_EGM_ALLOC_GPU visible.
+        # Controlled CUDA allocation errors are recorded and do not suppress the
+        # separate small transfer test. Incomplete/unsafe cleanup aborts this step.
+        diagnostic_rc=0
+        # The outer timeout also bounds inventory/driver calls; allow ten seconds
+        # beyond the helper's probe budget to save evidence and stop its child.
+        timeout --signal=TERM --kill-after=10s "$((MC_EGM_ALLOC_BUDGET + 10))s" \
+            python3 "$run_dir/tools/mooncake_egm_alloc_diagnostics.py" \
+            --config "$run_dir/master-config.json" \
+            --output-dir "$run_dir/logs/allocation-diagnostics" \
+            --sizes "$MC_EGM_ALLOC_SIZES" --gpu "$MC_EGM_ALLOC_GPU" \
+            --numa-nodes "$MC_EGM_ALLOC_NUMA_NODES" \
+            --timeout-seconds "$MC_EGM_ALLOC_TIMEOUT" --budget-seconds "$MC_EGM_ALLOC_BUDGET" \
+            > "$run_dir/logs/allocation-diagnostics.log" 2>&1 &
+        diagnostic_pid=$!
+        wait "$diagnostic_pid" || diagnostic_rc=$?
+        diagnostic_pid=
+        if (( diagnostic_rc != 0 )); then
+            printf 'Allocation diagnostics incomplete (code %s); see logs/allocation-diagnostics.\n' \
+                "$diagnostic_rc" >&2
+            exit "$diagnostic_rc"
+        fi
+        kill -0 "$master_pid"
+    elif [[ $MC_EGM_ALLOC_DIAGNOSTICS != 0 ]]; then
+        printf 'MC_EGM_ALLOC_DIAGNOSTICS must be 0 or 1.\n' >&2
+        exit 2
+    fi
     python3 "$run_dir/configs/mooncake_egm_donor.py" serve \
         --config "$run_dir/master-config.json" --segment-size "$MC_EGM_POOL_SIZE" \
         --numa-nodes auto --ready-file "$run_dir/logs/provider.ready.json" \
@@ -293,7 +342,9 @@ PY
         sleep 1
     done
 elif [[ $rank == 1 ]]; then
-    deadline=$((SECONDS + MC_EGM_SETUP_TIMEOUT + 2 * MC_EGM_READY_TIMEOUT))
+    allocation_budget=0
+    if [[ $MC_EGM_ALLOC_DIAGNOSTICS == 1 ]]; then allocation_budget=$((MC_EGM_ALLOC_BUDGET + 20)); fi
+    deadline=$((SECONDS + MC_EGM_SETUP_TIMEOUT + allocation_budget + 2 * MC_EGM_READY_TIMEOUT))
     while [[ ! -f $run_dir/logs/provider.ready.json ]]; do
         if (( SECONDS >= deadline )); then
             printf 'Remote provider readiness timed out; see rank-0 logs.\n' >&2

@@ -385,6 +385,116 @@ def run_client(config: ClientConfig) -> int:
     return exit_code
 
 
+def allocation_report(logs: Path) -> tuple[str, list[str]]:
+    """Describe saved allocator probes without importing CUDA or inferring a root cause."""
+    diagnostic_dir = logs / "allocation-diagnostics"
+    summary_path = diagnostic_dir / "summary.json"
+    lines = ["## Host-memory allocation diagnostics", ""]
+    if not summary_path.exists():
+        return "UNAVAILABLE", lines + [
+            "Allocation probes: unavailable; `allocation-diagnostics/summary.json` was not preserved. "
+            "The probes may have been disabled or setup may have failed before they ran. "
+            "The remote-transfer result alone does not establish whether a recipe-sized pool can be allocated.",
+            "",
+        ]
+    try:
+        summary = json.loads(summary_path.read_text())
+        if not isinstance(summary, dict) or not isinstance(summary.get("cases", []), list):
+            raise ValueError("expected a summary object with a cases list")
+    except (OSError, ValueError) as exc:
+        return "INCOMPLETE", lines + [
+            f"Allocation probes: incomplete; saved summary could not be read: `{exc}`. "
+            "Inspect [summary.json](allocation-diagnostics/summary.json) and the per-case logs.",
+            "",
+        ]
+    cases = summary.get("cases", [])
+    complete = (
+        summary.get("status") == "complete"
+        and bool(cases)
+        and all(
+            isinstance(case, dict)
+            and case.get("status") in {"passed", "setup_failed"}
+            and case.get("cleanup_confirmed") is True
+            and isinstance(case.get("returncode"), int)
+            and all(
+                isinstance(case.get(field), str) and (diagnostic_dir / case[field]).is_file()
+                for field in ("log", "result")
+            )
+            for case in cases
+        )
+    )
+    diagnostic_status = (
+        ("FAILED CASES" if any(case.get("status") != "passed" for case in cases) else "PASSED")
+        if complete
+        else "INCOMPLETE"
+    )
+    lines += [
+        f"Allocation diagnostic status: **{diagnostic_status}**; collection status: "
+        f"`{summary.get('status', 'unknown')}`; provider: "
+        f"`{summary.get('hostname', 'unknown')}`; CUDA visible devices: `{summary.get('gpu_selector', 'unknown')}` "
+        "(source: [summary.json](allocation-diagnostics/summary.json)).",
+        "",
+        "These probes test native host NUMA/Fabric Store setup and cleanup separately from remote put/get. "
+        "Their outcomes do not change the remote-transfer status above. CUDA error 2 identifies an allocation "
+        "or resource failure; it does not identify the limiting resource or establish that GPU payload memory "
+        "was allocated. Compare host/NUMA availability, cgroup limits and CUDA discovery in the inventory "
+        "with each case's configuration and errors. Sequential pool successes do not prove that four "
+        "concurrent pools and inference workers fit.",
+        "",
+    ]
+    inventory = summary.get("inventory", "inventory.json")
+    if (diagnostic_dir / inventory).exists():
+        lines.append(
+            f"- [Allocation inventory](allocation-diagnostics/{inventory}): host/NUMA, cgroup and CUDA evidence."
+        )
+    else:
+        lines.append(f"- Allocation inventory: unavailable; `{inventory}` was not preserved.")
+    lines.append("")
+    if not cases:
+        return diagnostic_status, lines + [
+            "No allocation case results were preserved; inspect the diagnostic launcher log.",
+            "",
+        ]
+    lines += [
+        "| GPU mask | NUMA nodes | Pool GiB | Case status | Exit code | CUDA errors | Cleanup confirmed | Evidence |",
+        "| --- | --- | ---: | --- | --- | --- | --- | --- |",
+    ]
+    for case in cases:
+        if not isinstance(case, dict):
+            lines.append(
+                "| unknown | unknown | unknown | invalid case record | unknown | unknown | unknown | summary.json |"
+            )
+            continue
+        size = case.get("segment_size_bytes")
+        size_gib = f"{size / 1024**3:g}" if isinstance(size, (int, float)) else "unknown"
+        errors = ", ".join(
+            f"{error.get('code', 'unknown')} ({error.get('name', 'unknown')})"
+            for error in case.get("cuda_errors", [])
+            if isinstance(error, dict)
+        )
+        evidence = []
+        for field in ("log", "result"):
+            filename = case.get(field)
+            if filename and (diagnostic_dir / filename).exists():
+                evidence.append(f"[{field}](allocation-diagnostics/{filename})")
+            else:
+                evidence.append(f"{field} unavailable")
+        lines.append(
+            f"| {case.get('gpu_selector', summary.get('gpu_selector', 'unknown'))} | "
+            f"{case.get('numa_nodes', 'unknown')} | {size_gib} | {case.get('status', 'unknown')} | "
+            f"{case.get('returncode', 'unknown')} | {errors or 'none recorded'} | "
+            f"{case.get('cleanup_confirmed', 'unknown')} | {'; '.join(evidence)} |"
+        )
+    return diagnostic_status, lines + [
+        "",
+        "The per-case JSON records native setup/close results, elapsed setup/cleanup time and before/after "
+        "inventory when available. Missing case results or timeout/cleanup failures leave allocation capacity "
+        "unproven; they do not by themselves identify the cause. These timings measure allocation probes, "
+        "not transfer latency or model performance.",
+        "",
+    ]
+
+
 def write_report(run_dir: Path, exit_code: int) -> None:
     logs = run_dir / "logs"
     logs.mkdir(parents=True, exist_ok=True)
@@ -430,10 +540,13 @@ def write_report(run_dir: Path, exit_code: int) -> None:
     )
     measured = [sample for sample in samples if not sample["warmup"]]
     rows = summarize(samples)
+    allocation_status, allocation_lines = allocation_report(logs)
     lines = [
         "# Mooncake remote EGM diagnostic",
         "",
-        f"Status: **{'PASS' if passed else 'FAIL / INCOMPLETE'}**; launcher exit code: `{exit_code}`.",
+        f"Host-transfer status: **{'PASS' if passed else 'FAIL / INCOMPLETE'}**; launcher exit code: `{exit_code}`.",
+        f"Allocation diagnostic status: **{allocation_status}**. A small-pool transfer pass does not validate "
+        "recipe-sized pool allocation; see the independent allocation cases below.",
         f"Native NVLink memcpy log observed: `{transport_log_verified}` (source: `client.log`).",
         f"Requested verified samples complete: `{measurements_complete}` (source: `client-results.json`).",
         f"Pinned host source/destination buffers verified: `{host_buffers_verified}` "
@@ -471,6 +584,9 @@ def write_report(run_dir: Path, exit_code: int) -> None:
         f"`{result.get('finished_utc', 'incomplete')}`; wall duration: "
         f"`{result.get('duration_seconds', 'unavailable')}` s.",
         "",
+    ]
+    lines += allocation_lines
+    lines += [
         "## Measurements",
         "",
         "TTFT p50/p95/p99 (ms), ITL p50/p99 (ms/token), input/output/total throughput (tokens/s), "

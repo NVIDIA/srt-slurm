@@ -12,7 +12,8 @@ Both `sbatch` and `srun` omit GPU/GRES resource requests for Hecate's full-node
 allocation policy; `--gpus-per-node` causes `Invalid generic resource (gres)
 specification` there. CUDA devices 0–3 remain visible inside each container
 for NVLink copy submission and EGM NUMA discovery.
-It runs one persistent container per node. Rank 0 hosts the Mooncake master and a native EGM provider;
+It runs one persistent container per node. Rank 0 starts the master, checks
+small and recipe-sized host allocations, then starts a native EGM provider;
 rank 1 writes pinned host data to that provider's host DRAM and reads it back
 into a separate pinned host buffer. Both payload endpoints use host memory.
 No model or Dynamo server is loaded.
@@ -40,6 +41,14 @@ MC_EGM_WHEEL_DIR=/shared/mooncake_egm_wheels \
   sbatch --account=root --partition=batch-r42 tools/check_mooncake_egm.sbatch
 ```
 
+For the current RapLab recipes:
+
+```bash
+MC_EGM_IMAGE=/home/_shared/tensorrt-llm-release-arm64-f1bdd25-user_imant_glm5-rubin-30428.sqsh \
+MC_EGM_WHEEL_DIR=/home/rihuo/mooncake_egm_wheels \
+  sbatch --account=root --partition=batch-r42 tools/check_mooncake_egm.sbatch
+```
+
 The test reuses `configs/setup_mooncake_egm.sh --mooncake-only` and
 `configs/mooncake_egm_donor.py`, installing the wheel in each container without
 installing Dynamo or changing the host Python environment. Use a wheel
@@ -55,6 +64,62 @@ Both nodes need HOST_NUMA/Fabric allocation support, working NVLink fabric
 membership and IMEX access inside the container. `--segment=2` requests
 placement in one scheduler segment; successful transfers establish the actual
 path. The test records GPU, topology, Fabric and IMEX inventory from each node.
+
+## Allocation failure diagnostics
+
+Allocation checks run by default before the original small transfer test. On
+the provider node, four fresh processes try this matrix sequentially:
+
+| Visible physical GPU | Host pool | NUMA selection |
+| --- | --- | --- |
+| 0 | 4GiB | explicit `0` |
+| 0 | 4GiB | `auto` |
+| 0 | 260GiB | explicit `0` |
+| 0 | 260GiB | `auto` |
+
+Each process sees only that one GPU and uses the native EGM Store configuration
+with `local_buffer_size=0`. It allocates Fabric-exportable HOST_NUMA memory,
+closes the Store, and exits before the next process starts. No GPU payload
+tensor or ordinary host-memory fallback is used. With one visible GPU, `auto`
+selects that GPU's host NUMA node; the inventory queries CUDA's
+`CU_DEVICE_ATTRIBUTE_HOST_NUMA_ID` and records its PCI identity. See the
+[CUDA EGM allocation guide](https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/extended-gpu-memory.html).
+
+The helper captures `/proc/self/status` allowed CPU/memory-node masks, process
+limits, global and per-NUMA memory counters, buddy information, and cgroup
+membership/mounts. It reads visible cgroup ancestors' memory limits, usage and
+OOM events, including v1 and v2 layouts. A container may hide higher ancestors;
+missing files and permission errors are saved as missing evidence. A leaf
+`memory.max=max` alone does not establish an unlimited job allocation. See the
+[kernel cgroup memory documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html).
+Each case retains before/after snapshots; the regular node inventory also
+captures full `nvidia-smi -q` output and best-effort kernel messages.
+
+Start with `logs/perf-analysis.md`, then inspect
+`logs/allocation-diagnostics/summary.json` and each linked case's JSON/native log:
+
+- Small allocations pass and 260GiB fails: investigate size-dependent capacity
+  or driver resource limits. The exact limiting resource is still unproven.
+- Explicit NUMA 0 fails and `auto` passes: compare the discovered host NUMA ID
+  and per-node memory counters before changing the recipe's placement.
+- A process is killed, times out or cannot confirm cleanup: remaining probes
+  and the small transfer test stop. Inspect cgroup events, limits and native logs.
+- All sequential probes pass but serving fails: these checks do not establish
+  that four concurrent donors plus inference workers fit. The four 260GiB
+  donors need 1040GiB per prefill node, with 520GiB on each selected NUMA node.
+
+Controlled allocation failures with confirmed cleanup are recorded and followed
+by the original `4GiB` remote transfer test. Its host-transfer status and the
+allocation diagnostic status are separate: a small transfer PASS does not
+validate a 260GiB pool. Incomplete diagnostics return a failing job status.
+
+Use `MC_EGM_ALLOC_GPU=1` to test a different physical GPU. For DEP16 or DEP32
+pool sizes, use `MC_EGM_ALLOC_SIZES=4GiB,256GiB` or `4GiB,224GiB`.
+Set `MC_EGM_ALLOC_DIAGNOSTICS=0` to run only the original transfer test.
+An inherited `MC_MAX_MR_SIZE` is recorded and honored; for example,
+`MC_MAX_MR_SIZE=17179869184` requests 16GiB allocation chunks while retaining
+the full pool capacity. Smaller chunks are a further diagnostic, not an
+established remedy for insufficient aggregate RAM.
 
 ## Traffic and evidence
 
@@ -107,6 +172,12 @@ The principal environment overrides are:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `MC_EGM_POOL_SIZE` | `4GiB` | Total provider host DRAM |
+| `MC_EGM_ALLOC_DIAGNOSTICS` | `1` | Run allocation probes before the small transfer test; `0` skips them |
+| `MC_EGM_ALLOC_SIZES` | `4GiB,260GiB` | Host-pool sizes tested sequentially |
+| `MC_EGM_ALLOC_GPU` | `0` | One physical CUDA GPU index or UUID visible to each allocation probe |
+| `MC_EGM_ALLOC_NUMA_NODES` | `0,auto` | Independent NUMA selections tested for each size |
+| `MC_EGM_ALLOC_TIMEOUT` | `30` | Per-case setup/cleanup deadline in seconds |
+| `MC_EGM_ALLOC_BUDGET` | `150` | Whole allocation-probe budget in seconds, plus bounded teardown |
 | `MC_EGM_GPU_IDS` | `0,1,2,3` | CUDA copy submission ordinals tested sequentially |
 | `MC_EGM_SIZES` | `65536,1048576,16777216,67108864` | Payload sizes in bytes |
 | `MC_EGM_ITERATIONS` | `10` | Measured iterations per submission device and size |
@@ -119,15 +190,22 @@ The principal environment overrides are:
 
 The [slurm-job-sizing skill](../src/srtctl/dsight/skills/slurm-job-sizing/SKILL.md)
 keeps this diagnostic short: the step deadline includes extraction, setup,
-allocation and traffic, leaving three minutes for shutdown and reporting in
+allocation probes and traffic, leaving three minutes for shutdown and reporting in
 the 15-minute allocation. Increase the traffic deadline, whole-step deadline
 and submitted walltime together when extending the workload. Preserve a cleanup
-reserve. No cluster run was launched while preparing the scripts.
+reserve. The 720-second whole-step deadline takes precedence over individual
+phase deadlines. An outer timeout also bounds allocation inventory/driver calls
+to the probe budget plus ten seconds, followed by at most ten seconds to kill
+the diagnostic process. No cluster run was launched while preparing the scripts.
 
 Artifacts are saved under `outputs/mooncake-egm-<job_id>/`:
 
 - `logs/perf-analysis.md`: authoritative pass/fail report, measured transfer
-  metrics, evidence sources and missing-data explanations.
+  metrics, separate allocation findings, evidence sources and missing-data explanations.
+- `logs/allocation-diagnostics/summary.json`, `inventory.json`,
+  `inventory-after.json`, and per-case JSON/log files: allocation outcome,
+  single-GPU CUDA host NUMA mapping, memory/limit snapshots, native CUDA errors
+  and cleanup status. `logs/allocation-diagnostics.log` captures the helper itself.
 - `logs/client-results.json` and `logs/client.log`: pinned host allocation
   evidence, correctness, per-case measurements, replica descriptors and native
   NVLink transfer evidence.
