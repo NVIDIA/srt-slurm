@@ -94,14 +94,13 @@ def test_shell_syntax_and_two_node_nvlink_allocation() -> None:
     for directive in (
         "#SBATCH --nodes=2",
         "#SBATCH --segment=2",
+        "#SBATCH --gpus-per-node=4",
         "#SBATCH --exclusive",
         "#SBATCH --mem=0",
         "#SBATCH --time=00:15:00",
     ):
         assert directive in directives
     assert not any("--partition" in line or "--nodelist" in line for line in directives)
-    # Hecate reserves whole nodes and rejects GPU GRES requests at submission.
-    assert not any("--gpus" in line or "--gres" in line for line in directives)
 
 
 @pytest.mark.parametrize(("cpu_spec", "cpus"), [("128(x2)", 128), ("96,96", 96)])
@@ -116,6 +115,7 @@ def test_one_step_uses_allocated_cpus_and_read_only_wheel_mount(tmp_path: Path, 
         "--nodes=2",
         "--ntasks=2",
         "--ntasks-per-node=1",
+        "--gpus-per-node=4",
         f"--cpus-per-task={cpus}",
         "--cpu-bind=none",
         "--mpi=none",
@@ -129,8 +129,6 @@ def test_one_step_uses_allocated_cpus_and_read_only_wheel_mount(tmp_path: Path, 
         f"--container-mounts={run_dir}:/egm-run,{(tmp_path / 'wheels').resolve()}:/egm-wheels:ro",
     ):
         assert arg in argv
-    # Removing only the sbatch directive would leave the same error in srun.
-    assert not any(arg.startswith(("--gpus", "--gres")) for arg in argv)
     assert argv[-3:] == ["bash", "/egm-run/launch-node.sh", "/egm-run"]
     assert env["MC_EGM_CPUS_PER_TASK"] == str(cpus)
     assert env["MC_EGM_TIMEOUT"] == "720"

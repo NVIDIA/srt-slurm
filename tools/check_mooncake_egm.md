@@ -1,17 +1,19 @@
 # Two-node Mooncake EGM/NVLink smoke test
 
-Submit from the repository root on Hecate:
+Submit from the repository root on RapLab:
 
 ```bash
-sbatch --account=root --partition=batch-xdr tools/check_mooncake_egm.sbatch
+MC_EGM_IMAGE=/home/_shared/tensorrt-llm-release-arm64-f1bdd25-user_imant_glm5-rubin-30428.sqsh \
+MC_EGM_WHEEL_DIR=/home/rihuo/mooncake_egm_wheels \
+sbatch --account=root --partition=batch-r41 tools/check_mooncake_egm.sbatch
 ```
 
 This requests two exclusive nodes, all allocatable host memory, one Slurm
-topology segment, and 15 minutes. It expects four visible GPUs per node.
-Both `sbatch` and `srun` omit GPU/GRES resource requests for Hecate's full-node
-allocation policy; `--gpus-per-node` causes `Invalid generic resource (gres)
-specification` there. CUDA devices 0–3 remain visible inside each container
-for NVLink copy submission and EGM NUMA discovery.
+topology segment, four GPUs per node, and 15 minutes. Both `sbatch` and `srun`
+request `--gpus-per-node=4` so the container step receives GPU devices for
+NVLink copy submission and EGM NUMA discovery. Hecate's full-node allocation
+policy rejects this GPU resource request; this launcher now targets clusters
+that support explicit GPU allocation.
 It runs one persistent container per node. Rank 0 starts the master, checks
 small and recipe-sized host allocations, then starts a native EGM provider;
 rank 1 writes pinned host data to that provider's host DRAM and reads it back
@@ -38,14 +40,6 @@ Override these paths when submitting to another cluster:
 ```bash
 MC_EGM_IMAGE=/shared/images/trtllm-arm64-cuda13.sqsh \
 MC_EGM_WHEEL_DIR=/shared/mooncake_egm_wheels \
-  sbatch --account=root --partition=batch-r42 tools/check_mooncake_egm.sbatch
-```
-
-For the current RapLab recipes:
-
-```bash
-MC_EGM_IMAGE=/home/_shared/tensorrt-llm-release-arm64-f1bdd25-user_imant_glm5-rubin-30428.sqsh \
-MC_EGM_WHEEL_DIR=/home/rihuo/mooncake_egm_wheels \
   sbatch --account=root --partition=batch-r42 tools/check_mooncake_egm.sbatch
 ```
 
