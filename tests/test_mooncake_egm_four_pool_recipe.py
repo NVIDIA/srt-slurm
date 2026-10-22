@@ -37,8 +37,13 @@ def recipe_source(request: pytest.FixtureRequest) -> Path:
 
 
 @pytest.fixture
-def prefill_size(recipe_source: Path) -> str:
-    return {"dynamo": "260GiB", "raplab-dynamo": "224GiB"}[recipe_source.parent.name]
+def prefill_size() -> str:
+    return "224GiB"
+
+
+@pytest.fixture
+def decode_size() -> str:
+    return "1100GiB"
 
 
 @pytest.fixture
@@ -57,7 +62,9 @@ def recipe_path(recipe_source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyP
     return path
 
 
-def test_four_pool_variant_preserves_the_egm_comparison_baseline(recipe_source: Path, prefill_size: str) -> None:
+def test_four_pool_variant_preserves_the_egm_comparison_baseline(
+    recipe_source: Path, prefill_size: str, decode_size: str
+) -> None:
     """Match worker settings while RapLab leaves scheduling overrides to the caller."""
     base = yaml.safe_load(recipe_source.with_name(BASE_NAME).read_text())
     variant = yaml.safe_load(recipe_source.read_text())
@@ -78,7 +85,14 @@ def test_four_pool_variant_preserves_the_egm_comparison_baseline(recipe_source: 
     assert set(variant_services) == (set(base_services) - {"prefill-egm-donor"}) | set(PREFILL_NAMES)
     for name, service in base_services.items():
         if name != "prefill-egm-donor":
-            assert variant_services[name] == service, name
+            normalized = dict(variant_services[name])
+            if name == "decode-mooncake-donor":
+                command = list(normalized["command"])
+                size_index = command.index("--segment-size") + 1
+                assert command[size_index] == decode_size
+                command[size_index] = service["command"][service["command"].index("--segment-size") + 1]
+                normalized["command"] = command
+            assert normalized == service, name
     for pool, name in enumerate(PREFILL_NAMES):
         service = variant_services[name]
         normalized = dict(service)
@@ -136,7 +150,12 @@ def test_dry_run_exposes_all_four_prefill_pool_fleets(
 
 
 def test_mock_launch_gates_workers_on_four_host_pools_per_prefill_node(
-    recipe_source: Path, recipe_path: Path, prefill_size: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    recipe_source: Path,
+    recipe_path: Path,
+    prefill_size: str,
+    decode_size: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Each provider maps its host pool through one GPU and has disjoint readiness/log files."""
     config = SrtConfig.from_yaml(recipe_path)
@@ -205,11 +224,6 @@ def test_mock_launch_gates_workers_on_four_host_pools_per_prefill_node(
     assert len({launch["output"] for launch in donors}) == 14
     markers: set[str] = set()
     total_capacity = 0
-    baseline = yaml.safe_load(recipe_source.with_name(BASE_NAME).read_text())
-    decode_command = next(
-        service["command"] for service in baseline["services"] if service["name"] == "decode-mooncake-donor"
-    )
-    decode_size = decode_command[decode_command.index("--segment-size") + 1]
     for launch in donors:
         command = launch["command"]
         expected_size = prefill_size if launch in prefill else decode_size
