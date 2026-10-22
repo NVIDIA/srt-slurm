@@ -316,8 +316,8 @@ mock and unit checks do not establish hardware compatibility or performance.
 
 [`glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml`](glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml)
 adapts the [Dynamo four-provider recipe](../dynamo/glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml)
-to RapLab's model/image paths, wheel directories, account, partition, caches,
-pip and UCX/MPI/NCCL settings. It starts four separate `260GiB` EGM providers on
+to RapLab's model/image paths, wheel directories, caches, pip and UCX/MPI/NCCL
+settings. It starts four separate `260GiB` EGM providers on
 each prefill node, with this placement:
 
 | Prefill donor | `CUDA_VISIBLE_DEVICES` | Host NUMA node | Pool capacity |
@@ -345,9 +345,10 @@ payloads, inference NUMA CPU/local memory binding, engine tuning and complete
 AgentX workload. It uses `/home/rihuo/mooncake_egm_wheels` with the build requirements
 above. If that path changes, update the global environment and all six Mooncake
 service environments. RapLab's pip overrides are present in each service.
-Allocation remains six exclusive nodes in one NVLink segment, all allocatable
-memory and two hours for the retained 60-minute measurement, warmup, startup and
-drain.
+The topology requires six nodes and retains the 60-minute measurement. Its
+`sbatch_directives` request exclusive nodes and all allocatable host memory
+(`mem: '0'`). NVLink segment sizing, account, partition and walltime follow
+cluster defaults and submission overrides; this recipe has no `slurm` block.
 
 ```bash
 srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/raplab-dynamo/glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml

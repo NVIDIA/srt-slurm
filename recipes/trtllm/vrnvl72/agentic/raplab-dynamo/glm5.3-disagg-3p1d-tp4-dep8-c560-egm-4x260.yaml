@@ -24,6 +24,9 @@ resources:
   gpu_type: vrnvl72
   gpus_per_node: 4
   het_jobs: false
+sbatch_directives:
+  exclusive: ''
+  mem: '0'
 environment:
   ENROOT_MAX_PROCESSORS: '8'
   SRT_MOONCAKE_EGM_WHEEL_DIR: /home/rihuo/mooncake_egm_wheels

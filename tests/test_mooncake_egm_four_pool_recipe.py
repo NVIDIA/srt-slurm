@@ -41,6 +41,8 @@ def recipe_path(recipe_source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyP
     """Resolve the actual recipe against portable model and cluster paths."""
     monkeypatch.setenv("SRTSLURM_CONFIG", str(tmp_path / "absent-srtslurm.yaml"))
     monkeypatch.setenv("SRTCTL_SOURCE_DIR", str(ROOT))
+    monkeypatch.delenv("SLURM_ACCOUNT", raising=False)
+    monkeypatch.delenv("SLURM_PARTITION", raising=False)
     recipe = yaml.safe_load(recipe_source.read_text())
     model = tmp_path / "model"
     model.mkdir()
@@ -51,9 +53,14 @@ def recipe_path(recipe_source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyP
 
 
 def test_four_pool_variant_preserves_the_egm_comparison_baseline(recipe_source: Path) -> None:
-    """Only prefill pool ownership and placement change; worker settings stay matched."""
+    """Match worker settings while RapLab leaves scheduling overrides to the caller."""
     base = yaml.safe_load(recipe_source.with_name(BASE_NAME).read_text())
     variant = yaml.safe_load(recipe_source.read_text())
+    if recipe_source.parent.name == "raplab-dynamo":
+        assert "slurm" not in variant
+        assert variant["sbatch_directives"] == {"exclusive": "", "mem": "0"}
+        base.pop("slurm")
+        assert base["sbatch_directives"].pop("segment") == "6"
     assert variant["name"] == "glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260"
     assert {key: value for key, value in variant.items() if key not in ("name", "services")} == {
         key: value for key, value in base.items() if key not in ("name", "services")
@@ -107,13 +114,16 @@ def test_dry_run_exposes_all_four_prefill_pool_fleets(
     assert "#SBATCH --segment=6" in directives
     assert "#SBATCH --exclusive" in directives
     assert "#SBATCH --mem=0" in directives
-    assert "#SBATCH --time=02:00:00" in directives
+    assert config.slurm.account is None
+    assert config.slurm.partition is None
+    assert "#SBATCH --account=default" in directives
+    assert "#SBATCH --partition=default" in directives
     if recipe_source.parent.name == "raplab-dynamo":
-        assert "#SBATCH --account=root" in directives
-        assert "#SBATCH --partition=batch-r42" in directives
+        assert config.slurm.time_limit is None
+        assert config.sbatch_directives == {"exclusive": "", "mem": "0"}
+        assert "#SBATCH --time=01:00:00" in directives
     else:
-        assert config.slurm.account is None
-        assert config.slurm.partition is None
+        assert "#SBATCH --time=02:00:00" in directives
 
 
 def test_mock_launch_gates_workers_on_four_host_pools_per_prefill_node(
