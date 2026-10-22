@@ -6,9 +6,13 @@ Submit from the repository root on Hecate:
 sbatch --account=root --partition=batch-xdr tools/check_mooncake_egm.sbatch
 ```
 
-This requests two exclusive nodes, four GPUs per node, all allocatable host
-memory, one Slurm topology segment, and 15 minutes. It runs one persistent
-container per node. Rank 0 hosts the Mooncake master and a native EGM provider;
+This requests two exclusive nodes, all allocatable host memory, one Slurm
+topology segment, and 15 minutes. It expects four visible GPUs per node.
+Both `sbatch` and `srun` omit GPU/GRES resource requests for Hecate's full-node
+allocation policy; `--gpus-per-node` causes `Invalid generic resource (gres)
+specification` there. CUDA devices 0–3 remain visible inside each container
+for NVLink copy submission and EGM NUMA discovery.
+It runs one persistent container per node. Rank 0 hosts the Mooncake master and a native EGM provider;
 rank 1 writes pinned host data to that provider's host DRAM and reads it back
 into a separate pinned host buffer. Both payload endpoints use host memory.
 No model or Dynamo server is loaded.

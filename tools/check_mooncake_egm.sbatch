@@ -7,7 +7,6 @@
 #SBATCH --nodes=2
 #SBATCH --segment=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=4
 #SBATCH --exclusive
 #SBATCH --mem=0
 #SBATCH --no-requeue
@@ -195,7 +194,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# These are Store clients, not TRT-LLM/MPI workers. All requested GPUs stay
+# These are Store clients, not TRT-LLM/MPI workers. Keep all four node GPUs
 # visible so provider auto discovery includes both host NUMA nodes.
 for name in $(compgen -e); do
     case "$name" in PMIX_*|PMI_*|OMPI_*|MPI_*|OPAL_*|PRTE_*|HYDRA_*|I_MPI_*) unset "$name" ;; esac
@@ -333,7 +332,7 @@ printf 'Host-to-host EGM smoke test: nodes=%s, CPUs/task=%s, pool=%s, CUDA submi
     "$MC_EGM_TIMEOUT" "$MC_EGM_IMAGE"
 timeout --signal=TERM --kill-after=60s "${MC_EGM_TIMEOUT}s" \
     srun --overlap --exact --mpi=none --cpu-bind=none --kill-on-bad-exit=1 --wait=60 --export=ALL \
-    --nodes=2 --ntasks=2 --ntasks-per-node=1 --gpus-per-node=4 --cpus-per-task="$MC_EGM_CPUS_PER_TASK" \
+    --nodes=2 --ntasks=2 --ntasks-per-node=1 --cpus-per-task="$MC_EGM_CPUS_PER_TASK" \
     --container-image="$MC_EGM_IMAGE" --container-mounts="$RUN_DIR:/egm-run,$MC_EGM_WHEEL_DIR:/egm-wheels:ro" \
     --container-workdir=/egm-run --container-remap-root --container-writable --no-container-mount-home \
     --output="$LOG_DIR/rank-%t.out" --error="$LOG_DIR/rank-%t.err" \
