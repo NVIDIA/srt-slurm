@@ -353,3 +353,65 @@ cluster defaults and submission overrides; this recipe has no `slurm` block.
 ```bash
 srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/raplab-dynamo/glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml
 ```
+
+### DEP16 variants
+
+The DEP16 EGM variants use four `256GiB` providers on each prefill node,
+preserving their respective RapLab baseline's pool sizes and workload:
+
+| Variant | Concurrency | Decode maximum batch | Decode CUDA graph sizes |
+| --- | --- | --- | --- |
+| [`DEP16 c576 EGM`](glm5.3-disagg-3p1d-tp4-dep16-c576-egm-4x256.yaml) | 576 | 8 | 1–8 |
+| [`DEP16 c640 EGM`](glm5.3-disagg-3p1d-tp4-dep16-c640-egm-4x256.yaml) | 640 | 12 | 1–12 |
+
+Prefill donors use GPU masks `0`, `1`, `2`, `3` and host NUMA nodes
+`0`, `0`, `1`, `1`, with each whole pool on one NUMA node. Their 12 owners
+contribute `3072GiB`; one `1050GiB` EGM donor on each of four decode nodes adds
+`4200GiB`, for `7272GiB` across 16 owners. Decode donors retain all four visible
+GPUs and NUMA `auto`. The topology requires eight nodes, including the shared
+frontend/client node.
+
+Both preserve RapLab's model/image, FlashInfer cache, Dynamo/AgentX paths,
+UCX/MPI/NCCL settings and per-recipe engine tuning. Mooncake Store uses explicit
+classic NVLink and pinned host staging; its RDMA-only filters and destination
+affinity settings are removed. Native providers allocate HOST_NUMA memory with
+zero local buffers and become ready before inference workers start. Inference
+NUMA CPU/local memory binding and the full 60-minute workload are retained.
+
+The existing EGM build requirements, `/home/rihuo/mooncake_egm_wheels` directory
+and pip overrides apply. Each service has its own wheel/pip environment. Both
+request `exclusive: ''` and `mem: '0'` through `sbatch_directives`, with account,
+partition and walltime supplied by cluster configuration or submission
+overrides. There is no `slurm` block; the external allocation budget must cover
+the measurement plus warmup, startup and drain.
+
+```bash
+srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/raplab-dynamo/glm5.3-disagg-3p1d-tp4-dep16-c576-egm-4x256.yaml
+srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/raplab-dynamo/glm5.3-disagg-3p1d-tp4-dep16-c640-egm-4x256.yaml
+```
+
+### DEP32 variant
+
+[`glm5.3-disagg-3p1d-tp4-dep32-c560-egm-4x224.yaml`](glm5.3-disagg-3p1d-tp4-dep32-c560-egm-4x224.yaml)
+preserves the RapLab DEP32 baseline's four `224GiB` pools per prefill node.
+Its four providers use GPU masks `0`, `1`, `2`, `3` and host NUMA nodes
+`0`, `0`, `1`, `1`, with each complete pool placed on one NUMA node. The three
+prefill nodes contribute `2688GiB` across 12 owners; eight decode-node providers
+retain `768GiB` each, all four visible GPUs and NUMA `auto`. Total capacity is
+`8832GiB` across 20 owners, matching the baseline.
+
+The topology requires 12 nodes: three prefill, eight decode and one shared
+frontend/client node. The recipe includes `exclusive: ''` and `mem: '0'` in
+`sbatch_directives`; account, partition and walltime come from cluster
+configuration or submission overrides. There is no `slurm` block.
+
+RapLab model/image paths, caches, pip and UCX/MPI/NCCL settings, DEP32 engine
+tuning, NUMA CPU/local memory binding and the complete c560 AgentX workload
+are retained. The same EGM wheel requirements and host-only NVLink payload path
+apply; each native donor has a zero local buffer and becomes ready before
+inference workers start. Allow startup, warmup and drain in addition to the
+retained 60-minute measurement when setting the allocation walltime.
+
+```bash
+srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/raplab-dynamo/glm5.3-disagg-3p1d-tp4-dep32-c560-egm-4x224.yaml
+```

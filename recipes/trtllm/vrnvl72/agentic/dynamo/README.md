@@ -314,3 +314,37 @@ startup and drain.
 ```bash
 srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/dynamo/glm5.3-disagg-3p1d-tp4-dep32-c560-egm-4x224.yaml
 ```
+
+The DEP16 variants preserve each baseline's `256GiB` per prefill rank as four
+separate EGM donors per prefill node:
+
+| Variant | Concurrency | Decode maximum batch | Decode CUDA graph sizes |
+| --- | --- | --- | --- |
+| [`DEP16 c576 EGM`](glm5.3-disagg-3p1d-tp4-dep16-c576-egm-4x256.yaml) | 576 | 8 | 1–8 |
+| [`DEP16 c640 EGM`](glm5.3-disagg-3p1d-tp4-dep16-c640-egm-4x256.yaml) | 640 | 12 | 1–12 |
+
+Both use GPU masks `0`, `1`, `2`, `3` and host NUMA nodes `0`, `0`, `1`, `1`,
+with each complete `256GiB` pool on its selected NUMA node. The three prefill
+nodes contribute `3072GiB` across 12 owners. Four decode-node EGM donors retain
+`1050GiB` each, all four visible GPUs and NUMA `auto`, giving `7272GiB` across
+16 owners. The allocation requires eight nodes: three prefill, four decode and
+one shared frontend/client node.
+
+Each variant retains its own model/image paths, engine arguments, host clock
+setup, container reuse, NIXL handoff, NUMA CPU/local memory binding and complete
+AgentX workload. Mooncake uses pinned host staging, zero reader global capacity
+and native HOST_NUMA providers with zero local buffers, as in the other EGM
+variants. The existing EGM wheel requirements and Lustre wheel directory apply.
+Both request exclusive nodes and all allocatable host memory through
+`sbatch_directives: {exclusive: '', mem: '0'}`. Account, partition and walltime
+come from cluster configuration or submission overrides; these variants have no
+`slurm` block. The retained 60-minute measurement needs an allocation budget
+that also covers warmup, startup and drain.
+
+The corresponding [RapLab variants](../raplab-dynamo/README.md#dep16-variants)
+retain that cluster's paths and communication settings.
+
+```bash
+srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/dynamo/glm5.3-disagg-3p1d-tp4-dep16-c576-egm-4x256.yaml
+srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/dynamo/glm5.3-disagg-3p1d-tp4-dep16-c640-egm-4x256.yaml
+```
