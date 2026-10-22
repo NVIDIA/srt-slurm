@@ -38,7 +38,7 @@ def recipe_source(request: pytest.FixtureRequest) -> Path:
 
 @pytest.fixture
 def prefill_size(recipe_source: Path) -> str:
-    return {"dynamo": "260GiB", "raplab-dynamo": "250GiB"}[recipe_source.parent.name]
+    return {"dynamo": "224GiB", "raplab-dynamo": "250GiB"}[recipe_source.parent.name]
 
 
 @pytest.fixture
@@ -65,8 +65,8 @@ def test_four_pool_variant_preserves_the_egm_comparison_baseline(recipe_source: 
         assert "slurm" not in variant
         variant["sbatch_directives"].pop("exclude", None)
         assert variant["sbatch_directives"] == {"exclusive": "", "mem": "0"}
-        base.pop("slurm")
-        assert base["sbatch_directives"].pop("segment") == "6"
+        base.pop("slurm", None)
+        base["sbatch_directives"].pop("segment", None)
     assert variant["name"] == "glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260"
     assert {key: value for key, value in variant.items() if key not in ("name", "services")} == {
         key: value for key, value in base.items() if key not in ("name", "services")

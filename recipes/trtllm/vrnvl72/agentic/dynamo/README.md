@@ -250,26 +250,26 @@ srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/dynamo/glm5.3-disagg-3p1d-tp4-d
 
 For an A/B comparison with the single-provider variant,
 [`glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml`](glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml)
-starts four separate `260GiB` EGM provider processes on each prefill node.
-The three prefill nodes contribute 12 provider handles; the two `1000GiB` decode
-providers bring the total to 14 owners and `5120GiB`. This restores the original
-recipe's 12:2 prefill/decode owner weighting under random allocation. The
+starts four separate `224GiB` EGM provider processes on each prefill node.
+The three prefill nodes contribute 12 provider handles and `2688GiB`; the two
+`1050GiB` decode providers bring the total to 14 owners and `4788GiB`. This
+restores the original recipe's 12:2 prefill/decode owner weighting under random allocation. The
 providers remain separate from inference ranks, so this does not restore
 in-process pool ownership or its local access path. Python manages provider
 lifetime; payload transfers access the exported memory directly.
 
-Each prefill provider allocates its entire `260GiB` pool on one explicit host
+Each prefill provider allocates its entire `224GiB` pool on one explicit host
 NUMA node through `--numa-nodes`, which the helper passes as `egm_numa_nodes`:
 
 | Prefill donor | `CUDA_VISIBLE_DEVICES` | Host NUMA node | Pool capacity |
 | --- | --- | --- | --- |
-| `prefill-egm-donor-0` | `0` | `0` | `260GiB` |
-| `prefill-egm-donor-1` | `1` | `0` | `260GiB` |
-| `prefill-egm-donor-2` | `2` | `1` | `260GiB` |
-| `prefill-egm-donor-3` | `3` | `1` | `260GiB` |
+| `prefill-egm-donor-0` | `0` | `0` | `224GiB` |
+| `prefill-egm-donor-1` | `1` | `0` | `224GiB` |
+| `prefill-egm-donor-2` | `2` | `1` | `224GiB` |
+| `prefill-egm-donor-3` | `3` | `1` | `224GiB` |
 
-This gives `520GiB` per NUMA node, with each pool placed wholly on its selected
-node. The mapping assumes GPUs 0/1 are attached to host NUMA 0 and GPUs 2/3 to
+This gives `448GiB` per NUMA node and `896GiB` per prefill node, with each pool
+placed wholly on its selected node. The mapping assumes GPUs 0/1 are attached to host NUMA 0 and GPUs 2/3 to
 host NUMA 1; check the GPU/NUMA topology before using it on a different system.
 Each provider sees one physical GPU, renumbered to CUDA device 0 inside that
 process. Native `HOST_NUMA` allocation determines the EGM payload's physical
@@ -282,9 +282,9 @@ the GPU mask does not create exclusive rank-to-donor ownership.
 
 Reader pinned-host staging, GPU-local inference CPU and memory binding, engine
 settings, benchmark traffic and the two-hour allocation budget match the
-single-provider variant. An A/B comparison therefore changes pool ownership,
-per-pool NUMA placement and provider GPU visibility. Compare with the same wheel,
-workload and hardware placement.
+single-provider variant. A comparison therefore changes prefill capacity, pool
+ownership, per-pool NUMA placement and provider GPU visibility. Compare with the
+same wheel, workload and hardware placement.
 
 ```bash
 srtctl dry-run -f recipes/trtllm/vrnvl72/agentic/dynamo/glm5.3-disagg-3p1d-tp4-dep8-c560-egm-4x260.yaml
