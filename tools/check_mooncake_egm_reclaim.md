@@ -1,5 +1,9 @@
 # Diagnose Mooncake EGM host-memory allocation failures
 
+For an administrator-facing reproduction using only the CUDA Driver API, use
+the [standalone CUDA host-NUMA test](check_cuda_host_numa.md). It holds native
+allocation handles without importing Mooncake or starting a Store/master.
+
 Submit from the repository root on RapLab:
 
 ```bash
