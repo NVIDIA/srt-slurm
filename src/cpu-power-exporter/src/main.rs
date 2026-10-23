@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Grace CPU power exporter for Prometheus / AIPerf server-metrics.
+//! CPU power exporter for Prometheus / AIPerf server-metrics.
 //!
-//! Two back-ends are supported and selected via `--source`:
+//! Back-ends are selected via `--source`:
 //!
 //! - `acpi` (default fallback): reads `/sys/class/hwmon/hwmon*/power*_average` and
 //!   exposes `cpu_power_acpi_watts{sensor,type,socket,oem_info,source="acpi"}`.
@@ -16,12 +16,18 @@
 //!   field for the `Grace Power Socket N` envelope, so DCGM mode reports about
 //!   half the socket power ACPI mode does. Requires `libdcgm.so` (see `dcgm.rs`).
 //!
+//! - `rapl`: reads the x86 RAPL package energy counters
+//!   (`/sys/class/powercap/intel-rapl:N/energy_uj`, also used by AMD EPYC) and
+//!   exposes `cpu_power_rapl_watts{sensor,type="package",socket,source="rapl"}`,
+//!   the average power between two counter reads. `energy_uj` is root-only by
+//!   default, so this needs admin-granted read access.
+//!
 //! - `auto` (default): tries ACPI first — it carries the socket envelope plus
 //!   every rail — and falls back to DCGM only when no ACPI `power_meter` hwmon
 //!   sensors are present or no socket-total channel reads positive. (DCGM reads
 //!   the same hwmon files, so if ACPI is absent DCGM usually is too; the
 //!   fallback covers hosts where sysfs is hidden from this process but a
-//!   privileged nv-hostengine is reachable.)
+//!   privileged nv-hostengine is reachable.) It never selects `rapl`.
 //!
 //! Alongside either back-end, optional `cpu_power_nvml_watts` reports one
 //! superchip module reading per Grace socket. Its background poller prevents
@@ -124,11 +130,14 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Withhold stalled NVML readings so energy integration sees a gap instead
 /// of counting the last value indefinitely.
 const MODULE_STALE_AFTER: Duration = Duration::from_secs(3);
+/// RAPL watts need two counter reads, so startup waits this long for the first.
+const RAPL_PRIME_INTERVAL: Duration = Duration::from_millis(200);
 
 #[derive(clap::ValueEnum, Clone, Debug, Default)]
 enum SourceMode {
     Acpi,
     Dcgm,
+    Rapl,
     #[default]
     Auto,
 }
@@ -142,7 +151,7 @@ const VERSION: &str = match option_env!("SRTCTL_RELEASE_VERSION") {
 #[derive(Parser)]
 #[command(
     version = VERSION,
-    about = "Grace CPU power exporter for Prometheus / AIPerf server-metrics"
+    about = "CPU power exporter for Prometheus / AIPerf server-metrics"
 )]
 struct Args {
     /// TCP port to listen on.
@@ -157,11 +166,16 @@ struct Args {
     #[arg(long, default_value = "/sys/class/hwmon")]
     hwmon_root: PathBuf,
 
+    /// Root of powercap sysfs (override for testing).
+    #[arg(long, default_value = "/sys/class/powercap")]
+    powercap_root: PathBuf,
+
     /// Power reading back-end.
     ///
     /// `auto` tries ACPI first (socket envelope + every rail) and falls back
     /// to DCGM (CPU rail + SysIO only) when no ACPI power_meter sensors exist
-    /// or no socket-total channel reads positive.
+    /// or no socket-total channel reads positive. `rapl` reads the RAPL
+    /// package energy counters under --powercap-root and is only used when named.
     #[arg(long, default_value = "auto")]
     source: SourceMode,
 }
@@ -187,10 +201,20 @@ struct Candidate {
     oem_info: Option<String>,
 }
 
+struct RaplZone {
+    energy_path: PathBuf,
+    /// The counter wraps to zero once it passes this value.
+    max_energy_range_uj: u64,
+    socket: String,
+    labels: String,
+    last_uj: u64,
+    last_at: Instant,
+}
+
 #[derive(Clone)]
 enum MetricsState {
-    /// Cached exposition keeps blocking ACPI reads out of scrapes.
-    Acpi(Arc<RwLock<String>>),
+    /// Cached exposition keeps blocking sysfs reads (ACPI, RAPL) out of scrapes.
+    Cached(Arc<RwLock<String>>),
     Dcgm(Arc<Mutex<dcgm::DcgmReader>>),
 }
 
@@ -263,7 +287,7 @@ impl Metrics {
     /// in reset) must not stall a scrape and lose that interval's CPU power with it.
     fn render(&self) -> String {
         let mut body = match &self.base {
-            MetricsState::Acpi(cache) => cache.read().unwrap().clone(),
+            MetricsState::Cached(cache) => cache.read().unwrap().clone(),
             MetricsState::Dcgm(reader) => build_metrics_dcgm(reader),
         };
         let module = self.module.read().unwrap();
@@ -513,6 +537,94 @@ fn render_dcgm_metrics(readings: &[dcgm::PowerReading]) -> String {
     out
 }
 
+fn read_u64(path: &Path) -> Result<u64> {
+    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    raw.trim()
+        .parse()
+        .with_context(|| format!("parse {} as an integer", path.display()))
+}
+
+fn is_top_level_rapl_zone(dir_name: &str) -> bool {
+    dir_name
+        .strip_prefix("intel-rapl:")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn open_rapl_zones(powercap_root: &Path, now: Instant) -> Result<Vec<RaplZone>> {
+    let entries =
+        fs::read_dir(powercap_root).with_context(|| format!("list {}", powercap_root.display()))?;
+    let mut dirs = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| format!("list {}", powercap_root.display()))?;
+        dirs.push(entry.path());
+    }
+    dirs.sort();
+
+    let mut zones = Vec::new();
+    for dir in dirs {
+        let Some(id) = dir.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !is_top_level_rapl_zone(id) {
+            continue;
+        }
+        // Top-level zones also include non-socket domains such as Intel's `psys`.
+        let Some(socket) = read_text(&dir.join("name"))
+            .and_then(|name| name.strip_prefix("package-").map(str::to_owned))
+            .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        else {
+            continue;
+        };
+        let energy_path = dir.join("energy_uj");
+        let last_uj = read_u64(&energy_path).context(
+            "cannot read the RAPL energy counter: energy_uj is root-only by default \
+             (CVE-2020-8694), so a cluster admin must grant this user read access",
+        )?;
+        zones.push(RaplZone {
+            max_energy_range_uj: read_u64(&dir.join("max_energy_range_uj"))?,
+            labels: format!("sensor=\"{id}\",type=\"package\",socket=\"{socket}\""),
+            socket,
+            energy_path,
+            last_uj,
+            last_at: now,
+        });
+    }
+    Ok(zones)
+}
+
+fn build_metrics_rapl(zones: &mut [RaplZone], now: Instant) -> String {
+    let mut out = String::from(
+        "# HELP cpu_power_rapl_watts CPU package power from the RAPL energy counter, averaged since the previous read (W).\n\
+         # TYPE cpu_power_rapl_watts gauge\n",
+    );
+    let readings: Result<Vec<u64>> = zones.iter().map(|z| read_u64(&z.energy_path)).collect();
+    let readings = match readings {
+        Ok(readings) => readings,
+        // A scrape missing one socket would pass for a lower node total, so the
+        // whole poll is a gap. Baselines stay; the next value spans the gap.
+        Err(e) => {
+            tracing::debug!(error = %e, "unreadable RAPL counter; skipping this poll");
+            return out;
+        }
+    };
+    for (zone, energy_uj) in zones.iter_mut().zip(readings) {
+        let delta_uj = if energy_uj >= zone.last_uj {
+            energy_uj - zone.last_uj
+        } else {
+            zone.max_energy_range_uj.saturating_sub(zone.last_uj) + energy_uj
+        };
+        let watts = delta_uj as f64 / 1_000_000.0 / (now - zone.last_at).as_secs_f64();
+        zone.last_uj = energy_uj;
+        zone.last_at = now;
+        let _ = writeln!(
+            out,
+            "cpu_power_rapl_watts{{{},source=\"rapl\"}} {watts:.6}",
+            zone.labels
+        );
+    }
+    out
+}
+
 /// Reads until the end of the request headers, so a request split across
 /// segments is not mistaken for a request for `/`.
 ///
@@ -616,7 +728,7 @@ enum AcpiDecision {
     /// down to DCGM. Only produced in `Auto` -- in `Acpi` the same condition
     /// is an `Err`.
     FallBack(String),
-    /// `--source dcgm`: ACPI was not consulted at all.
+    /// `--source dcgm` or `rapl`: ACPI was not consulted at all.
     Skip,
 }
 
@@ -637,7 +749,7 @@ fn decide_acpi(
     probe: impl Fn(&[Sensor]) -> Option<usize>,
 ) -> Result<AcpiDecision> {
     let acpi_only = match mode {
-        SourceMode::Dcgm => return Ok(AcpiDecision::Skip),
+        SourceMode::Dcgm | SourceMode::Rapl => return Ok(AcpiDecision::Skip),
         SourceMode::Acpi => true,
         SourceMode::Auto => false,
     };
@@ -688,6 +800,9 @@ fn decide_acpi(
 }
 
 fn init_metrics_state(args: &Args) -> Result<(MetricsState, BTreeSet<String>)> {
+    if matches!(args.source, SourceMode::Rapl) {
+        return init_rapl(&args.powercap_root);
+    }
     let probe =
         |sensors: &[Sensor]| probe_acpi_live(sensors, ACPI_PROBE_RETRIES, ACPI_PROBE_RETRY_DELAY);
     match decide_acpi(&args.source, &args.hwmon_root, probe)? {
@@ -782,27 +897,56 @@ fn init_acpi_state(sensors: Vec<Sensor>) -> Result<(MetricsState, BTreeSet<Strin
         }
 
         // Seed the cache synchronously so the first scrape after startup is not empty.
-        let initial = build_metrics(sensors);
-        let cache = Arc::new(RwLock::new(initial));
-        let cache_bg = Arc::clone(&cache);
-
-        // Keep blocking firmware reads off the HTTP request path.
-        std::thread::Builder::new()
-            .name("acpi-poller".to_owned())
-            .spawn(move || loop {
-                std::thread::sleep(POLL_INTERVAL);
-                let snapshot = build_metrics(sensors);
-                *cache_bg.write().unwrap() = snapshot;
-            })
-            .context("spawn acpi-poller thread")?;
+        let state = spawn_poller("acpi-poller", build_metrics(sensors), move || {
+            build_metrics(sensors)
+        })?;
 
         let cpu_sockets = sensors
             .iter()
             .filter(|s| s.kind != "other")
             .map(|s| s.socket.clone())
             .collect();
-        Ok((MetricsState::Acpi(cache), cpu_sockets))
+        Ok((state, cpu_sockets))
     }
+}
+
+/// Keeps blocking sysfs reads off the HTTP request path: a background OS
+/// thread re-renders every `POLL_INTERVAL` and scrapes serve the cache.
+fn spawn_poller(
+    name: &str,
+    initial: String,
+    mut render: impl FnMut() -> String + Send + 'static,
+) -> Result<MetricsState> {
+    let cache = Arc::new(RwLock::new(initial));
+    let cache_bg = Arc::clone(&cache);
+    std::thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(move || loop {
+            std::thread::sleep(POLL_INTERVAL);
+            let snapshot = render();
+            *cache_bg.write().unwrap() = snapshot;
+        })
+        .with_context(|| format!("spawn {name} thread"))?;
+    Ok(MetricsState::Cached(cache))
+}
+
+fn init_rapl(powercap_root: &Path) -> Result<(MetricsState, BTreeSet<String>)> {
+    let mut zones = open_rapl_zones(powercap_root, Instant::now())?;
+    if zones.is_empty() {
+        anyhow::bail!(
+            "no RAPL package zones (intel-rapl:<n> named package-<id>) found under {}",
+            powercap_root.display()
+        );
+    }
+    tracing::info!(count = zones.len(), "discovered RAPL package zones");
+    let cpu_sockets = zones.iter().map(|z| z.socket.clone()).collect();
+    // The first scrape after `listening` must carry watts, which take two reads.
+    std::thread::sleep(RAPL_PRIME_INTERVAL);
+    let initial = build_metrics_rapl(&mut zones, Instant::now());
+    let state = spawn_poller("rapl-poller", initial, move || {
+        build_metrics_rapl(&mut zones, Instant::now())
+    })?;
+    Ok((state, cpu_sockets))
 }
 
 fn start_module_poller(cpu_sockets: BTreeSet<String>) -> Result<Arc<RwLock<ModuleState>>> {
@@ -933,7 +1077,7 @@ mod tests {
         let cpu = "cpu_power_acpi_watts{socket=\"0\",type=\"total\"} 88.000000\n";
         let module = Arc::new(RwLock::new(ModuleState::Pending(Instant::now())));
         let metrics = Metrics {
-            base: MetricsState::Acpi(Arc::new(RwLock::new(cpu.to_owned()))),
+            base: MetricsState::Cached(Arc::new(RwLock::new(cpu.to_owned()))),
             module: Arc::clone(&module),
         };
         let sample = || {
@@ -1541,6 +1685,161 @@ mod tests {
         assert!(discover_sensors(&dir.path().join("absent")).is_err());
     }
 
+    fn write_rapl_zone(
+        root: &Path,
+        zone: &str,
+        name: &str,
+        energy_uj: u64,
+        max_uj: u64,
+    ) -> PathBuf {
+        let dir = root.join(zone);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("name"), format!("{name}\n")).unwrap();
+        fs::write(dir.join("energy_uj"), format!("{energy_uj}\n")).unwrap();
+        fs::write(dir.join("max_energy_range_uj"), format!("{max_uj}\n")).unwrap();
+        dir.join("energy_uj")
+    }
+
+    const RAPL_MAX_UJ: u64 = 262_143_328_850;
+
+    fn rapl_line(sensor: &str, socket: &str, watts: &str) -> String {
+        format!("cpu_power_rapl_watts{{sensor=\"{sensor}\",type=\"package\",socket=\"{socket}\",source=\"rapl\"}} {watts}\n")
+    }
+
+    #[test]
+    fn rapl_discovery_takes_package_zones_and_maps_socket_from_name() {
+        let dir = TempDir::new().unwrap();
+        write_rapl_zone(dir.path(), "intel-rapl:0", "package-1", 0, RAPL_MAX_UJ);
+        write_rapl_zone(dir.path(), "intel-rapl:1", "package-0", 0, RAPL_MAX_UJ);
+        write_rapl_zone(dir.path(), "intel-rapl:0:0", "core", 0, RAPL_MAX_UJ);
+        write_rapl_zone(dir.path(), "intel-rapl:2", "psys", 0, RAPL_MAX_UJ);
+        // Intel's MMIO interface repeats a package domain; counting it would double the socket.
+        write_rapl_zone(dir.path(), "intel-rapl-mmio:0", "package-0", 0, RAPL_MAX_UJ);
+
+        let zones = open_rapl_zones(dir.path(), Instant::now()).unwrap();
+        let labels: Vec<&str> = zones.iter().map(|z| z.labels.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                r#"sensor="intel-rapl:0",type="package",socket="1""#,
+                r#"sensor="intel-rapl:1",type="package",socket="0""#,
+            ]
+        );
+    }
+
+    #[test]
+    fn rapl_watts_are_the_energy_delta_over_elapsed_time() {
+        let dir = TempDir::new().unwrap();
+        let energy = write_rapl_zone(
+            dir.path(),
+            "intel-rapl:0",
+            "package-0",
+            5_000_000,
+            RAPL_MAX_UJ,
+        );
+        let t0 = Instant::now();
+        let mut zones = open_rapl_zones(dir.path(), t0).unwrap();
+
+        fs::write(&energy, "455000000\n").unwrap();
+        let first = build_metrics_rapl(&mut zones, t0 + Duration::from_secs(2));
+        assert!(
+            first.contains("# TYPE cpu_power_rapl_watts gauge\n"),
+            "{first}"
+        );
+        assert!(
+            first.contains(&rapl_line("intel-rapl:0", "0", "225.000000")),
+            "{first}"
+        );
+
+        fs::write(&energy, "555000000\n").unwrap();
+        let second = build_metrics_rapl(&mut zones, t0 + Duration::from_secs(3));
+        assert!(
+            second.contains(&rapl_line("intel-rapl:0", "0", "100.000000")),
+            "{second}"
+        );
+    }
+
+    #[test]
+    fn rapl_poll_with_an_unreadable_counter_is_a_gap_for_every_socket() {
+        let dir = TempDir::new().unwrap();
+        let socket0 = write_rapl_zone(dir.path(), "intel-rapl:0", "package-0", 0, RAPL_MAX_UJ);
+        let socket1 = write_rapl_zone(dir.path(), "intel-rapl:1", "package-1", 0, RAPL_MAX_UJ);
+        let t0 = Instant::now();
+        let mut zones = open_rapl_zones(dir.path(), t0).unwrap();
+
+        fs::write(&socket0, "100000000\n").unwrap();
+        fs::write(&socket1, "garbage\n").unwrap();
+        let gap = build_metrics_rapl(&mut zones, t0 + Duration::from_secs(1));
+        assert!(!gap.contains("cpu_power_rapl_watts{"), "{gap}");
+
+        fs::write(&socket1, "300000000\n").unwrap();
+        let after = build_metrics_rapl(&mut zones, t0 + Duration::from_secs(2));
+        assert!(
+            after.contains(&rapl_line("intel-rapl:0", "0", "50.000000")),
+            "{after}"
+        );
+        assert!(
+            after.contains(&rapl_line("intel-rapl:1", "1", "150.000000")),
+            "{after}"
+        );
+    }
+
+    #[test]
+    fn rapl_watts_span_a_counter_wrap() {
+        let dir = TempDir::new().unwrap();
+        let energy = write_rapl_zone(
+            dir.path(),
+            "intel-rapl:0",
+            "package-0",
+            RAPL_MAX_UJ - 100_000_000,
+            RAPL_MAX_UJ,
+        );
+        let t0 = Instant::now();
+        let mut zones = open_rapl_zones(dir.path(), t0).unwrap();
+
+        fs::write(&energy, "50000000\n").unwrap();
+        let output = build_metrics_rapl(&mut zones, t0 + Duration::from_secs(1));
+        assert!(
+            output.contains(&rapl_line("intel-rapl:0", "0", "150.000000")),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn rapl_mode_fails_at_startup_without_a_readable_package_counter() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let startup_error = |root: &Path| {
+            let args = Args::parse_from([
+                "cpu-power-exporter",
+                "--source",
+                "rapl",
+                "--powercap-root",
+                root.to_str().unwrap(),
+            ]);
+            format!(
+                "{:#}",
+                init_metrics_state(&args).err().expect("startup must fail")
+            )
+        };
+
+        let dir = TempDir::new().unwrap();
+        let no_zones = startup_error(dir.path());
+        assert!(no_zones.contains("no RAPL package zones"), "{no_zones}");
+
+        let energy = write_rapl_zone(dir.path(), "intel-rapl:0", "package-0", 0, RAPL_MAX_UJ);
+        fs::set_permissions(&energy, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&energy).is_ok() {
+            eprintln!("skipped the unreadable case: root reads energy_uj whatever its mode");
+            return;
+        }
+        let unreadable = startup_error(dir.path());
+        assert!(
+            unreadable.contains("energy_uj") && unreadable.contains("root-only"),
+            "{unreadable}"
+        );
+    }
+
     async fn request(addr: SocketAddr, head: &str) -> String {
         let mut client = TcpStream::connect(addr).await.unwrap();
         // Split across writes: a correct reader waits for the header terminator.
@@ -1561,7 +1860,7 @@ mod tests {
         );
         let sensors: &'static [Sensor] = Vec::leak(discover_sensors(dir.path()).unwrap());
         let metrics = Metrics {
-            base: MetricsState::Acpi(Arc::new(RwLock::new(build_metrics(sensors)))),
+            base: MetricsState::Cached(Arc::new(RwLock::new(build_metrics(sensors)))),
             module: Arc::new(RwLock::new(ModuleState::Unavailable)),
         };
 

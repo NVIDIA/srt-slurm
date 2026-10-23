@@ -610,7 +610,7 @@ class TestCpuPowerExporterConfig:
             )
 
     def test_accepts_each_valid_source(self):
-        for source in ("auto", "acpi", "dcgm"):
+        for source in ("auto", "acpi", "dcgm", "rapl"):
             config = _make_config(
                 telemetry=_dcgm_power(cpu_power_exporter=CpuPowerExporterConfig(port=9405, source=source)),
                 benchmark=_sa_bench(),

@@ -289,10 +289,10 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         tachometer.setdefault("default_gpu_exporter", copy.deepcopy(cluster_config["default_gpu_exporter"]))
 
     # The same cluster exporter serves GPU power telemetry: a recipe that enables
-    # telemetry without naming any collector inherits it (image, port, command and
+    # telemetry without naming a GPU exporter inherits it (image, port, command and
     # power metrics), so one recipe measures power on NVIDIA and AMD clusters alike.
-    # Recipes that name a GPU exporter, or that enable a CPU leg, are untouched;
-    # without this the inherited case was the "nothing to collect" validation error.
+    # Recipes that name a GPU exporter are untouched; the CPU power legs are
+    # independent of the GPU exporter, so adding one keeps the inheritance.
     telemetry = config.get("telemetry")
     cluster_gpu_exporter = cluster_config.get("default_gpu_exporter")
     if (
@@ -300,8 +300,6 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         and telemetry.get("enabled")
         and isinstance(cluster_gpu_exporter, dict)
         and "dcgm_exporter" not in telemetry
-        and telemetry.get("cpu_power_exporter") is None
-        and not (telemetry.get("cpu_power") or {}).get("enabled")
     ):
         telemetry["dcgm_exporter"] = copy.deepcopy(cluster_gpu_exporter)
         logger.debug("Applied cluster default_gpu_exporter to telemetry.dcgm_exporter")
