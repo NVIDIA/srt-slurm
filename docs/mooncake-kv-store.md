@@ -230,6 +230,58 @@ Keys every server of the pool must agree on (`model_key`, `namespace`, `metadata
 - Leave `local_hostname` unset so each rank uses its own address; a value in `store_config` would apply to every rank of the role. TensorRT-LLM does not read `MOONCAKE_LOCAL_HOSTNAME`, `MOONCAKE_MASTER`, or `MOONCAKE_TE_META_DATA_SERVER`; srtslurm still stamps them, and they are inert for these workers.
 - Engine-side limits depend on the TensorRT-LLM build. These examples select KV cache manager v2 and the Python NIXL transceiver with `cache_transceiver_config: {backend: NIXL, transceiver_runtime: PYTHON}`. Check the installed engine's support before enabling attention DP or speculative decoding. On a cluster without GPUDirect RDMA, set `stage_through_host: true`.
 
+## EGM host memory over NVLink (TensorRT-LLM)
+
+The [Dynamo EGM example](../examples/trtllm/dynamo-disagg-mooncake-egm.yaml)
+uses separate Mooncake providers to share Fabric-exportable host DRAM over
+NVLink. The provider helper comes from
+[the EGM implementation in `rihuo/glm5.3-mooncake-w2`](https://github.com/NVIDIA/srt-slurm/commit/c78046b14bb9ac1d261e9a9c33cd27dc6c506327).
+The example uses the existing `mooncake-master` and `generic` services, so no new
+backend or service type is required.
+
+Use an ARM64 CUDA 13 image and a matching Mooncake wheel containing the merged
+EGM stack (`db195f7f7cad61a0a3c3141b8ecf6ca399a54fca`, or its upstream squash
+`9c0528d9`). This includes the
+[EGM Store pool implementation](https://github.com/kvcache-ai/Mooncake/pull/3335)
+and [direct remote reads](https://github.com/kvcache-ai/Mooncake/pull/3431).
+Build with `WITH_STORE=ON`, `USE_CUDA=ON`, `USE_MNNVL=ON` and
+`USE_VRAM_SEGMENT=OFF`. The published Mooncake `0.3.13` wheel lacks the required
+EGM Store API. The participating nodes need HOST_NUMA allocation, Fabric/IMEX
+access inside the containers, and placement in one NVLink domain. The
+TRT-LLM image must support the client JSON and pinned host staging described
+above.
+
+Update the example’s model/image paths for the cluster. The image must already
+contain Dynamo, TRT-LLM and the EGM-enabled Mooncake build; no wheel installation
+or replacement runs during setup. The donor helper’s `check-install` command
+can check native API availability without CUDA allocation or NVLink connectivity.
+
+The master starts in `infra`. Providers start in `before_workers`, read the
+generated prefill client JSON for the master's address, and publish a readiness
+file after native EGM allocation succeeds. Each provider calls dictionary
+`setup` with `enable_egm_store_pool=true`, `egm_numa_nodes=auto`, and its own
+segment size. Ordinary TRT-LLM donor setup does not express these allocation
+options. Providers retain GPU visibility for CUDA initialization and NUMA
+discovery, but their cache capacity is host DRAM. Shutdown stops workers before
+providers, then the master, allowing the pools to unregister.
+
+Readers use `protocol: nvlink`, `global_segment_size: 0`, a positive
+`local_buffer_size`, and `stage_through_host: true`. The connector registers
+pinned CPU staging slots; local CUDA copies gather/scatter inference KV
+between the GPU cache and these slots. Store Put/Get transfers the host
+payloads to/from provider EGM memory. The prefill-to-decode NIXL transfer is a
+separate path. Select the classic Fabric transport with `MOONCAKE_STORE_BACKEND=cpp`,
+`MC_USE_TENT=0`, `MC_USE_TEV1=0`, and `MC_MS_AUTO_DISC=0`. Leave
+`MC_USE_NVLINK_IPC` **unset**: its presence, even with value `0`, selects IPC
+instead of Fabric mode. The donor clears this variable before loading Mooncake;
+leave it unset for workers too.
+
+Local tests cover provider setup failures, cleanup, generated
+client configuration and launch ordering. They do not establish hardware
+connectivity or inference performance. For a cluster run, verify native
+HOST_NUMA/Fabric allocation and NVLink transfers, then record the required
+metrics and missing data in [the per-run performance report](perf-analysis.md).
+
 ## What srtslurm Owns vs What You Set
 
 | Concern                                         | Owner     | Notes                                                                                                |

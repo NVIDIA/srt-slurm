@@ -19,11 +19,12 @@ CI_DIR = Path(__file__).parent.parent / "ci"
 SGLANG_ROUTER_DISAGG = EXAMPLES_DIR / "sglang" / "sglang-router-disagg.yaml"
 MOCKER_EXAMPLE = EXAMPLES_DIR / "mocker" / "dynamo-agg.yaml"
 GLM52_SIDECAR_EXAMPLE = EXAMPLES_DIR / "trtllm" / "dynamo-sidecar-disagg.yaml"
+EGM_EXAMPLE = EXAMPLES_DIR / "trtllm" / "dynamo-disagg-mooncake-egm.yaml"
 # Every topology example (Dynamo, native router, and direct frontends for each engine).
 TOPOLOGY_EXAMPLES = tuple(
     sorted(path for engine in ("sglang", "vllm", "trtllm") for path in (EXAMPLES_DIR / engine).glob("*.yaml"))
 )
-H100_TOPOLOGY_EXAMPLES = tuple(path for path in TOPOLOGY_EXAMPLES if path != GLM52_SIDECAR_EXAMPLE)
+H100_TOPOLOGY_EXAMPLES = tuple(path for path in TOPOLOGY_EXAMPLES if path not in (GLM52_SIDECAR_EXAMPLE, EGM_EXAMPLE))
 
 
 def test_interactive_discovers_curated_examples():
