@@ -47,8 +47,11 @@ telemetry:
     source: auto                # "auto" | "acpi" | "dcgm" | "rapl", passed to the exporter binary
 ```
 
-`telemetry.enabled: true` no longer requires `dcgm_exporter` — a recipe may
-configure `cpu_power_exporter` alone with no DCGM leg at all. The sampling
+`telemetry.enabled: true` does not require `dcgm_exporter`. A recipe that
+leaves the key unset inherits the cluster's `default_gpu_exporter` even when it
+adds this leg. To run `cpu_power_exporter` alone, with no DCGM leg, set
+`dcgm_exporter: null` in the recipe or `default_gpu_exporter: null` in
+`srtslurm.yaml`. The sampling
 cadence and timeouts (`collect_interval_ms`, `request_timeout_seconds`,
 `startup_timeout_seconds`, `collector_join_timeout_seconds`) are shared with
 the DCGM leg on `TelemetryConfig`; there is no separate CPU-specific set.

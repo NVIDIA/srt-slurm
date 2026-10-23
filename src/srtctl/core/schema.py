@@ -2021,8 +2021,8 @@ class TelemetryConfig:
 
     # Collect GPU power over each benchmark concurrency window.
     enabled: bool = False
-    # GPU power exporter image, port, command, labels and metrics. When `enabled` with
-    # no exporter and no CPU leg, the cluster `default_gpu_exporter` is used.
+    # GPU power exporter image, port, command, labels and metrics. When `enabled` and this
+    # key is unset, the cluster `default_gpu_exporter` is used, with or without a CPU leg.
     dcgm_exporter: TelemetryExporterConfig | None = None
     # Milliseconds between collector cycles. Replaces the retired
     # ``default_frequency``, which despite its name was a period in seconds

@@ -3466,7 +3466,7 @@
               "type": "null"
             }
           ],
-          "description": "GPU power exporter image, port, command, labels and metrics. When `enabled` with no exporter and no CPU leg, the cluster `default_gpu_exporter` is used.",
+          "description": "GPU power exporter image, port, command, labels and metrics. When `enabled` and this key is unset, the cluster `default_gpu_exporter` is used, with or without a CPU leg.",
           "default": null
         },
         "collect_interval_ms": {
