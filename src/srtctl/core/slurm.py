@@ -19,7 +19,7 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
-from .ip_utils import get_node_ip
+from .ip_utils import get_local_ip, get_node_ip
 
 logger = logging.getLogger(__name__)
 
@@ -102,46 +102,76 @@ def get_slurm_het_nodelists() -> list[list[str]] | None:
 # ============================================================================
 
 
-def get_hostname_ip(hostname: str, network_interface: str | None = None) -> str:
-    """Resolve hostname to routable IP address.
+def _is_loopback_ip(ip: str) -> bool:
+    """True for IPv4 loopback, including Ubuntu's 127.0.1.1 hostname alias."""
+    return ip.startswith("127.")
 
-    Uses multiple resolution strategies:
-    1. If inside a SLURM job, use srun to get the real IP from the target node
-    2. Fall back to socket.gethostbyname() (may return loopback on some systems)
+
+def _hostname_keys(hostname: str) -> set[str]:
+    """Short and FQDN spellings of a hostname, for local-node comparison."""
+    name = hostname.strip().lower()
+    if not name:
+        return set()
+    return {name, name.split(".", 1)[0]}
+
+
+def _is_local_hostname(hostname: str) -> bool:
+    """True when ``hostname`` names this process's node."""
+    local_names = (
+        socket.gethostname(),
+        socket.getfqdn(),
+        os.environ.get("SLURMD_NODENAME", ""),
+        os.environ.get("HOSTNAME", ""),
+    )
+    local_keys: set[str] = set()
+    for name in local_names:
+        local_keys |= _hostname_keys(name)
+    return bool(_hostname_keys(hostname) & local_keys)
+
+
+def get_hostname_ip(hostname: str, network_interface: str | None = None) -> str:
+    """Resolve hostname to a routable IP address.
+
+    Inside a SLURM job, query the target node with srun. If that fails and the
+    hostname is this node, use get_local_ip (ip route / hostname -I). DNS via
+    socket.gethostbyname is last and is ignored when it returns loopback:
+    Ubuntu /etc/hosts often maps the node's own name to 127.0.1.1, which peers
+    cannot use as a torch TCPStore address.
 
     Args:
         hostname: Node hostname to resolve
         network_interface: Optional network interface to prefer
 
     Returns:
-        IP address as string
+        Routable IP address as string
+
+    Raises:
+        RuntimeError: If the only address found is loopback
     """
-    # If we're inside a SLURM allocation, use srun-based resolution
-    # This gets the actual routable IP from the target node
     slurm_job_id = get_slurm_job_id()
     if slurm_job_id:
         ip = get_node_ip(hostname, slurm_job_id, network_interface)
-        if ip:
+        if ip and not _is_loopback_ip(ip):
             return ip
         logger.warning(
-            "srun-based IP resolution failed for %s, falling back to socket resolution",
+            "srun-based IP resolution failed for %s, trying local/socket fallbacks",
             hostname,
         )
 
-    # Fallback to socket resolution
+    if _is_local_hostname(hostname):
+        ip = get_local_ip(network_interface)
+        if ip and not _is_loopback_ip(ip):
+            return ip
+
     try:
         ip = socket.gethostbyname(hostname)
-        # Warn if we got a loopback address
-        if ip.startswith("127."):
-            logger.warning(
-                "socket.gethostbyname returned loopback %s for %s - this may cause cross-node issues",
-                ip,
-                hostname,
-            )
-        return ip
     except socket.gaierror:
         # Return hostname as-is (may be IP already)
         return hostname
+    if not _is_loopback_ip(ip):
+        return ip
+
+    raise RuntimeError(f"Could not resolve a routable IP for {hostname}; refusing loopback")
 
 
 def get_node_ips(
