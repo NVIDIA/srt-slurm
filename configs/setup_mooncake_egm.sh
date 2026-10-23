@@ -15,6 +15,16 @@ usage() {
     echo 'Set SRT_MOONCAKE_EGM_WHEEL_DIR to the directory containing one compatible wheel.'
 }
 
+# Enroot's mount arguments use fstab escaping rather than literal whitespace.
+mount_source() {
+    local path=$1
+    path=${path//\\/\\134}
+    path=${path// /\\040}
+    path=${path//$'\t'/\\011}
+    path=${path//$'\n'/\\012}
+    printf '%s' "${path}"
+}
+
 # Run this mode on an allocated compute node, outside a container. Use the
 # site's Enroot data path for the large unpacked rootfs, and a unique disposable
 # container so existing Pyxis containers and the source image are never modified.
@@ -62,9 +72,13 @@ build_image() (
 
     echo "Creating temporary Enroot container from ${source_image}"
     enroot create --name "${container_name}" "${source_image}"
+    # x-create=dir leaves mode-000 placeholders which can break export's find.
+    # Create readable destinations before bind mounts hide them.
+    enroot start --root --rw "${container_name}" \
+        install -d -m 0755 /srt-mooncake-configs /srt-mooncake-wheels
     enroot start --root --rw \
-        --mount "${script_dir}:/srt-mooncake-configs:ro" \
-        --mount "${wheel_dir}:/srt-mooncake-wheels:ro" \
+        --mount "$(mount_source "${script_dir}"):/srt-mooncake-configs:none:ro,bind" \
+        --mount "$(mount_source "${wheel_dir}"):/srt-mooncake-wheels:none:ro,bind" \
         --env SRT_MOONCAKE_EGM_WHEEL_DIR=/srt-mooncake-wheels \
         "${container_name}" bash /srt-mooncake-configs/setup_mooncake_egm.sh --mooncake-only
 

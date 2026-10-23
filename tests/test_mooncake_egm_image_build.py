@@ -121,16 +121,28 @@ def test_image_build_preserves_source_and_uses_existing_mooncake_installer(
     calls = build.calls()
     arguments = [call["args"] for call in calls]
     assert all(isinstance(args, list) for args in arguments)
-    assert [args[0] for args in arguments] == ["create", "start", "export", "remove"]
-    create, start, export, remove = arguments
+    assert [args[0] for args in arguments] == ["create", "start", "start", "export", "remove"]
+    create, prepare_mounts, start, export, remove = arguments
     name = create[create.index("--name") + 1]
     assert create[-1] == str(build.base_image)
+    assert prepare_mounts == [
+        "start",
+        "--root",
+        "--rw",
+        name,
+        "install",
+        "-d",
+        "-m",
+        "0755",
+        "/srt-mooncake-configs",
+        "/srt-mooncake-wheels",
+    ]
     assert "--root" in start
     assert "--rw" in start
     configs_mount = str(build.script.parent).replace(" ", r"\040")
     wheels_mount = str(build.wheel_dir).replace(" ", r"\040")
-    assert f"{configs_mount}:/srt-mooncake-configs:none:ro,bind,x-create=dir" in start
-    assert f"{wheels_mount}:/srt-mooncake-wheels:none:ro,bind,x-create=dir" in start
+    assert f"{configs_mount}:/srt-mooncake-configs:none:ro,bind" in start
+    assert f"{wheels_mount}:/srt-mooncake-wheels:none:ro,bind" in start
     assert "SRT_MOONCAKE_EGM_WHEEL_DIR=/srt-mooncake-wheels" in start
     assert start[-4:] == [name, "bash", "/srt-mooncake-configs/setup_mooncake_egm.sh", "--mooncake-only"]
     exported_path = Path(export[export.index("--output") + 1])
