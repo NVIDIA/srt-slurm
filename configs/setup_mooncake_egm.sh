@@ -8,10 +8,85 @@
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+wheel_dir="${SRT_MOONCAKE_EGM_WHEEL_DIR:-/home/rihuo/mooncake_egm_wheels}"
+
+usage() {
+    echo "Usage: $0 [--mooncake-only | --build-image SOURCE.sqsh DESTINATION.sqsh]"
+    echo 'Set SRT_MOONCAKE_EGM_WHEEL_DIR to the directory containing one compatible wheel.'
+}
+
+# Run this mode on an allocated compute node, outside a container. Use the
+# site's Enroot data path for the large unpacked rootfs, and a unique disposable
+# container so existing Pyxis containers and the source image are never modified.
+build_image() (
+    local source_image=$1 destination_image=$2
+    local destination_dir container_name name_dir publish_dir=''
+    if [[ ! -f ${source_image} ]]; then
+        echo "Source image does not exist: ${source_image}" >&2
+        exit 1
+    fi
+    if [[ ${destination_image} != *.sqsh ]]; then
+        echo 'The destination image must end in .sqsh.' >&2
+        exit 1
+    fi
+    if [[ -e ${destination_image} || -L ${destination_image} ]]; then
+        echo "Refusing to overwrite an existing image: ${destination_image}" >&2
+        exit 1
+    fi
+    shopt -s nullglob
+    local wheels=("${wheel_dir}"/mooncake_transfer_engine*.whl)
+    if (( ${#wheels[@]} != 1 )); then
+        echo "Image building requires exactly one ARM64 CUDA 13 Mooncake wheel in ${wheel_dir}." >&2
+        exit 1
+    fi
+    command -v enroot >/dev/null || {
+        echo 'Run --build-image on a cluster host with Enroot installed.' >&2
+        exit 1
+    }
+    # Absolute paths remain valid across Enroot's container setup.
+    source_image="$(cd -- "$(dirname -- "${source_image}")" && pwd)/$(basename -- "${source_image}")"
+    wheel_dir="$(cd -- "${wheel_dir}" && pwd)"
+    mkdir -p -- "$(dirname -- "${destination_image}")"
+    destination_dir="$(cd -- "$(dirname -- "${destination_image}")" && pwd)"
+    destination_image="${destination_dir}/$(basename -- "${destination_image}")"
+    name_dir="$(mktemp -d "${TMPDIR:-/tmp}/srtctl-mooncake-egm-XXXXXXXX")"
+    container_name=${name_dir##*/}
+    cleanup_image_build() {
+        enroot remove --force "${container_name}" >/dev/null 2>&1 || true
+        [[ -z ${publish_dir} ]] || rm -rf -- "${publish_dir}"
+        rm -rf -- "${name_dir}"
+    }
+    trap cleanup_image_build EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    echo "Creating temporary Enroot container from ${source_image}"
+    enroot create --name "${container_name}" "${source_image}"
+    enroot start --root --rw \
+        --mount "${script_dir}:/srt-mooncake-configs:ro" \
+        --mount "${wheel_dir}:/srt-mooncake-wheels:ro" \
+        --env SRT_MOONCAKE_EGM_WHEEL_DIR=/srt-mooncake-wheels \
+        "${container_name}" bash /srt-mooncake-configs/setup_mooncake_egm.sh --mooncake-only
+
+    # Export on the destination filesystem, then publish with a hard link so
+    # concurrent builders cannot replace an existing or partially written image.
+    publish_dir="$(mktemp -d "${destination_dir}/.mooncake-egm-XXXXXXXX")"
+    enroot export --output "${publish_dir}/image.sqsh" "${container_name}"
+    ln -- "${publish_dir}/image.sqsh" "${destination_image}"
+    echo "Saved Mooncake EGM image: ${destination_image}"
+    echo 'Use this path as model.container; the original image is unchanged.'
+)
+
 case "${1:-}" in
     '') bash "${script_dir}/install_dynamo_wheel.sh" ;;
-    --mooncake-only) ;;
-    *) echo "Usage: $0 [--mooncake-only]" >&2; exit 2 ;;
+    --mooncake-only) [[ $# == 1 ]] || { usage >&2; exit 2; } ;;
+    --build-image)
+        [[ $# == 3 ]] || { usage >&2; exit 2; }
+        build_image "$2" "$3"
+        exit
+        ;;
+    --help|-h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
 esac
 
 # Fabric mode checks this variable by presence, so even '0' selects the wrong
@@ -21,7 +96,6 @@ if [[ ${MC_USE_NVLINK_IPC+x} ]]; then
     exit 1
 fi
 
-wheel_dir="${SRT_MOONCAKE_EGM_WHEEL_DIR:-/home/rihuo/mooncake_egm_wheels}"
 shopt -s nullglob
 wheels=("${wheel_dir}"/mooncake_transfer_engine*.whl)
 if (( ${#wheels[@]} > 1 )); then

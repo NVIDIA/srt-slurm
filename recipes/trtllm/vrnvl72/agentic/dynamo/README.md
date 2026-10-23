@@ -238,6 +238,33 @@ memory and CUDA context/stream resources still use the GPUs.
 See the [EGM integration and hardware requirements](../raplab-dynamo/README.md#egm-over-nvlink)
 for the source trace, IMEX/Fabric prerequisites and setup checks.
 
+To install the Mooncake wheel once in a separate Hecate image, run this from the
+repository root on an ARM64 Hecate host with Enroot available:
+
+```bash
+SRT_MOONCAKE_EGM_WHEEL_DIR=/lustre/fsw/coreai_comparch_inferencex/rihuo/mooncake_egm_wheels \
+  bash configs/setup_mooncake_egm.sh --build-image \
+  /lustre/fsw/coreai_comparch_inferencex/rihuo/tensorrt-llm-arm64-rubin-glm5-20261008-kernels-round7-30434.sqsh \
+  /lustre/fsw/coreai_comparch_inferencex/rihuo/tensorrt-llm-arm64-rubin-glm5-20261008-kernels-round7-30434-mooncake-egm.sqsh
+```
+
+The build mode uses Enroot's configured data path for a temporary unpacked
+container, installs only Mooncake with `--no-deps`, checks the native EGM Store
+API, and exports a new SquashFS image. It removes the temporary container after
+success or failure, preserves the source image, and refuses to overwrite an
+existing destination. The host must have enough space for the unpacked image
+and the destination filesystem must have room for the new SquashFS file.
+This follows Enroot's [create](https://github.com/NVIDIA/enroot/blob/main/doc/cmd/create.md),
+[writable start](https://github.com/NVIDIA/enroot/blob/main/doc/cmd/start.md) and
+[export](https://github.com/NVIDIA/enroot/blob/main/doc/cmd/export.md) workflow.
+
+After the command succeeds, set `model.container` to the new image path in the
+recipe you want to run. Keep `setup_script: setup_mooncake_egm.sh`: Dynamo setup
+still runs at startup, while the baked Mooncake wheel's content-hash sentinel
+skips reinstalling the same wheel. The installer continues to check the native
+API on every launch. No Mooncake master, pool allocation or transfer test runs
+during image building; those still require the EGM smoke test.
+
 The allocation requests six exclusive nodes in one segment and all allocatable
 memory. Account and partition come from cluster configuration. Its explicit
 two-hour walltime uses the job-sizing fallback for the retained 60-minute
