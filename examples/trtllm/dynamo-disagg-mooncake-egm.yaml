@@ -1,0 +1,163 @@
+# TRT-LLM with pinned-host Mooncake clients and separate EGM HOST_NUMA pools.
+# Requires ARM64/CUDA 13, HOST_NUMA/Fabric support and working IMEX channels on
+# both worker nodes in one NVLink domain. See docs/mooncake-kv-store.md.
+# Replace model/image paths. The image provides TRT-LLM, Dynamo and EGM-enabled Mooncake.
+# Diagnostic budget: small model, 4 GiB pools and four short benchmark requests.
+schema: 2
+name: qwen3-0.6b-trtllm-dynamo-disagg-mooncake-egm
+
+slurm:
+  time_limit: "00:30:00"
+model:
+  path: /models/Qwen3-0.6B
+  container: /containers/trtllm-arm64-cuda13.sqsh
+  precision: bf16
+resources:
+  gpu_type: vrnvl72
+  gpus_per_node: 4
+  het_jobs: false
+sbatch_directives:
+  # Two worker nodes and the shared frontend/client node in one NVLink domain.
+  segment: "3"
+  exclusive: ""
+  mem: "0"
+dynamo:
+  install: false
+frontend:
+  type: dynamo
+  placement:
+    node: dedicated
+  enable_multiple_frontends: false
+engine:
+  type: trtllm
+  served_model_name: Qwen/Qwen3-0.6B
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+      TLLM_LOG_LEVEL: INFO
+      MC_MS_AUTO_DISC: "0"
+      MC_USE_TENT: "0"
+      MC_USE_TEV1: "0"
+      MOONCAKE_STORE_BACKEND: cpp
+    args:
+      backend: pytorch
+      tensor_parallel_size: 1
+      max_batch_size: 8
+      max_num_tokens: 8192
+      max_seq_len: 4096
+      trust_remote_code: true
+      disable_overlap_scheduler: true
+      kv_cache_config:
+        free_gpu_memory_fraction: 0.5
+        use_kv_cache_manager_v2: true
+      cache_transceiver_config:
+        backend: NIXL
+        transceiver_runtime: PYTHON
+      kv_connector_config:
+        connector: mooncake-store
+  decode:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+      TLLM_LOG_LEVEL: INFO
+      MC_MS_AUTO_DISC: "0"
+      MC_USE_TENT: "0"
+      MC_USE_TEV1: "0"
+      MOONCAKE_STORE_BACKEND: cpp
+    args:
+      backend: pytorch
+      tensor_parallel_size: 1
+      max_batch_size: 64
+      max_num_tokens: 4096
+      max_seq_len: 4096
+      trust_remote_code: true
+      kv_cache_config:
+        free_gpu_memory_fraction: 0.5
+        use_kv_cache_manager_v2: true
+      cache_transceiver_config:
+        backend: NIXL
+        transceiver_runtime: PYTHON
+      kv_connector_config:
+        connector: mooncake-store
+services:
+  - name: mooncake-master
+    type: mooncake-master
+    # Keep metadata available until provider cleanup has completed.
+    start: infra
+    placement:
+      node: head
+    command:
+      - python3
+      - -m
+      - mooncake.cli
+      - --rpc_port={master_port}
+      - --metrics_port=8702
+    env:
+      MOONCAKE_STORE_BACKEND: cpp
+    readiness:
+      tcp:
+        port: 8700
+      timeout_seconds: 300
+    metrics:
+      port: 8702
+    options:
+      store_config:
+        protocol: nvlink
+        metadata_server: P2PHANDSHAKE
+        device_name: ""
+        global_segment_size: 0
+        # Positive local buffer required by the connector; USE_VRAM_SEGMENT=OFF
+        # keeps it in host memory, separate from pinned staging slots.
+        local_buffer_size: 64MiB
+        stage_through_host: true
+        staging_buffer_bytes: 256MiB
+  - name: mooncake-egm-donor
+    type: generic
+    placement:
+      node: workers
+    # Existing before_workers tier stops after workers and before infra.
+    start: before_workers
+    critical: true
+    srun_options:
+      mpi: none
+    env:
+      # Expose both sockets for automatic HOST_NUMA discovery.
+      CUDA_VISIBLE_DEVICES: "0,1,2,3"
+      MC_MS_AUTO_DISC: "0"
+      MC_USE_TENT: "0"
+      MC_USE_TEV1: "0"
+      MOONCAKE_STORE_BACKEND: cpp
+      PYTHONUNBUFFERED: "1"
+    preamble: |-
+      for name in $(compgen -e); do
+        case "$name" in
+          PMIX_*|PMI_*|OMPI_*|SLURM_*|SLURMD_*|MPI_*|OPAL_*|PRTE_*|HYDRA_*|I_MPI_*) unset "$name" ;;
+        esac
+      done
+    command:
+      - python3
+      - /configs/mooncake_egm_donor.py
+      - serve
+      - --config
+      - /logs/mooncake_store_config_prefill.json
+      - --segment-size
+      - 4GiB
+      - --numa-nodes
+      - auto
+      - --ready-file
+      - /logs/mooncake_egm_{index}.ready
+    readiness:
+      file:
+        path: mooncake_egm_{index}.ready
+      timeout_seconds: 300
+benchmark:
+  type: sa-bench
+  isl: 128
+  osl: 128
+  concurrencies: "1x4"
