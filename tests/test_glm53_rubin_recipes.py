@@ -104,7 +104,7 @@ def test_recipe_config_and_mock_launch(
     assert not config.dynamo.install
     assert "setup_mooncake_egm.sh" not in source.read_text()
     assert "SRT_MOONCAKE_EGM_WHEEL_DIR" not in source.read_text()
-    assert "reuse_container" not in recipe
+    assert config.reuse_container is (recipe_dir == "vrnvl72")
 
     total_nodes = prefill_workers + decode_nodes + 1
     assert planned_total_nodes(config) == total_nodes
@@ -131,6 +131,9 @@ def test_recipe_config_and_mock_launch(
     for call in workers:
         assert "install_dynamo_wheel.sh" in call["bash_preamble"]
     assert all("setup_mooncake_egm.sh" not in (call.get("bash_preamble") or "") for call in calls)
+    assert all(
+        call.get("reuse_container", False) is config.reuse_container for call in calls if call.get("container_image")
+    )
 
     if variant == "3p1d-tp4-dep8-c560-egm-4x260":
         assert recipe["frontend"]["args"]["router-mode"] == "least-loaded"

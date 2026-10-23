@@ -7,6 +7,7 @@
 # MTP forced acceptance follows acceptance_length.json: AL(depth) - 1.
 
 schema: 2
+reuse_container: true
 name: glm5.3-disagg-1p2d-tp4-tp4-c36
 model:
   path: /lustre/fsw/coreai_comparch_inferencex/rihuo/GLM-5.3-NVFP4

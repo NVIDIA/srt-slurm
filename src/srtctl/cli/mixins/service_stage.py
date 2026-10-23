@@ -273,6 +273,7 @@ class ServiceStageMixin:
             nodelist=[node],
             output=str(build_log),
             container_image=self._service_container(service),
+            reuse_container=self.runtime.reuse_container,
             container_mounts=self.runtime.container_mounts,
             srun_options=self.runtime.srun_options,
             het_group=self.runtime.nodes.het_group_for(node),
@@ -360,6 +361,7 @@ class ServiceStageMixin:
             nodelist=[ctx.node],
             output=str(log_file),
             container_image=None if host_native else self._service_container(service),
+            reuse_container=self.runtime.reuse_container,
             container_mounts=None if host_native else self.runtime.container_mounts,
             # Without the bash wrapper there is no `export`; srun --export carries the env instead.
             env_to_set=env if kind.use_bash_wrapper else None,

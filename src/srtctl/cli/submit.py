@@ -615,6 +615,11 @@ def show_config_details(config: SrtConfig) -> None:
                 console.print(f"    [yellow]env.{var}:[/] {val}", crop=False)
 
     # --- srun options ---
+    if config.reuse_container:
+        console.print(
+            "[dim]reuse_container: true[/] --container-name=srtctl_<image hash>_<job id> "
+            "[dim](shared per image and root-remap mode on each node)[/]"
+        )
     if config.srun_options:
         opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in config.srun_options.items())
         console.print(f"[dim]srun options:[/] {opts}")

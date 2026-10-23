@@ -108,3 +108,8 @@ srtctl dry-run -f recipes/trtllm/glm5.3/vrnvl72/glm5.3-disagg-3p1d-tp4-dep16-c57
 
 For every actual cluster run, write `<run_dir>/logs/perf-analysis.md` using the
 [per-run analysis requirements](../../../../docs/perf-analysis.md).
+
+All recipes enable `reuse_container: true` to share a named Pyxis container per
+image and root-remap mode on each node within the job. See
+[container reuse](../../../../docs/slurm-faq.md#host-memory-used-by-container-filesystems)
+for shared-filesystem behavior and cluster cleanup requirements.

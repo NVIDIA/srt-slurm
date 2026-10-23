@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Two services on one node reuse one extracted Python image root filesystem.
+# No inference or benchmark traffic; inspect the shared --container-name in the
+# launch logs, then scancel the job. The 10-minute limit bounds this smoke test.
+schema: 2
+name: reuse-container
+slurm:
+  time_limit: "00:10:00"
+model:
+  path: hf:Qwen/Qwen3-0.6B  # unused; this is a services-only job
+  container: python:3.12-slim
+  precision: bf16
+resources:
+  gpu_type: h100
+  gpus_per_node: 8
+reuse_container: true
+frontend:
+  type: none
+services:
+  - name: first
+    type: generic
+    placement:
+      node: head
+    start: before_workers
+    critical: true
+    inherit_discovery_env: false
+    command:
+      - python3
+      - -c
+      - "from pathlib import Path; import time; Path('/logs/first.ready').write_text('ready\\n'); time.sleep(3600)"
+    readiness:
+      file:
+        path: first.ready
+  - name: second
+    type: generic
+    placement:
+      node: head
+    start: before_workers
+    critical: true
+    inherit_discovery_env: false
+    command:
+      - python3
+      - -c
+      - "from pathlib import Path; import time; Path('/logs/second.ready').write_text('ready\\n'); time.sleep(3600)"
+    readiness:
+      file:
+        path: second.ready
+benchmark:
+  type: manual
+observability:
+  tachometer:
+    enabled: false

@@ -28,6 +28,7 @@ Top-level keys of a recipe YAML.
 | `environment` | dict[str, str] | `{}` | Environment variables for every worker; applied after `roles.<role>.env`, so a key set in both takes this value. Values may use `{node}` and `{node_id}`. |
 | `container_mounts` | dict[[FormattablePath](#formattablepath), [FormattablePath](#formattablepath)] | `{}` | Host path -> container path mounts for every container; both sides are FormattablePaths. |
 | `extra_mount` | tuple[str, ...] \| None | `None` | Extra mounts as `host:container[:ro]` strings; `$VARS` expand, `{placeholders}` do not. |
+| `reuse_container` | bool | `False` | Reuse a named Pyxis container per image and root-remap mode on each node of this job, avoiding repeated root filesystem extraction into host RAM. Off by default. |
 | `srun_options` | dict[str, str] | `{}` | Extra srun options (`key: value` -> `--key=value`; empty value -> `--key`) for every job step. |
 | `sbatch_directives` | dict[str, str] | `{}` | Extra `#SBATCH --key=value` lines (empty value -> `--key`); wins over the cluster defaults. |
 | `enable_config_dump` | bool | `True` | Accepted for compatibility; srtctl does not read it. Workers dump their config where the engine supports it. |

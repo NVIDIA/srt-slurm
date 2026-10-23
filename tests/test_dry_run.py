@@ -113,6 +113,32 @@ def test_default_restart_policy_keeps_dry_run_unchanged(capsys):
     assert "restart=" not in capsys.readouterr().out
 
 
+def test_container_reuse_is_visible_when_enabled(capsys):
+    config = _make_config({"reuse_container": True})
+    assert config.reuse_container is True
+    show_config_details(config)
+    output = " ".join(capsys.readouterr().out.split())
+    assert "reuse_container: true" in output
+    assert "--container-name" in output
+
+
+@pytest.mark.parametrize("overrides", [{}, {"reuse_container": False}])
+def test_container_reuse_defaults_to_disabled(capsys, overrides):
+    config = _make_config(overrides)
+    assert config.reuse_container is False
+    show_config_details(config)
+    output = capsys.readouterr().out
+    assert "reuse_container" not in output
+    assert "--container-name" not in output
+
+
+def test_container_reuse_rejects_invalid_values():
+    from marshmallow import ValidationError
+
+    with pytest.raises(ValidationError, match="reuse_container"):
+        _make_config({"reuse_container": "sometimes"})
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_dynamo_lifecycle_collector_visible_independently_of_observability(capsys, enabled):
     show_config_details(_make_config({"observability": {"enabled": enabled}}))

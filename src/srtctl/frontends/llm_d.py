@@ -510,6 +510,7 @@ class LLMDFrontend(StaticRouterFrontend):
                     nodelist=[node],
                     output=str(log_file),
                     container_image=container_image,
+                    reuse_container=runtime.reuse_container,
                     container_mounts=runtime.container_mounts,
                     env_to_set=env or None,
                     het_group=runtime.nodes.het_group_for(node),
