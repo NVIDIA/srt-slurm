@@ -195,9 +195,25 @@ module_w = Grace + GPU_a + GPU_b + the rest of the module
 ```
 
 The exporter therefore publishes the mean of a socket's GPU readings, one
-sample per socket. To avoid hiding disagreement in that mean, it withholds
-a socket when its GPU readings differ by more than 5% of their mean. It
-warns once when that starts and logs recovery at INFO when they agree again.
+sample per socket. During a load step the GPUs' readings can differ by more
+than 5% of their mean. In one CI benchmark sweep on GB200 and GB300 NVL72
+nodes, 592 of 593 such disagreements lasted 3 consecutive reads or fewer,
+and one, on GB200, lasted 4. The exporter publishes the mean through 3
+disagreeing reads and withholds the socket from the 4th until the readings
+agree again. A persistent disagreement is therefore withheld, but agreement
+does not rule out a fault: under symmetric load a mapping fault can agree
+too. A load whose steps stay phase-locked to the poll keeps a valid meter
+disagreeing, and the socket is withheld while it runs. Under synthetic bf16
+GEMM bursts on GB300, aperiodic phases kept the readings apart for up to 5
+reads, and a 1 s on/off load phase-locked to the poll for 45 to 60 reads.
+
+A GPU that returns no module sample is skipped. Its partner's reading is
+published alone unless the socket is withheld, and it cannot end a
+disagreement: only a read of all of a socket's GPUs shows that they agree.
+At startup the exporter gives up on module power only when no GPU returns a
+module sample. A published disagreement logs its first read at INFO; the
+exporter warns once when it starts withholding a socket and logs at INFO
+when the readings agree again.
 
 NVML initialization and reads run in a background thread, so blocked NVML
 calls do not delay the HTTP server. The module series is omitted until a
