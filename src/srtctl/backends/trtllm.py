@@ -643,9 +643,9 @@ class TRTLLMBackend(Backend):
         base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
 
         if sidecar_config is not None:
-            # The sidecar uses model-path as its Dynamo registration name. Keep the
-            # HF ID there while the native engine loads the pinned snapshot.
-            sidecar_model_arg = (
+            # The sidecar also registers model-path as its Dynamo model name.
+            # Honor the served name even when cluster aliases resolve to local weights.
+            sidecar_model_arg = self.get_served_model_name(
                 str(runtime.model_path) if runtime.is_hf_model and runtime.hf_snapshot_path else model_arg
             )
             return self._build_sidecar_command(

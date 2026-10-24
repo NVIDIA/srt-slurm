@@ -809,7 +809,7 @@ def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path, mode: str,
     assert ("bash /configs/numa_cpu_bind.sh --prefer-memory" in script) is (memory_bind == "preferred")
     assert ("numactl -m 0,1" in script) is (memory_bind is True)
     assert "--grpc --grpc-protocol openengine --host 127.0.0.1 --port 19000" in script
-    assert "python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19000 --model-path /model" in script
+    assert "python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19000 --model-path Qwen/Qwen3-0.6B" in script
     assert "--context-length 4096" in script
     assert "${SLURM_PROCID:-0}" in script
     assert "--served_model_name Qwen/Qwen3-0.6B" in script
@@ -832,7 +832,10 @@ def test_trtllm_sidecar_rejects_direct_frontend(tmp_path: Path) -> None:
         )
 
 
-def test_trtllm_sidecar_registers_hf_id_while_engine_uses_pinned_snapshot(tmp_path: Path) -> None:
+@pytest.mark.parametrize("served_model_name", ["org/name", None, ""])
+def test_trtllm_sidecar_registers_hf_id_while_engine_uses_pinned_snapshot(
+    tmp_path: Path, served_model_name: str | None
+) -> None:
     snapshot = "/hf/hub/models--org--name/snapshots/" + "a" * 40
     runtime = _runtime(tmp_path)
     runtime.model_path = Path("org/name")
@@ -841,11 +844,24 @@ def test_trtllm_sidecar_registers_hf_id_while_engine_uses_pinned_snapshot(tmp_pa
     runtime.hf_snapshot_path = snapshot
     backend = TRTLLMBackend(
         roles={"prefill": RoleConfig(args={"tensor_parallel_size": 4, "max_seq_len": 4096})},
-        served_model_name="org/name",
+        served_model_name=served_model_name,
     )
 
     script = backend.build_worker_command(_process(mode="prefill"), [], runtime)[2]
 
     assert f"tensorrt_llm.commands.serve {snapshot} " in script
     assert "dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19000 --model-path org/name " in script
-    assert "--served_model_name org/name" in script
+    assert ("--served_model_name org/name" in script) is bool(served_model_name)
+
+
+@pytest.mark.parametrize("served_model_name", [None, ""])
+def test_trtllm_sidecar_keeps_local_model_path_without_served_name(
+    tmp_path: Path, served_model_name: str | None
+) -> None:
+    backend = TRTLLMBackend(served_model_name=served_model_name)
+
+    script = backend.build_worker_command(_process(), [], _runtime(tmp_path))[2]
+
+    assert "tensorrt_llm.commands.serve /model " in script
+    assert "dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19000 --model-path /model " in script
+    assert "--served_model_name" not in script
