@@ -34,6 +34,18 @@ def sidecar_grpc_port(process: "Process") -> int:
     return process.sidecar_grpc_port
 
 
+def run_with_model_link(command: list[str], *, workdir: str, name: str, model_path: str) -> list[str]:
+    """Run ``command`` from ``workdir``, where the relative path ``name`` links to ``model_path``.
+
+    Workaround for a sidecar that registers under its literal ``--model-path``:
+    the served name resolves to the mounted model, so the registration gets the
+    name while the artifacts stay local. Drop once the sidecar honors the
+    engine's served name.
+    """
+    script = 'mkdir -p "$(dirname "$1/$3")" && ln -sfn "$2" "$1/$3" && cd "$1" && shift 3 && exec "$@"'
+    return ["bash", "-c", script, "srtctl-sidecar", workdir, model_path, name, *command]
+
+
 def build_sidecar_launch_command(
     *,
     engine: list[str],
