@@ -2,6 +2,9 @@
 
 What the containers see: `FormattablePath` templates, mounts, environment variables, and the setup hooks that run before workers start.
 
+For colocated steps that use the same image, [`reuse_container`](slurm-faq.md#host-memory-used-by-container-filesystems)
+can reduce host memory used by duplicate container filesystems.
+
 ## FormattablePath Template System
 
 FormattablePath is a powerful templating system for paths that supports runtime placeholders and environment variable expansion.

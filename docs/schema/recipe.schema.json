@@ -1977,6 +1977,11 @@
           "description": "Extra mounts as `host:container[:ro]` strings; `$VARS` expand, `{placeholders}` do not.",
           "default": null
         },
+        "reuse_container": {
+          "type": "boolean",
+          "description": "Reuse a named Pyxis container per image and root-remap mode on each node of this job, avoiding repeated root filesystem extraction into host RAM. Off by default.",
+          "default": false
+        },
         "srun_options": {
           "type": "object",
           "additionalProperties": {
@@ -2196,6 +2201,11 @@
           ],
           "description": "Extra mounts as `host:container[:ro]` strings; `$VARS` expand, `{placeholders}` do not.",
           "default": null
+        },
+        "reuse_container": {
+          "type": "boolean",
+          "description": "Reuse a named Pyxis container per image and root-remap mode on each node of this job, avoiding repeated root filesystem extraction into host RAM. Off by default.",
+          "default": false
         },
         "srun_options": {
           "type": "object",

@@ -11,11 +11,13 @@ This module consolidates all SLURM-related functionality:
 - Container utilities: get_container_mounts_str
 """
 
+import hashlib
 import logging
 import os
 import shlex
 import socket
 import subprocess
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -180,6 +182,56 @@ def get_node_ips(
 # never parses it, so an unsupporting cluster no-ops instead of failing the step.
 CONTAINER_REMAP_ROOT_EXPORT = {"ENROOT_REMAP_ROOT": "yes"}
 
+# All container launches belong to this orchestrator. Serialize the short setup
+# steps: Pyxis's creation lock only protects tasks within one Slurm step.
+_CONTAINER_PREPARE_LOCK = threading.Lock()
+
+
+def _prepare_shared_container(srun_args: list[str]) -> None:
+    """Finish extraction before any task can attach to a partially created rootfs."""
+    with _CONTAINER_PREPARE_LOCK:
+        subprocess.run([*srun_args, "--job-name=srtctl-container-prepare", "true"], check=True)
+
+
+def shared_container_name(container_image: str | Path, *, remap_root: bool = False, job_id: str | None = None) -> str:
+    """Name a job's shared image rootfs, separating incompatible root-remap modes.
+
+    Adapted from srt-slurm PR #484 (318c460f7846e396a03f701acfd97f67e24ded45).
+    The job ID prevents concurrent jobs from attaching to each other's rootfs;
+    cleanup of named containers depends on the cluster's Pyxis container scope.
+    """
+    key = f"{container_image}|remap_root" if remap_root else str(container_image)
+    digest = hashlib.sha1(key.encode()).hexdigest()[:12]
+    return f"srtctl_{digest}_{job_id or get_slurm_job_id() or 'nojob'}"
+
+
+def resolve_container_name(
+    container_image: str | Path | None,
+    *,
+    reuse_container: bool = False,
+    container_name: str | None = None,
+    srun_options: dict[str, str] | None = None,
+    srun_export_env: dict[str, str] | None = None,
+    job_id: str | None = None,
+) -> str | None:
+    """Resolve an explicit name or the opt-in job/image name used by every launch."""
+    if not container_image:
+        return None
+    options = srun_options or {}
+    explicit_name = container_name or options.get("container-name")
+    if explicit_name:
+        return explicit_name
+    if not reuse_container:
+        return None
+    remap_value = (srun_export_env or {}).get("ENROOT_REMAP_ROOT", os.environ.get("ENROOT_REMAP_ROOT", "no"))
+    remap_root = remap_value.lower() in {"1", "yes", "true", "y"}
+    if "container-remap-root" in options:
+        remap_root = True
+    if "no-container-remap-root" in options:
+        remap_root = False
+    # Share the rootfs while giving each step its own mounts and namespaces.
+    return f"{shared_container_name(container_image, remap_root=remap_root, job_id=job_id)}:no_exec"
+
 
 def start_srun_process(
     command: list[str],
@@ -189,8 +241,10 @@ def start_srun_process(
     cpus_per_task: int | None = None,
     nodelist: Sequence[str] | None = None,
     output: str | None = None,
-    container_image: str | None = None,
+    container_image: str | Path | None = None,
     container_mounts: dict[Path, Path] | None = None,
+    reuse_container: bool = False,
+    container_name: str | None = None,
     env_to_pass_through: list[str] | None = None,
     env_to_set: dict[str, str] | None = None,
     env_to_unset: list[str] | None = None,
@@ -219,6 +273,8 @@ def start_srun_process(
         output: Output file path (optional)
         container_image: Container image path (optional)
         container_mounts: Dict of host_path -> container_path mounts
+        reuse_container: Reuse one named Pyxis rootfs per job/image/remap mode (default: False).
+        container_name: Explicit Pyxis name, overriding automatic reuse naming and srun_options.
         env_to_pass_through: Environment variable names to pass through
         env_to_set: Environment variables to set (name -> value)
         env_to_unset: Environment variable names to unset before the preamble and command
@@ -294,8 +350,18 @@ def start_srun_process(
         srun_cmd.extend(["--open-mode", "append"])
 
     # Container options
+    resolved_container_name = resolve_container_name(
+        container_image,
+        reuse_container=reuse_container,
+        container_name=container_name,
+        srun_options=srun_options,
+        srun_export_env=srun_export_env,
+        job_id=slurm_job_id,
+    )
     if container_image:
         srun_cmd.extend(["--container-image", str(container_image)])
+        if resolved_container_name:
+            srun_cmd.append(f"--container-name={resolved_container_name}")
         srun_cmd.append("--no-container-entrypoint")
         srun_cmd.append("--no-container-mount-home")
 
@@ -305,13 +371,12 @@ def start_srun_process(
 
     if srun_options:
         for key, value in srun_options.items():
+            if key == "container-name" and resolved_container_name:
+                continue
             if value:
                 srun_cmd.append(f"--{key}={value}")
             else:
                 srun_cmd.append(f"--{key}")
-
-    if step_name:
-        srun_cmd.append(f"--job-name={step_name}")
 
     # Set env vars in the task environment so the container runtime (enroot/pyxis)
     # sees them at container-creation time. Prefix ALL to preserve srun's normal
@@ -319,6 +384,18 @@ def start_srun_process(
     if srun_export_env:
         exports = ",".join(f"{k}={v}" for k, v in srun_export_env.items())
         srun_cmd.append(f"--export=ALL,{exports}")
+
+    if (
+        reuse_container
+        and resolved_container_name
+        and not (container_name or (srun_options or {}).get("container-name"))
+    ):
+        # Repeated setup steps are cheap: Pyxis skips extraction once the named
+        # rootfs exists. Keep the same placement, mounts and creation-time env.
+        _prepare_shared_container(srun_cmd)
+
+    if step_name:
+        srun_cmd.append(f"--job-name={step_name}")
 
     # Build the actual command to run
     if use_bash_wrapper:

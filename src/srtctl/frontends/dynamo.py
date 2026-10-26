@@ -273,6 +273,7 @@ class DynamoFrontend(DynamicFrontend):
                 nodelist=[node],
                 output=str(frontend_log),
                 container_image=str(runtime.container_image),
+                reuse_container=runtime.reuse_container,
                 container_mounts=runtime.container_mounts,
                 env_to_set=env_to_set,
                 bash_preamble=bash_preamble,

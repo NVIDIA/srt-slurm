@@ -531,6 +531,7 @@ class BenchmarkStageMixin:
             nodelist=[bench_node],
             output=str(log_file),
             container_image=str(container_image),
+            reuse_container=self.runtime.reuse_container,
             container_mounts=container_mounts,
             env_to_set=env_to_set,
             srun_options=self.runtime.srun_options,
