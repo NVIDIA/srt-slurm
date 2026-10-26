@@ -154,6 +154,11 @@
       "description": "`health_check` block (`max_attempts`, `interval_seconds`) used when a recipe has none.",
       "default": null
     },
+    "default_reuse_container": {
+      "type": "boolean",
+      "description": "Default for recipe `reuse_container`; explicit true or false in the recipe wins.",
+      "default": false
+    },
     "srtctl_root": {
       "anyOf": [
         {

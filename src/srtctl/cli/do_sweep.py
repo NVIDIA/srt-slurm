@@ -26,6 +26,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from srtctl.backends.base import WorkerMode
 from srtctl.backends.vllm import VLLMBackend
 from srtctl.cli.mixins import (
     BenchmarkStageMixin,
@@ -45,8 +46,8 @@ from srtctl.core.processes import (
 )
 from srtctl.core.resource_snapshot import record_resource_snapshot
 from srtctl.core.runtime import RuntimeContext
-from srtctl.core.schema import SrtConfig, installs_dynamo
-from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_slurm_job_id, resolve_container_name, start_srun_process
+from srtctl.core.schema import SrtConfig, container_creation_env
+from srtctl.core.slurm import get_slurm_job_id, resolve_container_name, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, LogStreamer, StatusReporter, tachometer_outbox
 from srtctl.core.supervisor import WORKER_RESTARTS_FILENAME
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
@@ -191,48 +192,45 @@ class SweepOrchestrator(
                     written.add(filename)
 
     def _print_connection_info(self) -> None:
-        """Print srun commands for connecting to nodes."""
-        container_args = f"--container-image={self.runtime.container_image}"
-        name = resolve_container_name(
-            self.runtime.container_image,
-            reuse_container=self.runtime.reuse_container,
-            srun_options=self.runtime.srun_options,
-            srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if installs_dynamo(self.config) else None,
-            job_id=str(self.runtime.job_id),
-        )
-        if name:
-            container_args += f" --container-name={shlex.quote(name)}"
-        mounts_str = ",".join(f"{src}:{dst}" for src, dst in self.runtime.container_mounts.items())
-        if mounts_str:
-            container_args += f" --container-mounts={mounts_str}"
-
+        """Print connections using the same image, role options and root mode as launches."""
         logger.info("")
         logger.info("=" * 60)
         logger.info("Connection Commands")
         logger.info("=" * 60)
         if self.config.frontend.type != "none":
             logger.info("Frontend URL: http://%s:%d", self._public_api_node(), FRONTEND_PUBLIC_PORT)
-        logger.info("")
-        logger.info("To connect to head node (%s):", self.runtime.nodes.head)
-        logger.info(
-            "  srun %s --jobid %s -w %s --overlap --pty bash",
-            container_args,
-            self.runtime.job_id,
-            self.runtime.nodes.head,
-        )
 
-        # Print worker node connection commands
-        for node in self.runtime.nodes.compute:
-            if node != self.runtime.nodes.head:
-                logger.info("")
-                logger.info("To connect to worker node (%s):", node)
-                logger.info(
-                    "  srun %s --jobid %s -w %s --overlap --pty bash",
-                    container_args,
-                    self.runtime.job_id,
-                    node,
-                )
-
+        targets: list[tuple[str, WorkerMode | None]] = [(self.runtime.nodes.head, None)]
+        targets.extend((process.node, process.endpoint_mode) for process in self.backend_processes)
+        seen: set[tuple[str, str, str | None]] = set()
+        for node, mode in targets:
+            image = self._worker_container_image(mode) if mode else str(self.runtime.container_image)
+            options = self._worker_srun_options(mode) if mode else self.runtime.srun_options
+            resolved = resolve_container_name(
+                image,
+                reuse_container=self.runtime.reuse_container,
+                srun_options=options,
+                srun_export_env=container_creation_env(self.config),
+                job_id=str(self.runtime.job_id),
+            )
+            key = (node, image, resolved.name)
+            if key in seen:
+                continue
+            seen.add(key)
+            args = [f"--container-image={image}"]
+            if resolved.name:
+                args.append(f"--container-name={resolved.name}")
+            if self.runtime.container_mounts:
+                mounts = ",".join(f"{src}:{dst}" for src, dst in self.runtime.container_mounts.items())
+                args.append(f"--container-mounts={mounts}")
+            logger.info("")
+            logger.info("To connect to %s (%s):", f"{mode} worker" if mode else "head node", node)
+            logger.info(
+                "  srun %s --jobid %s -w %s --overlap --pty bash",
+                shlex.join(args),
+                self.runtime.job_id,
+                node,
+            )
         logger.info("=" * 60)
         logger.info("")
 

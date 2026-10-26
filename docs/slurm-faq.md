@@ -58,14 +58,21 @@ Enable job-scoped root filesystem reuse in the recipe:
 reuse_container: true
 ```
 
-The default is `false`. Reuse requires Pyxis support for
+The default is `false`. A cluster can enable reuse for recipes that omit the
+setting by adding `default_reuse_container: true` to `srtslurm.yaml`.
+An explicit `reuse_container: false` in a recipe overrides that default.
+Reuse requires Pyxis support for
 `--container-name=NAME:no_exec`. With reuse enabled, srt-slurm gives containerized steps
 using the same image and root-remapping mode the same Pyxis container name.
 Steps on a node reuse that node's extracted filesystem; filesystems are never
 shared across nodes or jobs. Different images and root-remapping modes receive
-different names. Before each launch, a short, serialized preparation step finishes
-creating the filesystem (or reuses it if it already exists). This prevents
-concurrent first launches from attaching to a partially extracted image.
+different names. The first worker launch prepares its image across all nodes of
+that role together, with one task per node; later launches reuse that preparation.
+Other steps prepare their own target nodes on first use. Only overlapping
+container names and nodes wait for each other, so independent preparations can
+run concurrently. Preparation and lock waiting have a shared 10-minute deadline.
+A failure names the launching step, image, nodes and log file, and stops the launch.
+This prevents concurrent first launches from attaching to a partially extracted image.
 Workers and frontends using the built-in Dynamo installer run with root remapping,
 so they use a separate filesystem from plain service and benchmark steps.
 An explicitly configured `srun_options.container-name` takes precedence over the generated name and leaves

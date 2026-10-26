@@ -914,11 +914,12 @@ class TestNumaBind:
             head_node_ip="10.0.0.8",
             container_image=Path("/container.sqsh"),
             reuse_container=False,
+            srun_options={},
             container_mounts={},
             environment={},
         )
         config = SimpleNamespace(
-            frontend=SimpleNamespace(args=None, env=None, worker_selection=None, numa_bind=True),
+            frontend=SimpleNamespace(type="dynamo", args=None, env=None, worker_selection=None, numa_bind=True),
             observability=ObservabilityConfig(),
             services=[],
             dynamo=SimpleNamespace(
@@ -952,11 +953,12 @@ def test_dynamo_frontend_is_a_named_step_with_a_drain_timeout():
         head_node_ip="10.0.0.8",
         container_image=Path("/container.sqsh"),
         reuse_container=False,
+        srun_options={},
         container_mounts={},
         environment={},
     )
     config = SimpleNamespace(
-        frontend=SimpleNamespace(args=None, env=None),
+        frontend=SimpleNamespace(type="dynamo", args=None, env=None),
         observability=ObservabilityConfig(),
         services=[],
         dynamo=SimpleNamespace(install=False, get_install_commands=lambda: "", request_plane="tcp", event_plane=None),
@@ -981,6 +983,7 @@ def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zm
         head_node_ip="10.0.0.8",
         container_image=Path("/container.sqsh"),
         reuse_container=False,
+        srun_options={},
         container_mounts={},
         environment={},
     )
@@ -1043,6 +1046,7 @@ def test_dynamo_frontend_materializes_inline_worker_selection(tmp_path):
         nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
         container_image=Path("/container.sqsh"),
         reuse_container=False,
+        srun_options={},
         container_mounts={tmp_path: Path("/logs")},
         environment={},
     )

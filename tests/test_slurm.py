@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from srtctl.cli.mixins.worker_stage import WorkerStageMixin, worker_step_name
+from srtctl.core import slurm
 from srtctl.core.power.contract import CONTAINER_LOG_DIR
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.runtime import Nodes, RuntimeContext
@@ -27,6 +28,13 @@ from srtctl.core.schema import (
     Topology,
 )
 from srtctl.core.slurm import get_slurm_het_nodelists, shared_container_name, start_srun_process
+
+
+@pytest.fixture(autouse=True)
+def _isolated_container_preparation(monkeypatch):
+    monkeypatch.setattr(slurm, "_CONTAINER_PREPARE_LOCKS", {})
+    monkeypatch.setattr(slurm, "_PREPARED_CONTAINER_NODES", set())
+    monkeypatch.setattr(slurm, "_FAILED_CONTAINER_NODES", {})
 
 
 def _built_bash_command(mock_popen: MagicMock) -> str:
@@ -130,98 +138,136 @@ def test_srun_container_reuse_separates_effective_root_modes(
 
 
 @pytest.mark.parametrize("reuse", [False, True])
-@pytest.mark.parametrize(
-    ("explicit_name", "option_name", "expected"),
-    [("custom", None, "custom"), (None, "custom-option", "custom-option"), ("custom", "other", "custom")],
-)
-def test_explicit_container_names_take_precedence_without_duplicates(
-    reuse, explicit_name, option_name, expected
-) -> None:
-    options = {"container-name": option_name} if option_name is not None else {}
+def test_explicit_container_names_take_precedence_without_duplicates(reuse) -> None:
+    options = {"container-name": "custom"}
     with (
         patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
         patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
         patch("subprocess.Popen") as popen,
         patch("srtctl.core.slurm._prepare_shared_container") as prepare,
     ):
-        start_srun_process(
-            ["true"],
-            container_image="/images/model.sqsh",
-            reuse_container=reuse,
-            container_name=explicit_name,
-            srun_options=options,
-        )
-    assert _container_names(popen.call_args.args[0]) == [expected]
-    assert options == ({"container-name": option_name} if option_name is not None else {})
+        start_srun_process(["true"], container_image="/images/model.sqsh", reuse_container=reuse, srun_options=options)
+    assert _container_names(popen.call_args.args[0]) == ["custom"]
+    assert options == {"container-name": "custom"}
     prepare.assert_not_called()
 
 
-def test_shared_container_preparation_preserves_placement_mounts_and_root_mode() -> None:
+def test_shared_container_prepares_all_worker_nodes_once() -> None:
     mounts = {Path("/models"): Path("/model")}
     with (
         patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
         patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
-        patch("subprocess.run") as prepare,
-        patch("subprocess.Popen") as popen,
+        patch("subprocess.Popen", return_value=MagicMock(returncode=0)) as popen,
     ):
-        start_srun_process(
-            ["python3", "server.py"],
-            nodes=2,
-            ntasks=8,
-            nodelist=["node-a", "node-b"],
-            het_group=1,
-            container_image="/images/model.sqsh",
-            container_mounts=mounts,
-            reuse_container=True,
-            srun_export_env={"ENROOT_REMAP_ROOT": "yes"},
-            step_name="worker",
-        )
+        for node in ("node-a", "node-b"):
+            start_srun_process(
+                ["python3", "server.py"],
+                ntasks=8,
+                nodelist=[node],
+                container_prepare_nodes=["node-a", "node-b"],
+                output="/logs/worker.log",
+                het_group=1,
+                container_image="/images/model.sqsh",
+                container_mounts=mounts,
+                reuse_container=True,
+                srun_export_env={"ENROOT_REMAP_ROOT": "yes"},
+                srun_options={"distribution": "arbitrary", "ntasks-per-node": "8"},
+                step_name="worker",
+            )
 
-    prepared = prepare.call_args.args[0]
-    launched = popen.call_args.args[0]
-    assert prepared[-2:] == ["--job-name=srtctl-container-prepare", "true"]
-    assert launched[len(prepared) - 2 :] == ["--job-name=worker", "bash", "-c", "exec python3 server.py"]
-    assert prepared[:-2] == launched[: len(prepared) - 2]
+    prepared, first, second = [call.args[0] for call in popen.call_args_list]
+    assert prepared[-1] == "true"
+    assert "--job-name=worker.container-prepare" in prepared
+    assert prepared[prepared.index("--nodes") + 1] == "2"
+    assert prepared[prepared.index("--ntasks") + 1] == "2"
+    assert prepared[prepared.index("--nodelist") + 1] == "node-a,node-b"
+    assert "--ntasks-per-node=1" in prepared
+    assert "--distribution=arbitrary" not in prepared
     assert "--export=ALL,ENROOT_REMAP_ROOT=yes" in prepared
     assert "--het-group=1" in prepared
     assert prepared[prepared.index("--container-mounts") + 1] == "/models:/model"
-    assert prepared[prepared.index("--nodelist") + 1] == "node-a,node-b"
-    prepare.assert_called_once_with(prepared, check=True)
+    assert _container_names(prepared) == _container_names(first) == _container_names(second)
+    assert first[first.index("--ntasks") + 1] == "8"
+    assert "--distribution=arbitrary" in first
+    assert second[second.index("--nodelist") + 1] == "node-b"
+    popen.return_value.communicate.assert_called_once()
+    assert 0 < popen.return_value.communicate.call_args.kwargs["timeout"] <= 600
 
 
-def test_shared_container_preparation_failure_prevents_launch() -> None:
+@pytest.mark.parametrize("failure", ["exit", "timeout"])
+def test_shared_container_preparation_failure_has_context_and_blocks_further_launches(failure) -> None:
+    failed = MagicMock(returncode=1, args=["srun", "true"])
+    if failure == "timeout":
+        failed.communicate.side_effect = [subprocess.TimeoutExpired("srun", 600), (None, None)]
     with (
         patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
-        patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, ["srun", "true"])),
-        patch("subprocess.Popen") as popen,
-        pytest.raises(subprocess.CalledProcessError),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen", return_value=failed) as popen,
     ):
-        start_srun_process(["server"], container_image="/images/model.sqsh", reuse_container=True)
+        args = dict(
+            container_image="/images/model.sqsh",
+            reuse_container=True,
+            nodelist=["node-a"],
+            step_name="worker",
+            output="/logs/worker.log",
+        )
+        with pytest.raises(RuntimeError, match=r"worker.*model.sqsh.*node-a.*worker.log") as raised:
+            start_srun_process(["server"], **args)
+        assert isinstance(raised.value.__cause__, (subprocess.CalledProcessError, subprocess.TimeoutExpired))
+        assert popen.call_count == 1
+        with pytest.raises(RuntimeError, match="previous preparation failed"):
+            start_srun_process(["server"], **args)
+    assert popen.call_count == 1
+    assert all(not lock.locked() for lock in slurm._CONTAINER_PREPARE_LOCKS.values())
+    assert failed.kill.call_count == (1 if failure == "timeout" else 0)
+
+
+def test_shared_container_lock_wait_has_a_deadline(monkeypatch) -> None:
+    monkeypatch.setattr(slurm, "CONTAINER_PREPARE_TIMEOUT_SECONDS", 0.01)
+    name = f"{shared_container_name('/images/model.sqsh', job_id='12345')}:no_exec"
+    lock = threading.Lock()
+    slurm._CONTAINER_PREPARE_LOCKS[(name, "node-a")] = lock
+    with lock, patch("subprocess.Popen") as popen, pytest.raises(RuntimeError, match="timed out waiting"):
+        slurm._prepare_shared_container(
+            image="/images/model.sqsh",
+            name=name,
+            nodes=["node-a"],
+            output=None,
+            mounts=None,
+            options=None,
+            export_env=None,
+            het_group=None,
+            step_name="worker",
+        )
     popen.assert_not_called()
 
 
-def test_concurrent_shared_container_launches_serialize_preparation() -> None:
+def test_concurrent_shared_container_launches_wait_for_one_preparation() -> None:
     preparing = threading.Event()
     release = threading.Event()
     second_started = threading.Event()
-    calls = []
+    commands = []
 
-    def prepare(command, **kwargs):
-        calls.append("preparing")
-        if len(calls) == 1:
-            preparing.set()
-            assert release.wait(timeout=5)
-        calls.append("prepared")
+    def launch_process(command, **kwargs):
+        commands.append(command)
+        proc = MagicMock(returncode=0)
+        if command[-1] == "true":
+
+            def wait_for_preparation(**kwargs):
+                preparing.set()
+                assert release.wait(timeout=5)
+
+            proc.communicate.side_effect = wait_for_preparation
+        return proc
 
     def launch():
         second_started.set()
-        start_srun_process(["server"], container_image="/images/model.sqsh", reuse_container=True)
+        start_srun_process(["server"], container_image="/images/model.sqsh", reuse_container=True, nodelist=["node-a"])
 
     with (
         patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
         patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
-        patch("subprocess.run", side_effect=prepare) as run,
-        patch("subprocess.Popen") as popen,
+        patch("subprocess.Popen", side_effect=launch_process),
         ThreadPoolExecutor(max_workers=2) as executor,
     ):
         first = executor.submit(launch)
@@ -230,15 +276,41 @@ def test_concurrent_shared_container_launches_serialize_preparation() -> None:
         second = executor.submit(launch)
         try:
             assert second_started.wait(timeout=5)
-            assert calls == ["preparing"]
-            popen.assert_not_called()
+            assert len(commands) == 1
         finally:
             release.set()
         first.result(timeout=5)
         second.result(timeout=5)
+    assert len(commands) == 3
+    assert sum(command[-1] == "true" for command in commands) == 1
 
-    assert calls == ["preparing", "prepared", "preparing", "prepared"]
-    assert run.call_count == popen.call_count == 2
+
+@pytest.mark.parametrize("other_image,other_node", [("model", "node-b"), ("other", "node-a")])
+def test_independent_container_preparations_run_concurrently(other_image, other_node) -> None:
+    simultaneous = threading.Barrier(2)
+
+    def launch_process(command, **kwargs):
+        proc = MagicMock(returncode=0)
+        if command[-1] == "true":
+            proc.communicate.side_effect = lambda **kwargs: simultaneous.wait(timeout=5)
+        return proc
+
+    def launch(image, node):
+        return start_srun_process(
+            ["server"], container_image=f"/images/{image}.sqsh", reuse_container=True, nodelist=[node]
+        )
+
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen", side_effect=launch_process) as popen,
+        ThreadPoolExecutor(max_workers=2) as executor,
+    ):
+        first = executor.submit(launch, "model", "node-a")
+        second = executor.submit(launch, other_image, other_node)
+        first.result(timeout=10)
+        second.result(timeout=10)
+    assert popen.call_count == 4
 
 
 def test_start_srun_exports_env_before_preamble() -> None:

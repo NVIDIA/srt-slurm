@@ -17,8 +17,8 @@ import yaml
 from srtctl.backends.vllm import VLLMBackend
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
 from srtctl.core.observability_nsys import wrap_observability_nsys
-from srtctl.core.schema import build_otel_env
-from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
+from srtctl.core.schema import build_otel_env, container_creation_env
+from srtctl.core.slurm import start_srun_process
 from srtctl.frontends.base import logical_health_expectations, numactl_prefix, register_frontend
 from srtctl.frontends.dynamic_frontend import DynamicFrontend
 from srtctl.services.config import ServiceConfig
@@ -279,7 +279,8 @@ class DynamoFrontend(DynamicFrontend):
                 bash_preamble=bash_preamble,
                 # Frontend container runs the dynamo install (see _build_preamble), whose
                 # cold build needs root inside the container. Remap via enroot env var.
-                srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if config.dynamo.install else None,
+                srun_export_env=container_creation_env(config),
+                srun_options=runtime.srun_options,
                 # TODO(jthomson): I don't have the faintest clue of
                 # why this is needed in later versions of Dynamo, but it is.
                 mpi="pmix",

@@ -140,6 +140,31 @@ def test_container_reuse_rejects_invalid_values():
         _make_config({"reuse_container": "sometimes"})
 
 
+@pytest.mark.parametrize(
+    ("default", "override", "expected"),
+    [(True, None, True), (True, False, False), (False, True, True), (False, None, False)],
+)
+def test_container_reuse_cluster_default_and_recipe_override(
+    tmp_path, monkeypatch, capsys, default, override, expected
+):
+    from srtctl.core.config import load_config
+    from srtctl.core.schema import ClusterConfig
+
+    cluster = tmp_path / "srtslurm.yaml"
+    cluster.write_text(yaml.safe_dump({"default_reuse_container": default}))
+    monkeypatch.setenv("SRTSLURM_CONFIG", str(cluster))
+    assert ClusterConfig.Schema().load({"default_reuse_container": default}).default_reuse_container is default
+    recipe = {**BASE_CONFIG}
+    if override is not None:
+        recipe["reuse_container"] = override
+    path = tmp_path / "recipe.yaml"
+    path.write_text(yaml.safe_dump(recipe))
+    config = load_config(path)
+    assert config.reuse_container is expected
+    show_config_details(config)
+    assert ("reuse_container: true" in capsys.readouterr().out) is expected
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_dynamo_lifecycle_collector_visible_independently_of_observability(capsys, enabled):
     show_config_details(_make_config({"observability": {"enabled": enabled}}))

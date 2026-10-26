@@ -52,6 +52,10 @@ default_time_limit: "04:00:00"
 #   max_attempts: 540        # 540 * 10s = 90 min
 #   interval_seconds: 10
 
+# Reuse extracted container filesystems on each node (recipe true/false wins).
+# Requires Pyxis :no_exec support and a named-container cleanup policy.
+# default_reuse_container: true
+
 # Commands run on every allocated node's bare host, OUTSIDE the container,
 # before any worker starts -- for node state a container cannot reach, such as
 # locking GPU clocks on machines that need it. Runs as you, so anything

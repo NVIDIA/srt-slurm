@@ -21,8 +21,8 @@ from srtctl.core.health import wait_for_health
 from srtctl.core.observability_nsys import wrap_observability_nsys
 from srtctl.core.processes import ManagedProcess, NamedProcesses, ProcessRegistry
 from srtctl.core.runtime import RuntimeContext
-from srtctl.core.schema import build_otel_env, installs_dynamo
-from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
+from srtctl.core.schema import build_otel_env, container_creation_env, installs_dynamo
+from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.supervisor import EndpointKey, WorkerSupervisor
 from srtctl.frontends import get_frontend
 from srtctl.services.implicit import discovery_env
@@ -94,6 +94,25 @@ class WorkerStageMixin:
     # Type hints for mixin dependencies
     config: "SrtConfig"
     runtime: "RuntimeContext"
+
+    def _worker_container_image(self, mode: WorkerMode) -> str:
+        return (
+            self.config.worker_container_for_role(mode)
+            if mode in self.config.role_containers
+            else str(self.runtime.container_image)
+        )
+
+    def _worker_srun_options(self, mode: WorkerMode) -> dict[str, str]:
+        return {**self.runtime.srun_options, **self.config.roles[mode].srun_options}
+
+    def _worker_container_nodes(self, mode: WorkerMode, het_group: int | None) -> tuple[str, ...] | None:
+        if self.runtime.reuse_container is not True:
+            return None
+        return tuple(
+            dict.fromkeys(
+                p.node for p in self.backend_processes if p.endpoint_mode == mode and p.het_group == het_group
+            )
+        )
 
     def _apply_mooncake_process_config(self, process: "Process", environment: dict[str, str]) -> None:
         backend = self.config.backend_for_role(process.endpoint_mode)
@@ -479,18 +498,15 @@ class WorkerStageMixin:
             command=cmd,
             nodelist=[process.node],
             output=str(worker_log),
-            container_image=(
-                self.config.worker_container_for_role(mode)
-                if mode in self.config.role_containers
-                else str(self.runtime.container_image)
-            ),
+            container_image=self._worker_container_image(mode),
             reuse_container=self.runtime.reuse_container,
+            container_prepare_nodes=self._worker_container_nodes(mode, process.het_group),
             container_mounts=self.runtime.container_mounts,
             env_to_set=env_to_set,
             env_to_unset=env_to_unset,
             bash_preamble=bash_preamble,
-            srun_options={**self.runtime.srun_options, **self.config.roles[mode].srun_options},
-            srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if installs_dynamo(self.config) else None,
+            srun_options=self._worker_srun_options(mode),
+            srun_export_env=container_creation_env(self.config),
             het_group=process.het_group,
             step_name=step_name,
         )
@@ -699,7 +715,7 @@ class WorkerStageMixin:
         # Repeated hosts preserve each node's exact rank count and ordering.
         task_nodes = [p.node for p in endpoint_processes for _ in p.gpu_indices]
         task_counts = [len(p.gpu_indices) for p in endpoint_processes]
-        srun_options = {**self.runtime.srun_options, **self.config.roles[mode].srun_options}
+        srun_options = self._worker_srun_options(mode)
         srun_options["ntasks-per-node"] = str(max(task_counts))
         if num_nodes > 1:
             # Every multi-node endpoint, uniform or not, lays its ranks out explicitly:
@@ -734,16 +750,13 @@ class WorkerStageMixin:
             ntasks=total_gpus,
             nodelist=endpoint_nodes,
             output=str(worker_log),
-            container_image=(
-                self.config.worker_container_for_role(mode)
-                if mode in self.config.role_containers
-                else str(self.runtime.container_image)
-            ),
+            container_image=self._worker_container_image(mode),
             reuse_container=self.runtime.reuse_container,
+            container_prepare_nodes=self._worker_container_nodes(mode, leader.het_group),
             container_mounts=self.runtime.container_mounts,
             env_to_set=env_to_set,
             bash_preamble=bash_preamble,
-            srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if installs_dynamo(self.config) else None,
+            srun_export_env=container_creation_env(self.config),
             mpi=srun_config.mpi,
             oversubscribe=srun_config.oversubscribe,
             cpu_bind=srun_config.cpu_bind,

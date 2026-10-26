@@ -12,6 +12,7 @@ and produces the expected artifact set that external harnesses observe.
 from __future__ import annotations
 
 import json
+import logging
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
@@ -111,6 +112,69 @@ def test_container_reuse_reaches_every_containerized_stage(tmp_path: Path, monke
     assert any(call.get("step_name") == "service_donor" for call in containerized)
     assert any("frontend" in str(call.get("output", "")) for call in containerized)
     assert any(str(call.get("output", "")).endswith("benchmark.out") for call in containerized)
+
+
+@pytest.mark.parametrize("engine", ["sglang", "trtllm"])
+@pytest.mark.parametrize("install", [False, True])
+def test_container_connections_and_preparation_follow_each_worker_role(
+    tmp_path: Path, monkeypatch, caplog, engine, install
+) -> None:
+    from srtctl.core.slurm import resolve_container_name
+
+    monkeypatch.setenv("SRTSLURM_CONFIG", str(tmp_path / "absent-srtslurm.yaml"))
+    caplog.set_level(logging.INFO)
+    config = deepcopy(MINIMAL_CONFIG)
+    config.update(
+        engine=engine,
+        frontend={"type": "dynamo"},
+        dynamo={"install": install},
+        reuse_container=True,
+        roles={
+            "prefill": {
+                "nodes": 2,
+                "workers": 1,
+                "container": "nvcr.io/fake:prefill",
+                "srun_options": {"container-name": "prefill-custom"},
+            },
+            "decode": {"nodes": 2, "workers": 1, "container": "nvcr.io/fake:decode"},
+        },
+        observability={"tachometer": {"enabled": False}},
+    )
+    path = tmp_path / "container-roles.yaml"
+    path.write_text(yaml.safe_dump(config))
+    launches = []
+    assert (
+        run_mock_sweep(
+            config_path=path,
+            output_dir=tmp_path / "output",
+            job_id="42042",
+            options=MockOptions(
+                child_duration_s=0,
+                phase_pause_s=0,
+                nodelist=("node-01", "node-02", "node-03", "node-04"),
+                on_srun=launches.append,
+            ),
+        )
+        == 0
+    )
+
+    for role in ("prefill", "decode"):
+        workers = [call for call in launches if call.get("step_name", "").startswith(f"{role}_")]
+        assert workers
+        nodes = {node for call in workers for node in call["nodelist"]}
+        assert len(nodes) == 2
+        for call in workers:
+            assert set(call["container_prepare_nodes"]) == nodes
+            assert call["container_image"] == f"nvcr.io/fake:{role}"
+            assert call["srun_export_env"] == ({"ENROOT_REMAP_ROOT": "yes"} if install else None)
+            resolved = resolve_container_name(
+                call["container_image"],
+                reuse_container=True,
+                srun_options=call["srun_options"],
+                srun_export_env=call["srun_export_env"],
+                job_id="42042",
+            )
+            assert f"--container-image={call['container_image']} --container-name={resolved.name}" in caplog.text
 
 
 @pytest.mark.parametrize("critical", [True, False])

@@ -413,6 +413,8 @@ class ClusterConfig:
     default_sbatch_directives: dict[str, str] | None = None
     # `health_check` block (`max_attempts`, `interval_seconds`) used when a recipe has none.
     default_health_check: dict[str, int] | None = None
+    # Default for recipe `reuse_container`; explicit true or false in the recipe wins.
+    default_reuse_container: bool = False
     # srtctl checkout on the shared filesystem that compute nodes mount at /srtctl-src. Default: this checkout.
     srtctl_root: str | None = None
     output_dir: str | None = None  # Custom output directory for job logs
@@ -4185,3 +4187,10 @@ def installs_dynamo(config: SrtConfig) -> bool:
     dynamo frontend is selected and install isn't disabled.
     """
     return config.frontend.type == "dynamo" and config.dynamo.install
+
+
+def container_creation_env(config: SrtConfig) -> dict[str, str] | None:
+    """Creation-time environment for workers and the Dynamo frontend."""
+    from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT
+
+    return dict(CONTAINER_REMAP_ROOT_EXPORT) if installs_dynamo(config) else None

@@ -57,6 +57,7 @@ _RECORDED_KEYS = (
     "container_image",
     "container_mounts",
     "reuse_container",
+    "container_prepare_nodes",
     "env_to_pass_through",
     "env_to_set",
     "env_to_unset",
