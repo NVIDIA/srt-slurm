@@ -225,6 +225,10 @@ class TRTLLMServeFrontend(Frontend):
             container_prepare_timeout_seconds=runtime.container_prepare_timeout_seconds,
             container_mounts=runtime.container_mounts,
             env_to_set=env_to_set if env_to_set else None,
+            # Same runtime-level Slurm launch options as the workers and services, e.g.
+            # a shared pyxis --container-name: without it the orchestrator unpacks its
+            # own copy of the image on the frontend node.
+            srun_options=runtime.srun_options,
             # trtllm-serve imports tensorrt_llm, which requires an MPI launcher even
             # for the single-rank orchestrator (same reason the dynamo frontend uses it).
             mpi="pmix",
