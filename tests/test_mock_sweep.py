@@ -83,9 +83,22 @@ def _write_config(tmp_path: Path) -> Path:
 
 
 @pytest.mark.parametrize("reuse", [False, True])
-def test_container_reuse_reaches_every_containerized_stage(tmp_path: Path, monkeypatch, reuse: bool) -> None:
-    monkeypatch.setenv("SRTSLURM_CONFIG", str(tmp_path / "absent-srtslurm.yaml"))
+@pytest.mark.parametrize(
+    ("cluster_budget", "recipe_budget", "expected"),
+    [(None, None, 1800.0), (540, None, 5400.0), (540, 90, 900.0)],
+)
+def test_container_reuse_reaches_every_containerized_stage(
+    tmp_path: Path, monkeypatch, reuse: bool, cluster_budget, recipe_budget, expected
+) -> None:
+    cluster = tmp_path / "srtslurm.yaml"
+    if cluster_budget is not None:
+        cluster.write_text(
+            yaml.safe_dump({"default_health_check": {"max_attempts": cluster_budget, "interval_seconds": 10}})
+        )
+    monkeypatch.setenv("SRTSLURM_CONFIG", str(cluster))
     config = deepcopy(MINIMAL_CONFIG)
+    if recipe_budget is not None:
+        config["health_check"] = {"max_attempts": recipe_budget, "interval_seconds": 10}
     if reuse:
         config["reuse_container"] = True
     config["dynamo"] = {"install": False}
@@ -108,6 +121,7 @@ def test_container_reuse_reaches_every_containerized_stage(tmp_path: Path, monke
     containerized = [call for call in launches if call.get("container_image")]
     assert containerized
     assert all(call.get("reuse_container", False) is reuse for call in containerized)
+    assert all(call.get("container_prepare_timeout_seconds") == expected for call in containerized)
     assert any(call.get("step_name", "").startswith("agg_") for call in containerized)
     assert any(call.get("step_name") == "service_donor" for call in containerized)
     assert any("frontend" in str(call.get("output", "")) for call in containerized)

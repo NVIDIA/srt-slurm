@@ -302,6 +302,7 @@ def test_router_launch_uses_router_image_env_setup_and_captured_log() -> None:
         log_dir=Path("/logs"),
         container_image=Path("/worker.sqsh"),
         reuse_container=False,
+        container_prepare_timeout_seconds=1800.0,
         container_mounts={"/host": "/container"},
         environment={"GLOBAL": "value", "ROUTER_LOG": "info"},
         network_interface="ib0",

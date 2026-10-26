@@ -121,6 +121,7 @@ def test_container_reuse_is_visible_when_enabled(capsys):
     assert "reuse_container: true" in output
     assert "--container-name" in output
     assert ":no_exec" in output
+    assert "preparation timeout follows health_check" in output
 
 
 @pytest.mark.parametrize("overrides", [{}, {"reuse_container": False}])

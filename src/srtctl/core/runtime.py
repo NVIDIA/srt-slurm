@@ -19,7 +19,12 @@ from srtctl.core.power.contract import CONTAINER_LOG_DIR
 from srtctl.ports import FRONTEND_PUBLIC_PORT
 
 from .config import get_srtslurm_setting
-from .slurm import get_hostname_ip, get_slurm_het_nodelists, get_slurm_nodelist
+from .slurm import (
+    DEFAULT_CONTAINER_PREPARE_TIMEOUT_SECONDS,
+    get_hostname_ip,
+    get_slurm_het_nodelists,
+    get_slurm_nodelist,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -406,6 +411,8 @@ class RuntimeContext:
 
     # Opt-in reuse of a job-scoped named Pyxis container for each image/remap mode.
     reuse_container: bool = False
+    # Resolved health-check budget, shared by container preparation and lock waiting.
+    container_prepare_timeout_seconds: float = DEFAULT_CONTAINER_PREPARE_TIMEOUT_SECONDS
 
     # Additional srun options
     srun_options: dict[str, str] = field(default_factory=dict)
@@ -581,6 +588,9 @@ class RuntimeContext:
         environment.update(config.environment)
 
         visible_devices_env = get_srtslurm_setting("visible_devices_env", "CUDA_VISIBLE_DEVICES")
+        container_prepare_timeout_seconds = float(
+            config.health_check.max_attempts * config.health_check.interval_seconds
+        )
         temp_context = cls(
             job_id=job_id,
             run_name=run_name,
@@ -596,6 +606,7 @@ class RuntimeContext:
             visible_devices_env=visible_devices_env,
             container_mounts={},
             reuse_container=config.reuse_container,
+            container_prepare_timeout_seconds=container_prepare_timeout_seconds,
             srun_options=dict(config.srun_options),
             environment=environment,
             is_hf_model=is_hf_model,
@@ -626,6 +637,7 @@ class RuntimeContext:
             visible_devices_env=visible_devices_env,
             container_mounts=container_mounts,
             reuse_container=config.reuse_container,
+            container_prepare_timeout_seconds=container_prepare_timeout_seconds,
             srun_options=dict(config.srun_options),
             environment=environment,
             is_hf_model=is_hf_model,

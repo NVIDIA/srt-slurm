@@ -563,6 +563,7 @@ class SweepOrchestrator(
                 container_image=str(self.runtime.container_image),
                 container_mounts=self.runtime.container_mounts,
                 reuse_container=self.runtime.reuse_container,
+                container_prepare_timeout_seconds=self.runtime.container_prepare_timeout_seconds,
                 het_group=self.runtime.nodes.het_group_for(node),
             )
             procs.append((node, proc, log))
@@ -669,6 +670,7 @@ class SweepOrchestrator(
                 container_image=str(self.runtime.container_image),
                 container_mounts=self.runtime.container_mounts,
                 reuse_container=self.runtime.reuse_container,
+                container_prepare_timeout_seconds=self.runtime.container_prepare_timeout_seconds,
                 env_to_set=hf_env,
                 use_bash_wrapper=False,  # command is already bash -c
                 het_group=self.runtime.nodes.het_group_for(download_node),
@@ -780,6 +782,7 @@ class SweepOrchestrator(
             container_image=str(self.runtime.container_image),
             container_mounts=self.runtime.container_mounts,
             reuse_container=self.runtime.reuse_container,
+            container_prepare_timeout_seconds=self.runtime.container_prepare_timeout_seconds,
             env_to_set=env_to_set,
             srun_options=self.runtime.srun_options,
             het_group=self.runtime.nodes.het_group_for(eval_node),

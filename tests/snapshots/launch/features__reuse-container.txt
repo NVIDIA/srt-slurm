@@ -12,6 +12,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 reuse_container: True
+container_prepare_timeout_seconds: 1800.0
 use_bash_wrapper: True
 command: |
     python3 -c 'from pathlib import Path; import time; Path('"'"'/logs/first.ready'"'"').write_text('"'"'ready\n'"'"'); time.sleep(3600)'
@@ -26,6 +27,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 reuse_container: True
+container_prepare_timeout_seconds: 1800.0
 use_bash_wrapper: True
 command: |
     python3 -c 'from pathlib import Path; import time; Path('"'"'/logs/second.ready'"'"').write_text('"'"'ready\n'"'"'); time.sleep(3600)'

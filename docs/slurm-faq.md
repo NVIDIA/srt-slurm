@@ -70,7 +70,10 @@ different names. The first worker launch prepares its image across all nodes of
 that role together, with one task per node; later launches reuse that preparation.
 Other steps prepare their own target nodes on first use. Only overlapping
 container names and nodes wait for each other, so independent preparations can
-run concurrently. Preparation and lock waiting have a shared 10-minute deadline.
+run concurrently. Preparation and lock waiting share the resolved readiness budget
+(`health_check.max_attempts * health_check.interval_seconds`, 30 minutes by default).
+Recipe overrides and the cluster's `default_health_check` apply to this budget too,
+so cold imports on slow storage can use the same longer startup allowance.
 A failure names the launching step, image, nodes and log file, and stops the launch.
 This prevents concurrent first launches from attaching to a partially extracted image.
 Workers and frontends using the built-in Dynamo installer run with root remapping,

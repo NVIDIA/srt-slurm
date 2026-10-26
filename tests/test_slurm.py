@@ -191,14 +191,32 @@ def test_shared_container_prepares_all_worker_nodes_once() -> None:
     assert "--distribution=arbitrary" in first
     assert second[second.index("--nodelist") + 1] == "node-b"
     popen.return_value.communicate.assert_called_once()
-    assert 0 < popen.return_value.communicate.call_args.kwargs["timeout"] <= 600
+    assert 1770 < popen.return_value.communicate.call_args.kwargs["timeout"] <= 1800
+
+
+@pytest.mark.parametrize("budget", [45.0, 5400.0])
+def test_container_preparation_uses_the_supplied_startup_budget(budget) -> None:
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen", return_value=MagicMock(returncode=0)) as popen,
+    ):
+        start_srun_process(
+            ["server"],
+            container_image="/images/model.sqsh",
+            reuse_container=True,
+            nodelist=["node-a"],
+            container_prepare_timeout_seconds=budget,
+        )
+    timeout = popen.return_value.communicate.call_args.kwargs["timeout"]
+    assert budget - 1 < timeout <= budget
 
 
 @pytest.mark.parametrize("failure", ["exit", "timeout"])
 def test_shared_container_preparation_failure_has_context_and_blocks_further_launches(failure) -> None:
     failed = MagicMock(returncode=1, args=["srun", "true"])
     if failure == "timeout":
-        failed.communicate.side_effect = [subprocess.TimeoutExpired("srun", 600), (None, None)]
+        failed.communicate.side_effect = [subprocess.TimeoutExpired("srun", 1800), (None, None)]
     with (
         patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
         patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
@@ -222,8 +240,7 @@ def test_shared_container_preparation_failure_has_context_and_blocks_further_lau
     assert failed.kill.call_count == (1 if failure == "timeout" else 0)
 
 
-def test_shared_container_lock_wait_has_a_deadline(monkeypatch) -> None:
-    monkeypatch.setattr(slurm, "CONTAINER_PREPARE_TIMEOUT_SECONDS", 0.01)
+def test_shared_container_lock_wait_has_a_deadline() -> None:
     name = f"{shared_container_name('/images/model.sqsh', job_id='12345')}:no_exec"
     lock = threading.Lock()
     slurm._CONTAINER_PREPARE_LOCKS[(name, "node-a")] = lock
@@ -238,6 +255,7 @@ def test_shared_container_lock_wait_has_a_deadline(monkeypatch) -> None:
             export_env=None,
             het_group=None,
             step_name="worker",
+            timeout_seconds=0.01,
         )
     popen.assert_not_called()
 
@@ -530,6 +548,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         visible_devices_env="CUDA_VISIBLE_DEVICES",
         environment={},
         reuse_container=False,
+        container_prepare_timeout_seconds=1800.0,
         container_image=Path("/container.sqsh"),
         container_mounts={},
         container_log_dir=Path("/logs"),
@@ -605,6 +624,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         gpus_per_node=8,
         environment={},
         reuse_container=False,
+        container_prepare_timeout_seconds=1800.0,
         container_image=Path("/container.sqsh"),
         container_mounts={},
         container_log_dir=Path("/logs"),
@@ -1188,6 +1208,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         gpus_per_node=8,
         environment={},
         reuse_container=False,
+        container_prepare_timeout_seconds=1800.0,
         container_image=Path("/container.sqsh"),
         container_mounts={},
         container_log_dir=Path("/logs"),

@@ -222,6 +222,7 @@ class TRTLLMServeFrontend(Frontend):
             output=str(orch_log),
             container_image=str(runtime.container_image),
             reuse_container=runtime.reuse_container,
+            container_prepare_timeout_seconds=runtime.container_prepare_timeout_seconds,
             container_mounts=runtime.container_mounts,
             env_to_set=env_to_set if env_to_set else None,
             # trtllm-serve imports tensorrt_llm, which requires an MPI launcher even

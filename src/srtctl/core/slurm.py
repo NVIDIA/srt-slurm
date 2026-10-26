@@ -186,7 +186,7 @@ def get_node_ips(
 # never parses it, so an unsupporting cluster no-ops instead of failing the step.
 CONTAINER_REMAP_ROOT_EXPORT = {"ENROOT_REMAP_ROOT": "yes"}
 
-CONTAINER_PREPARE_TIMEOUT_SECONDS = 600.0
+DEFAULT_CONTAINER_PREPARE_TIMEOUT_SECONDS = 1800.0
 _CONTAINER_PREPARE_GUARD = threading.Lock()
 _CONTAINER_PREPARE_LOCKS: dict[tuple[str, str], LockType] = {}
 _PREPARED_CONTAINER_NODES: set[tuple[str, str]] = set()
@@ -212,10 +212,12 @@ def _prepare_shared_container(
     export_env: dict[str, str] | None,
     het_group: int | None,
     step_name: str | None,
+    timeout_seconds: float | None = None,
 ) -> None:
     """Prepare missing rootfs copies together; only overlapping names/nodes wait."""
     keys = [(name, node) for node in sorted(set(nodes or ("",)))]
-    deadline = time.monotonic() + CONTAINER_PREPARE_TIMEOUT_SECONDS
+    timeout = DEFAULT_CONTAINER_PREPARE_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
+    deadline = time.monotonic() + timeout
     with _CONTAINER_PREPARE_GUARD:
         locks = [_CONTAINER_PREPARE_LOCKS.setdefault(key, threading.Lock()) for key in keys]
     try:
@@ -331,6 +333,7 @@ def start_srun_process(
     container_mounts: dict[Path, Path] | None = None,
     reuse_container: bool = False,
     container_prepare_nodes: Sequence[str] | None = None,
+    container_prepare_timeout_seconds: float | None = None,
     env_to_pass_through: list[str] | None = None,
     env_to_set: dict[str, str] | None = None,
     env_to_unset: list[str] | None = None,
@@ -362,6 +365,8 @@ def start_srun_process(
         reuse_container: Reuse one named Pyxis rootfs per job/image/remap mode (default: False).
         container_prepare_nodes: Prepare this image on these nodes together before its first launch.
             Defaults to nodelist. Later launches reuse the completed preparation.
+        container_prepare_timeout_seconds: Combined preparation and lock-wait budget.
+            Job launches pass their resolved health-check budget; standalone callers default to 30 minutes.
         env_to_pass_through: Environment variable names to pass through
         env_to_set: Environment variables to set (name -> value)
         env_to_unset: Environment variable names to unset before the preamble and command
@@ -483,6 +488,7 @@ def start_srun_process(
             export_env=srun_export_env,
             het_group=het_group,
             step_name=step_name,
+            timeout_seconds=container_prepare_timeout_seconds,
         )
 
     if step_name:

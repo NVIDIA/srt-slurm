@@ -158,6 +158,7 @@ class TelemetryStageMixin:
                 output=str(chunk_log),
                 container_image=None if host_native else exporter_config.container_image,
                 reuse_container=self.runtime.reuse_container,
+                container_prepare_timeout_seconds=self.runtime.container_prepare_timeout_seconds,
                 container_mounts=None if host_native else self.runtime.container_mounts,
                 srun_options=self.runtime.srun_options,
                 het_group=het_group,

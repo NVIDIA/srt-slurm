@@ -160,6 +160,7 @@ class FrontendStageMixin:
             output=str(nginx_log),
             container_image=self.config.frontend.nginx_container,
             reuse_container=self.runtime.reuse_container,
+            container_prepare_timeout_seconds=self.runtime.container_prepare_timeout_seconds,
             container_mounts=self.runtime.container_mounts,
             use_bash_wrapper=False,  # Already wrapped in bash -c
             srun_options={

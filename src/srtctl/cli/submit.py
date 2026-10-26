@@ -618,7 +618,7 @@ def show_config_details(config: SrtConfig) -> None:
     if config.reuse_container:
         console.print(
             "[dim]reuse_container: true[/] --container-name=srtctl_<image hash>_<job id>:no_exec "
-            "[dim](shared per image and root-remap mode on each node)[/]"
+            "[dim](shared per image and root-remap mode on each node; preparation timeout follows health_check)[/]"
         )
     if config.srun_options:
         opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in config.srun_options.items())
