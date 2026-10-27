@@ -160,7 +160,7 @@ srun --jobid <job> --overlap -w <node> -N1 bash -c '
 Then watch:
 
 - the shadow's log (`<node>_agg_w0_e1.out`): `[Shadow] Lock acquired, waking engine`, then `[Shadow] Engine awake, registering with discovery` and `failover_state engine=1 -> active`;
-- the frontend's `/health`: the dead instance id disappears and a new one takes its place;
+- the frontend's `/health?instances=true`: the dead instance id disappears and a new one takes its place;
 - the sweep log: `Worker agg_0_<node> exited with code 137; relaunching agg_0 in 5s (restart 1/3)`, then `Relaunched agg_0 as agg_0_<node>_r1`;
 - engine 0's new log (`<node>_agg_w0.out`; the crash log moved to `<node>_agg_w0.out.1`): `Connected with rw_or_ro lock (granted=ro)` and `Read mode: imported 1.18 GiB` (weights imported from GMS, no load from disk), then `[Shadow] Engine sleeping, startup probe now passing, waiting for lock`. The roles have swapped.
 

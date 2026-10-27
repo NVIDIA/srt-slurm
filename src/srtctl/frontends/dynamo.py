@@ -99,7 +99,7 @@ class DynamoFrontend(DynamicFrontend):
     """Dynamo frontend implementation.
 
     Uses dynamo.frontend module with NATS/etcd for worker discovery.
-    Health checks via /health endpoint. The dynamo.* recipe rules (sidecar,
+    Health checks via /health?instances=true. The dynamo.* recipe rules (sidecar,
     failover, worker_selection) are dynamo-config validations and stay in the
     schema.
     """
@@ -169,6 +169,11 @@ class DynamoFrontend(DynamicFrontend):
                 )
             )
         return implied
+
+    @property
+    def health_endpoint(self) -> str:
+        """/health lists instances only on request since ai-dynamo/dynamo#16454; older releases ignore the query."""
+        return "/health?instances=true"
 
     def parse_health(
         self,

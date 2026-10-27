@@ -280,9 +280,9 @@ class TestFrontendProperties:
         assert frontend.type == "vllm"
 
     def test_dynamo_health_endpoint(self):
-        """DynamoFrontend uses /health endpoint."""
+        """DynamoFrontend asks /health for its instance list."""
         frontend = DynamoFrontend()
-        assert frontend.health_endpoint == "/health"
+        assert frontend.health_endpoint == "/health?instances=true"
 
     def test_sglang_health_endpoint(self):
         """SGLangFrontend uses /workers endpoint."""
