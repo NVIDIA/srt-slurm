@@ -281,9 +281,30 @@ class TestFrontendProperties:
         assert frontend.type == "vllm"
 
     def test_dynamo_health_endpoint(self):
-        """DynamoFrontend uses /health endpoint."""
+        """DynamoFrontend asks /health for its instance list (status-only by default since ai-dynamo/dynamo#16454)."""
         frontend = DynamoFrontend()
-        assert frontend.health_endpoint == "/health"
+        assert frontend.health_endpoint == "/health?instances=true"
+
+    def test_dynamo_probe_requests_instance_list(self, monkeypatch):
+        """probe_ready GETs /health?instances=true and counts the listed generate instances."""
+        requested: list[str] = []
+
+        def fake_get(url, timeout):
+            requested.append(url)
+            body = {
+                "status": "healthy",
+                "stage": "ready",
+                "instances": [
+                    {"component": "prefill", "endpoint": "generate"},
+                    {"component": "tensorrt_llm", "endpoint": "generate"},
+                ],
+            }
+            return SimpleNamespace(status_code=200, json=lambda: body)
+
+        monkeypatch.setattr("srtctl.core.health.requests.get", fake_get)
+        result = DynamoFrontend().probe_ready("node0", 8000, 1, 1, config=None)
+        assert requested == ["http://node0:8000/health?instances=true"]
+        assert result.ready
 
     @staticmethod
     def _probe_dynamo(bodies: dict[str, tuple[int, dict]]) -> tuple[list[str], WorkerHealthResult]:

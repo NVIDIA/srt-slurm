@@ -102,7 +102,7 @@ class DynamoFrontend(DynamicFrontend):
     """Dynamo frontend implementation.
 
     Uses dynamo.frontend module with NATS/etcd for worker discovery.
-    Health checks via /health endpoint. The dynamo.* recipe rules (sidecar,
+    Health checks via /health?instances=true. The dynamo.* recipe rules (sidecar,
     failover, worker_selection) are dynamo-config validations and stay in the
     schema.
     """
@@ -110,6 +110,15 @@ class DynamoFrontend(DynamicFrontend):
     type: ClassVar[str] = "dynamo"
     # dynamo.<engine> workers register over the request plane; they bind no OpenAI port.
     worker_launch: ClassVar[Literal["dynamo", "direct"]] = "dynamo"
+
+    @property
+    def health_endpoint(self) -> str:
+        """Dynamo lists registered instances in /health only on request since ai-dynamo/dynamo#16454 (a789babbe3).
+
+        Without the query, newer frontends answer ``{"status": "healthy", "stage": "ready"}``; older
+        frontends ignore the query and always list instances.
+        """
+        return "/health?instances=true"
 
     def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:
         """Every rank runs the Dynamo system status server (health, metrics) on its system port.

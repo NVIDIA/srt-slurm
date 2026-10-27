@@ -1,0 +1,304 @@
+schema: 2
+name: disagg-gb300-1p1d-tep4-tep16-c8-b1-mnt7-mtp6-kvoffload
+model:
+  path: /lustre/fsw/coreai_comparch_inferencex/rihuo/Qwen3.5-397B-A17B-NVFP4-V2
+  container: /lustre/fsw/coreai_comparch_inferencex/rihuo/tensorrt-llm-release-feat-qwen3.5-opt-1.4.0a0.dev202610281318.sqsh
+  precision: nvfp4
+identity:
+  model:
+    repo: nvidia/Qwen3.5-397B-A17B-NVFP4-V2
+  container:
+    image: /lustre/fsw/coreai_comparch_inferencex/rihuo/tensorrt-llm-release-feat-qwen3.5-opt-1.4.0a0.dev202610281318.sqsh
+  frameworks:
+    tensorrt_llm: 1.4.0a0.dev202610281318
+slurm:
+  time_limit: 04:00:00
+extra_mount:
+- /lustre:/lustre
+health_check:
+  max_attempts: 540
+  interval_seconds: 10
+resources:
+  gpu_type: gb300
+  gpus_per_node: 4
+  het_jobs: false
+engine:
+  type: trtllm
+  numa_cpu_bind: true
+  numa_memory_bind: preferred
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 4
+    env:
+      TLLM_LOG_LEVEL: INFO
+      TRTLLM_SERVER_DISABLE_GC: '1'
+      TRTLLM_WORKER_DISABLE_GC: '1'
+      NCCL_GRAPH_MIXING_SUPPORT: '0'
+      MIMALLOC_ARENA_RESERVE: '0'
+      OMP_NUM_THREADS: '1'
+      TLLM_NUMA_AWARE_WORKER_AFFINITY: '1'
+      MPI_UCX_TLS: rc,ud,sm,self
+      MPI_UCX_NET_DEVICES: mlx5_0:1,mlx5_2:1
+      OMPI_MCA_coll: ^ucc,hcoll
+      UCX_CUDA_IPC_MAX_POLL: inf
+      UCX_CUDA_COPY_MAX_POLL: inf
+      UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
+      TRTLLM_Q35_MTP_MOE_QUANT_MAX_M: '0'
+      TRTLLM_INCREMENTAL_TOKENIZE: '1'
+      TRTLLM_INCREMENTAL_TOKENIZE_VERIFY_EVERY: '50'
+      TRTLLM_ENABLE_PDL: '1'
+      TRTLLM_KV_TRANSFER_NUM_THREADS: '8'
+      TRTLLM_Q35_PROFILE: ctx
+      TRTLLM_MAMBA_INFORWARD_SNAPSHOT: '1'
+      TRTLLM_FRONTEND_AFFINITY_PORT_STRIDE: '10'
+      TRTLLM_CTX_SCHED_SRPT: '1'
+      TRTLLM_EMBED_COMPILE_ONCE: '1'
+      TRTLLM_PREFILL_BCG: '1'
+      CUDA_SCALE_LAUNCH_QUEUES: 4x
+      TRTLLM_SKIP_KV_CACHE_ESTIMATION: '1'
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      TRTLLM_PINNED_WEIGHT_STAGING: '1'
+      MIMALLOC_PURGE_DELAY: ''
+      TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS: '3.80'
+    args:
+      allreduce_strategy: TWOSHOT
+      attention_dp_config:
+        kv_cache_routing_conversation_affinity: true
+      cache_transceiver_config:
+        backend: NIXL
+        kv_transfer_sender_future_timeout_ms: 20
+        kv_transfer_timeout_ms: 600000
+        transceiver_runtime: PYTHON
+      cuda_graph_config: null
+      disable_mm_encoder: true
+      disable_overlap_scheduler: false
+      enable_attention_dp: false
+      enable_chunked_prefill: true
+      enable_iter_perf_stats: true
+      enable_iter_req_stats: false
+      iter_perf_stats_interval: 40
+      kv_cache_config:
+        block_reuse_config:
+          max_num_turns: 3
+          policy: per_conversation
+        dtype: fp8
+        enable_block_reuse: true
+        event_buffer_max_size: 0
+        free_gpu_memory_fraction: 0.8
+        host_cache_size: 137438953472
+        iteration_stats_interval: 40
+        mamba_state_config:
+          additional_snapshot_offsets_from_end:
+          - 2
+          enable_branch_snapshot: true
+          periodic_snapshot_interval: 0
+        pool_ratio:
+        - 0.2
+        - 0.8
+        tokens_per_block: 64
+        use_kv_cache_manager_v2: true
+      max_batch_size: 64
+      max_num_tokens: 16384
+      max_seq_len: 262144
+      moe_config:
+        backend: CUTEDSL
+      moe_expert_parallel_size: 4
+      num_serve_frontends: 8
+      nvfp4_gemm_config:
+        allowed_backends:
+        - cutlass
+        - cublaslt
+        - cutedsl
+        - cuda_core
+      perf_metrics_max_requests: 100000
+      pipeline_parallel_size: 1
+      print_iter_log: true
+      return_perf_metrics: true
+      scheduler_config:
+        capacity_scheduler_policy: MAX_UTILIZATION
+      speculative_config:
+        decoding_type: MTP
+        max_draft_len: 1
+      tensor_parallel_size: 4
+      torch_compile_config:
+        capture_num_tokens:
+        - 1
+        - 2
+        - 4
+        - 8
+        - 16
+        - 32
+        - 64
+        - 128
+        - 256
+        - 384
+        - 512
+        - 768
+        - 1024
+        - 1536
+        - 2048
+        - 2560
+        - 3072
+        - 3584
+        - 4096
+        - 4608
+        - 5120
+        - 5632
+        - 6144
+        - 6656
+        - 7168
+        - 7680
+        - 8192
+        - 10240
+        - 12288
+        - 14336
+        - 16384
+        enable_fullgraph: true
+        enable_piecewise_cuda_graph: true
+        enable_userbuffers: false
+      trust_remote_code: true
+  decode:
+    nodes: 4
+    workers: 1
+    gpus: 16
+    env:
+      TLLM_LOG_LEVEL: INFO
+      TRTLLM_SERVER_DISABLE_GC: '1'
+      TRTLLM_WORKER_DISABLE_GC: '1'
+      NCCL_GRAPH_MIXING_SUPPORT: '0'
+      MIMALLOC_ARENA_RESERVE: '0'
+      OMP_NUM_THREADS: '1'
+      TLLM_NUMA_AWARE_WORKER_AFFINITY: '1'
+      MPI_UCX_TLS: rc,ud,sm,self
+      MPI_UCX_NET_DEVICES: mlx5_0:1,mlx5_2:1
+      OMPI_MCA_coll: ^ucc,hcoll
+      UCX_CUDA_IPC_MAX_POLL: inf
+      UCX_CUDA_COPY_MAX_POLL: inf
+      UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
+      TRTLLM_Q35_MTP_MOE_QUANT_MAX_M: '0'
+      TRTLLM_INCREMENTAL_TOKENIZE: '1'
+      TRTLLM_INCREMENTAL_TOKENIZE_VERIFY_EVERY: '50'
+      TRTLLM_ENABLE_PDL: '1'
+      TRTLLM_KV_TRANSFER_NUM_THREADS: '8'
+      TRTLLM_Q35_PROFILE: gen
+      TRTLLM_DISAGG_GEN_KEEP_TRANSFER_WINDOW: '1'
+      TRTLLM_SPEC_SAMPLER_FUSED_STORE: '1'
+      TRTLLM_OVERLAP_LOOP_ON_EXECUTION_STREAM: '1'
+      TRTLLM_DISAGG_GEN_IDLE_POLL_SKIP: '1'
+      TRTLLM_DISAGG_GEN_EMIT_FIRST_STEP: '1'
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      TRTLLM_PINNED_WEIGHT_STAGING: '1'
+      MIMALLOC_PURGE_DELAY: ''
+      TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS: '3.80'
+    args:
+      cache_transceiver_config:
+        backend: NIXL
+        kv_transfer_sender_future_timeout_ms: 20
+        kv_transfer_timeout_ms: 600000
+        transceiver_runtime: PYTHON
+      cuda_graph_config:
+        batch_sizes:
+        - 1
+        enable_padding: true
+      disable_mm_encoder: true
+      enable_attention_dp: false
+      enable_iter_perf_stats: true
+      enable_iter_req_stats: false
+      enable_lm_head_tp_in_adp: false
+      iter_perf_stats_interval: 40
+      kv_cache_config:
+        avg_seq_len: 102150
+        dtype: fp8
+        enable_block_reuse: false
+        event_buffer_max_size: 0
+        free_gpu_memory_fraction: 0.85
+        host_cache_size: 137438953472
+        iteration_stats_interval: 40
+        tokens_per_block: 64
+        use_kv_cache_manager_v2: true
+      max_batch_size: 1
+      max_num_tokens: 7
+      max_seq_len: 262148
+      moe_config:
+        backend: TRTLLM
+        use_low_precision_moe_combine: true
+      moe_expert_parallel_size: 8
+      moe_tensor_parallel_size: 2
+      num_postprocess_workers: 4
+      num_serve_frontends: 4
+      nvfp4_gemm_config:
+        allowed_backends:
+        - cutlass
+        - cublaslt
+        - cutedsl
+        - cuda_core
+      perf_metrics_max_requests: 100000
+      pipeline_parallel_size: 1
+      print_iter_log: true
+      return_perf_metrics: true
+      scheduler_config:
+        capacity_scheduler_policy: GUARANTEED_NO_EVICT
+      speculative_config:
+        decoding_type: MTP
+        max_draft_len: 6
+      stream_interval: 20
+      tensor_parallel_size: 16
+      trust_remote_code: true
+frontend:
+  type: trtllm_serve
+  enable_multiple_frontends: false
+  ctx_router:
+    type: conversation
+  gen_router:
+    type: load_balancing
+  env:
+    TRTLLM_SERVER_DISABLE_GC: '1'
+    TRTLLM_DISAGG_CTX_FRONTEND_AFFINITY: '8:10'
+    TRTLLM_INCREMENTAL_TOKENIZE: '1'
+    TRTLLM_INCREMENTAL_TOKENIZE_VERIFY_EVERY: '50'
+  server_config_extra:
+    gen_strip_message_history: true
+    gen_tokids_ctxbytes: true
+    num_workers: 4
+    server_keep_alive_timeout: 3600
+    backend: pytorch
+  placement:
+    node: first_decode
+  args:
+    server_start_timeout: 7200
+    request_timeout: 7200
+benchmark:
+  type: custom
+  placement:
+    node: last_decode
+  env:
+    AIPERF_REF: file:///lustre/fsw/coreai_comparch_inferencex/rihuo/agentx-harness
+    AIPERF_DATASET_CONFIGURATION_TIMEOUT: '1800'
+    AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT: '1800'
+    AIPERF_DATASET_MMAP_CACHE_DIR: /lustre/fsw/coreai_comparch_inferencex/rihuo/aiperf_mmap_cache
+    AIPERF_REQUIRED_SERVER_METRIC_PREFIX: trtllm_kv_cache_utilization
+    HF_HUB_CACHE: /lustre/fsw/coreai_comparch_inferencex/rihuo/hf_cache
+    HF_HOME: /lustre/fsw/coreai_comparch_inferencex/rihuo/hf_cache
+  command: |
+    set -euo pipefail
+    AIPERF_VENV="${TMPDIR:-/tmp}/agentx-aiperf-${SLURM_JOB_ID:-$$}"
+    if [ ! -x "$AIPERF_VENV/bin/aiperf" ]; then
+      python3 -m venv "$AIPERF_VENV"
+      "$AIPERF_VENV/bin/pip" install -q --upgrade pip
+      "$AIPERF_VENV/bin/pip" install -q "aiperf @ $AIPERF_REF" "datasets>=4.7.0" "huggingface_hub[cli]>=0.25.0"
+    fi
+    mkdir -p /logs/agentic/concurrency_8
+    "$AIPERF_VENV/bin/aiperf" profile --scenario inferencex-agentx-mvp \
+      --url http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT --endpoint /v1/chat/completions --endpoint-type chat --streaming \
+      -m /model --tokenizer-trust-remote-code \
+      --public-dataset semianalysis_cc_traces_weka_062126_256k \
+      --max-context-length 1048576 \
+      --trajectory-start-min-ratio 0.25 --trajectory-start-max-ratio 0.75 \
+      --trace-idle-gap-cap-seconds 300 --warmup-requests-per-lane 10 \
+      --num-dataset-entries 393 --slice-duration 1.0 --stats-interval 30 \
+      --use-server-token-count --no-gpu-telemetry --random-seed 42 \
+      --failed-request-threshold 0.10 \
+      --benchmark-duration 3600 --concurrency 8 \
+      --output-artifact-dir /logs/agentic/concurrency_8 --ui simple --warmup-grace-period 1800
