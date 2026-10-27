@@ -440,7 +440,7 @@ flowchart TD
     end
     subgraph FRONTEND["Frontend layer"]
         frontend["Frontend (ABC)<br/>start_frontends(), probe_ready(), worker_launch"]
-        frontend_impls["DynamoFrontend: srun process, /health JSON, dynamo launch<br/>SGLangRouter: srun process, /workers JSON, direct launch<br/>TRTLLMServe: srun process, bare 200, direct launch<br/>VLLMFrontend: no process, /health + /v1/models, direct launch"]
+        frontend_impls["DynamoFrontend: srun process, /health instance listing, dynamo launch<br/>SGLangRouter: srun process, /workers JSON, direct launch<br/>TRTLLMServe: srun process, bare 200, direct launch<br/>VLLMFrontend: no process, /health + /v1/models, direct launch"]
     end
     subgraph INFRA["Infrastructure layer"]
         slurm["slurm.py<br/>start_srun_process(), get_slurm_nodelist(), get_hostname_ip()"]
@@ -512,7 +512,9 @@ sequenceDiagram
     Note over wait: counts from frontend.health_expectations(config, processes)
     loop until ready or timeout (the loop owns timing, abort, logging)
         wait->>fe: probe_ready(host, port, n_prefill, n_decode, config)
-        alt dynamo /health, routers /workers
+        alt dynamo /health, then /health?instances=true if status-only
+            Note over fe: DynamoFrontend.probe_ready, then parse_health
+        else routers /workers
             Note over fe: probe_json_health
         else trtllm-serve (bare 200)
             Note over fe: probe_http_ok

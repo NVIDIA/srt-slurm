@@ -179,7 +179,7 @@ class DynamoFrontend(DynamicFrontend):
         expected_prefill: int,
         expected_decode: int,
     ) -> WorkerHealthResult:
-        """Parse dynamo /health endpoint response."""
+        """Count the generate instances in a Dynamo /health instance listing (see ``probe_ready``)."""
         return check_dynamo_health(response_json, expected_prefill, expected_decode)
 
     def probe_ready(
