@@ -373,6 +373,21 @@ def resolve_local_model_mount(
     return model_path, Path("/model"), Path("/model")
 
 
+def parse_port_ranges(ranges: list[str]) -> tuple[tuple[int, int], ...]:
+    """Parse srtslurm.yaml ``reserved_port_ranges`` entries (``"LOW-HIGH"`` or a single port)."""
+    parsed: list[tuple[int, int]] = []
+    for entry in ranges:
+        low_text, _, high_text = str(entry).partition("-")
+        try:
+            low, high = int(low_text), int(high_text or low_text)
+        except ValueError:
+            raise ValueError(f"reserved_port_ranges entry {entry!r} is not LOW-HIGH") from None
+        if not 1 <= low <= high <= 65535:
+            raise ValueError(f"reserved_port_ranges entry {entry!r} must satisfy 1 <= LOW <= HIGH <= 65535")
+        parsed.append((low, high))
+    return tuple(parsed)
+
+
 @dataclass(frozen=True)
 class RuntimeContext:
     """Runtime context with all computed values.
@@ -433,6 +448,10 @@ class RuntimeContext:
     dynamo: "DynamoConfig | None" = None
     # srtslurm.yaml release_nodes_before_postprocess: shrink the job to the batch host before post-processing.
     release_nodes_before_postprocess: bool = False
+    # srtslurm.yaml port_registry_dir: where jobs sharing nodes record the ports they bind.
+    port_registry_dir: Path | None = None
+    # srtslurm.yaml reserved_port_ranges, parsed: inclusive (low, high) ranges no allocated port may use.
+    reserved_port_ranges: tuple[tuple[int, int], ...] = ()
 
     @property
     def container_log_dir(self) -> Path:
@@ -594,6 +613,9 @@ class RuntimeContext:
             config.health_check.max_attempts * config.health_check.interval_seconds
         )
         release_nodes_before_postprocess = bool(get_srtslurm_setting("release_nodes_before_postprocess", False))
+        registry_dir = get_srtslurm_setting("port_registry_dir")
+        port_registry_dir = Path(registry_dir) if registry_dir else None
+        reserved_port_ranges = parse_port_ranges(get_srtslurm_setting("reserved_port_ranges") or [])
         temp_context = cls(
             job_id=job_id,
             run_name=run_name,
@@ -618,6 +640,8 @@ class RuntimeContext:
             request_plane=config.dynamo.request_plane,
             dynamo=config.dynamo,
             release_nodes_before_postprocess=release_nodes_before_postprocess,
+            port_registry_dir=port_registry_dir,
+            reserved_port_ranges=reserved_port_ranges,
         )
 
         # Expand FormattablePath mounts
@@ -652,6 +676,8 @@ class RuntimeContext:
             request_plane=config.dynamo.request_plane,
             dynamo=config.dynamo,
             release_nodes_before_postprocess=release_nodes_before_postprocess,
+            port_registry_dir=port_registry_dir,
+            reserved_port_ranges=reserved_port_ranges,
         )
 
     @property
