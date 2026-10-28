@@ -420,6 +420,15 @@ class TestClusterDefaultFlowsIntoPowerTelemetry:
         config = SrtConfig.Schema().load(resolved)
         assert config.telemetry.dcgm_exporter is not None
 
+    def test_an_explicit_null_exporter_keeps_a_cpu_only_recipe(self):
+        resolved = resolve_config_with_defaults(
+            _recipe({"enabled": True, "dcgm_exporter": None, "cpu_power_exporter": {"port": 9405}}),
+            {"default_gpu_exporter": AMD_CLUSTER_EXPORTER},
+        )
+        config = SrtConfig.Schema().load(resolved)
+        assert config.telemetry.dcgm_exporter is None
+        assert config.telemetry.cpu_power_exporter.port == 9405
+
     def test_a_cluster_without_a_gpu_exporter_leaves_the_original_validation_error(self):
         resolved = resolve_config_with_defaults(_recipe({"enabled": True}), {"default_gpu_exporter": None})
         with pytest.raises(ValidationError, match="nothing to collect"):
