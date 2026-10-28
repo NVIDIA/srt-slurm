@@ -137,34 +137,63 @@ The exporter binary itself picks its source from its own `--source` flag:
   map) and `modules/sysmon/DcgmModuleSysmon.cpp` (field id → getter).
 - **`rapl`** — reads the x86 RAPL package energy counters through Linux
   powercap, for hosts with no ACPI power meter and no DCGM CPU entity, such as
-  the AMD EPYC hosts of MI300X, MI325X and MI355X nodes. AMD reuses the
-  `intel-rapl` names. The exporter takes every top-level zone
-  `/sys/class/powercap/intel-rapl:<n>` whose `name` is `package-<id>`, one per
-  socket, with `socket` set to `<id>`; subzones (`intel-rapl:<n>:<m>`, such as
-  `core`) are skipped. Every second it reads each `energy_uj` counter and
-  publishes the energy since the previous read divided by the elapsed
-  monotonic time, so each value is the average power over that interval. The
-  counter wraps to zero after `max_energy_range_uj`; the exporter adds the
-  range left before the wrap to the delta. Before it starts listening it
-  reads every counter twice, 200 ms apart, so the first scrape already has a
-  value. A failed read on any socket skips that whole poll, since a scrape
-  missing a socket would read as a lower node total. The exporter logs a
-  warning at the first failed poll, and the next successful read only sets a
-  new baseline: a delta corrects at most one counter wrap, and the counter can
-  wrap within minutes at full load. The skipped polls stay a gap in
-  `samples.csv`.
+  the AMD EPYC hosts of MI300X, MI325X and MI355X nodes. The kernel serves AMD
+  families 17h, 19h and 1Ah under the same `intel-rapl` names
+  ([intel_rapl_msr.c](https://github.com/torvalds/linux/blob/d135ab453a7400a34930bdda1ef4bdc8acfac80e/drivers/powercap/intel_rapl_msr.c#L482-L484)). The exporter takes
+  every top-level zone `/sys/class/powercap/intel-rapl:<n>` whose `name` is
+  `package-<id>`, one per socket, with `socket` set to `<id>`; subzones
+  (`intel-rapl:<n>:<m>`, such as `core`) are skipped. Intel Cascade Lake-AP
+  (Xeon 9200) is unsupported: it is the only MSR platform with per-die zones
+  ([intel_rapl_common.c](https://github.com/torvalds/linux/blob/d135ab453a7400a34930bdda1ef4bdc8acfac80e/drivers/powercap/intel_rapl_common.c#L1719-L1729)), named
+  `package-<id>-die-<m>` ([intel_rapl_common.c](https://github.com/torvalds/linux/blob/d135ab453a7400a34930bdda1ef4bdc8acfac80e/drivers/powercap/intel_rapl_common.c#L1788-L1793)),
+  so the exporter finds no package zone and exits at startup.
 
-  `energy_uj` is readable only by root by default (Linux restricted it after
-  CVE-2020-8694), and the exporter runs as the job's user. A cluster admin
-  must grant that user read access to these files. Without it,
-  `--source rapl` fails at startup with an error that names the file; it
-  also fails at startup when no package zone exists.
+  Every second it reads each `energy_uj` counter and publishes the energy
+  since the previous read divided by the elapsed monotonic time, so each value
+  is the average power over that interval. The counter wraps to zero after
+  `max_energy_range_uj`; the exporter adds the range left before the wrap to
+  the delta. Before it starts listening it reads every counter twice, 200 ms
+  apart, so the first scrape already has a value. A failed read on any socket
+  skips that whole poll, since a scrape missing a socket would read as a lower
+  node total. The exporter logs a warning at the first failed poll, and the
+  next successful read only sets a new baseline: the counter is 32 bits
+  ([intel_rapl_common.c](https://github.com/torvalds/linux/blob/d135ab453a7400a34930bdda1ef4bdc8acfac80e/drivers/powercap/intel_rapl_common.c#L33-L36)) and can wrap within
+  minutes at full load, so a delta across a long gap could hide a second wrap.
+  The skipped polls stay a gap in `samples.csv`.
 
-  A package domain is the socket's package power. On AMD EPYC it excludes
-  DIMM (DRAM) power, while Grace's `total` envelope includes its LPDDR5X
-  memory. RAPL readings therefore carry their own rail kind, `package`
-  (sensor `CPU<n>:packagePowerUsageW`), so consumers can tell the two
-  boundaries apart. `power_w` is the socket's package power and
+  `energy_uj` is readable only by root by default
+  ([powercap_sys.c](https://github.com/torvalds/linux/blob/d135ab453a7400a34930bdda1ef4bdc8acfac80e/drivers/powercap/powercap_sys.c#L367-L371)), a restriction Linux added
+  for CVE-2020-8694
+  ([949dd010](https://github.com/torvalds/linux/commit/949dd0104c496fa7c14991a23c03c62e44637e71)),
+  because the counter is a power side channel. The exporter runs as the job's
+  user, so that user needs read access. With passwordless sudo on the nodes, a
+  `host_setup` block (or the cluster's `default_host_setup`) can grant it for
+  the job and restore root ownership afterwards:
+
+  <!-- docs-yaml: skip -->
+  ```yaml
+  host_setup:
+    commands:
+      - sudo -n chown "$(id -un)" /sys/class/powercap/intel-rapl:*/energy_uj
+    teardown:
+      - sudo -n chown root /sys/class/powercap/intel-rapl:*/energy_uj
+  ```
+
+  While the grant is in place, that user can read the side channel the
+  CVE fix closed. Without access, `--source rapl` fails at startup with an
+  error that names the file; it also fails at startup when no package zone
+  exists. A checkout whose `make setup` installed an older binary keeps it,
+  and that binary rejects `--source rapl`: delete `bin/cpu-power-exporter`
+  and rerun `make setup`.
+
+  A package domain is the socket's package power, a different boundary from
+  Grace's `total` envelope, which includes its LPDDR5X memory. The kernel
+  defines only package and core counters for AMD, with no DRAM domain
+  ([intel_rapl_msr.c](https://github.com/torvalds/linux/blob/d135ab453a7400a34930bdda1ef4bdc8acfac80e/drivers/powercap/intel_rapl_msr.c#L119-L123)), and whether AMD
+  package power covers any memory is undocumented. RAPL readings therefore
+  carry their own rail kind, `package` (sensor `CPU<n>:packagePowerUsageW`),
+  and the energy report warns that a RAPL run is not comparable with
+  ACPI-mode runs. `power_w` is the socket's package power and
   `total_power_w` sums the sockets.
 - **`auto`** (default) — walks a fixed ladder at startup, most informative
   source first, and each source must prove itself before it is used. Every
