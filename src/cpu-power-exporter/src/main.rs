@@ -207,8 +207,8 @@ struct RaplZone {
     max_energy_range_uj: u64,
     socket: String,
     labels: String,
-    last_uj: u64,
-    last_at: Instant,
+    /// The previous counter read, or None after a failed poll.
+    last: Option<(u64, Instant)>,
 }
 
 #[derive(Clone)]
@@ -585,8 +585,7 @@ fn open_rapl_zones(powercap_root: &Path, now: Instant) -> Result<Vec<RaplZone>> 
             labels: format!("sensor=\"{id}\",type=\"package\",socket=\"{socket}\""),
             socket,
             energy_path,
-            last_uj,
-            last_at: now,
+            last: Some((last_uj, now)),
         });
     }
     Ok(zones)
@@ -601,21 +600,31 @@ fn build_metrics_rapl(zones: &mut [RaplZone], now: Instant) -> String {
     let readings = match readings {
         Ok(readings) => readings,
         // A scrape missing one socket would pass for a lower node total, so the
-        // whole poll is a gap. Baselines stay; the next value spans the gap.
+        // whole poll is a gap. A delta corrects at most one wrap, and the counter
+        // can wrap within minutes, so the next read starts a new interval rather
+        // than spanning the gap.
         Err(e) => {
-            tracing::debug!(error = %e, "unreadable RAPL counter; skipping this poll");
+            if zones.iter().any(|z| z.last.is_some()) {
+                tracing::warn!(error = %e, "unreadable RAPL counter; skipping polls until it reads again");
+            } else {
+                tracing::debug!(error = %e, "RAPL counter still unreadable");
+            }
+            for zone in zones.iter_mut() {
+                zone.last = None;
+            }
             return out;
         }
     };
     for (zone, energy_uj) in zones.iter_mut().zip(readings) {
-        let delta_uj = if energy_uj >= zone.last_uj {
-            energy_uj - zone.last_uj
-        } else {
-            zone.max_energy_range_uj.saturating_sub(zone.last_uj) + energy_uj
+        let Some((last_uj, last_at)) = zone.last.replace((energy_uj, now)) else {
+            continue;
         };
-        let watts = delta_uj as f64 / 1_000_000.0 / (now - zone.last_at).as_secs_f64();
-        zone.last_uj = energy_uj;
-        zone.last_at = now;
+        let delta_uj = if energy_uj >= last_uj {
+            energy_uj - last_uj
+        } else {
+            zone.max_energy_range_uj.saturating_sub(last_uj) + energy_uj
+        };
+        let watts = delta_uj as f64 / 1_000_000.0 / (now - last_at).as_secs_f64();
         let _ = writeln!(
             out,
             "cpu_power_rapl_watts{{{},source=\"rapl\"}} {watts:.6}",
@@ -1772,14 +1781,24 @@ mod tests {
         let gap = build_metrics_rapl(&mut zones, t0 + Duration::from_secs(1));
         assert!(!gap.contains("cpu_power_rapl_watts{"), "{gap}");
 
+        // The first read after a gap only re-baselines: a delta across the gap
+        // could hide a second counter wrap.
         fs::write(&socket1, "300000000\n").unwrap();
-        let after = build_metrics_rapl(&mut zones, t0 + Duration::from_secs(2));
+        let rebaseline = build_metrics_rapl(&mut zones, t0 + Duration::from_secs(2));
         assert!(
-            after.contains(&rapl_line("intel-rapl:0", "0", "50.000000")),
+            !rebaseline.contains("cpu_power_rapl_watts{"),
+            "{rebaseline}"
+        );
+
+        fs::write(&socket0, "150000000\n").unwrap();
+        fs::write(&socket1, "500000000\n").unwrap();
+        let after = build_metrics_rapl(&mut zones, t0 + Duration::from_secs(4));
+        assert!(
+            after.contains(&rapl_line("intel-rapl:0", "0", "25.000000")),
             "{after}"
         );
         assert!(
-            after.contains(&rapl_line("intel-rapl:1", "1", "150.000000")),
+            after.contains(&rapl_line("intel-rapl:1", "1", "100.000000")),
             "{after}"
         );
     }

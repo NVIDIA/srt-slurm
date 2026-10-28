@@ -148,8 +148,11 @@ The exporter binary itself picks its source from its own `--source` flag:
   range left before the wrap to the delta. Before it starts listening it
   reads every counter twice, 200 ms apart, so the first scrape already has a
   value. A failed read on any socket skips that whole poll, since a scrape
-  missing a socket would read as a lower node total; the next values average
-  over the gap.
+  missing a socket would read as a lower node total. The exporter logs a
+  warning at the first failed poll, and the next successful read only sets a
+  new baseline: a delta corrects at most one counter wrap, and the counter can
+  wrap within minutes at full load. The skipped polls stay a gap in
+  `samples.csv`.
 
   `energy_uj` is readable only by root by default (Linux restricted it after
   CVE-2020-8694), and the exporter runs as the job's user. A cluster admin
