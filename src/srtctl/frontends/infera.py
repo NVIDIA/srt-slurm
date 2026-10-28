@@ -6,10 +6,12 @@
 Each worker is ``python3 -m infera.engine.sglang``: it starts SGLang's own
 server (``sglang.launch_server``) on the allocated HTTP port with the flags the
 SGLang backend builds, then registers the worker's URL, role, bootstrap address,
-DP size and KV-events endpoint under an etcd prefix. ``infera-router`` watches
-that prefix and routes over HTTP, reading KV events straight from SGLang's ZMQ
-publishers. The worker is therefore a direct worker (the engine's own server);
-the frontend is dynamic because the router learns its workers from etcd.
+DP size and KV-events endpoint under an etcd prefix. ``infera-router`` (the
+Rust data plane, started through ``python3 -m infera.server --router-backend
+rust``) watches that prefix and routes over HTTP, reading KV events straight
+from SGLang's ZMQ publishers. The worker is therefore a direct worker (the
+engine's own server); the frontend is dynamic because the router learns its
+workers from etcd.
 """
 
 from __future__ import annotations
@@ -38,7 +40,15 @@ logger = logging.getLogger(__name__)
 
 # Both sides speak HTTP and ZMQ only, so no NATS service is implied.
 ROUTER_MANAGED_ARGS = frozenset(
-    {"host", "port", "discovery-backend", "etcd-endpoint", "request-transport", "kv-event-transport"}
+    {
+        "router-backend",
+        "host",
+        "port",
+        "discovery-backend",
+        "etcd-endpoint",
+        "request-transport",
+        "kv-event-transport",
+    }
 )
 _ROLE_BY_DISAGG_MODE = {"prefill": "prefill", "decode": "decode", "mixed": "decode"}
 # Infera's registering launcher for each engine this frontend pairs with.
@@ -159,8 +169,19 @@ class InferaFrontend(DynamicFrontend):
         )
 
     def build_router_command(self, port: int, runtime: RuntimeContext, config: Any) -> list[str]:
+        """Infera's launcher execs the Rust data plane after resolving a Hugging Face id to a local tokenizer.
+
+        kv-aware routing hashes prompts with the served model's tokenizer, so it
+        defaults to the checkpoint the workers load.
+        """
+        args = dict(config.frontend.args or {})
+        args.setdefault("router-tokenizer-path", runtime.worker_model_arg)
         return [
-            "infera-router",
+            "python3",
+            "-m",
+            "infera.server",
+            "--router-backend",
+            "rust",
             "--host",
             "0.0.0.0",
             "--port",
@@ -173,7 +194,7 @@ class InferaFrontend(DynamicFrontend):
             "http",
             "--kv-event-transport",
             "zmq",
-            *self.get_frontend_args_list(config.frontend.args),
+            *self.get_frontend_args_list(args),
         ]
 
     def start_process(self, **kwargs: Any) -> Any:
@@ -195,7 +216,7 @@ class InferaFrontend(DynamicFrontend):
         for idx, node in enumerate(topology.frontend_nodes):
             log_file = runtime.log_dir / f"{node}_infera_router_{idx}.out"
             cmd = numactl_prefix(config) + self.build_router_command(topology.frontend_port, runtime, config)
-            logger.info("Starting infera-router %d on %s: %s", idx, node, shlex.join(cmd))
+            logger.info("Starting infera router %d on %s: %s", idx, node, shlex.join(cmd))
 
             env = dict(runtime.environment)
             env.update(config.frontend.env or {})

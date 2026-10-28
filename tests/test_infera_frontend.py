@@ -175,7 +175,7 @@ def test_router_runs_with_srtctl_discovery_flags_and_the_recipe_args() -> None:
     runtime = _runtime()
     config = SimpleNamespace(
         frontend=SimpleNamespace(
-            args={"router-policy": "kv-aware", "kv-tokenizer-path": "/model"},
+            args={"router-policy": "kv-aware", "session-affinity": "prefill"},
             env={"RUST_LOG": "info"},
             numa_bind=False,
             container_image=None,
@@ -190,7 +190,11 @@ def test_router_runs_with_srtctl_discovery_flags_and_the_recipe_args() -> None:
     assert [process.name for process in processes] == ["infera_router_0"]
     kwargs = start.call_args.kwargs
     assert kwargs["command"] == [
-        "infera-router",
+        "python3",
+        "-m",
+        "infera.server",
+        "--router-backend",
+        "rust",
         "--host",
         "0.0.0.0",
         "--port",
@@ -205,8 +209,17 @@ def test_router_runs_with_srtctl_discovery_flags_and_the_recipe_args() -> None:
         "zmq",
         "--router-policy",
         "kv-aware",
-        "--kv-tokenizer-path",
+        "--session-affinity",
+        "prefill",
+        "--router-tokenizer-path",
         "/model",
     ]
     assert kwargs["env_to_set"] == {"GLOBAL": "1", "RUST_LOG": "info"}
     assert "install-infera.sh" in kwargs["bash_preamble"]
+
+
+def test_a_recipe_tokenizer_path_wins_over_the_served_checkpoint() -> None:
+    config = SimpleNamespace(frontend=SimpleNamespace(args={"router-tokenizer-path": "/tok"}))
+    cmd = InferaFrontend().build_router_command(8000, _runtime(), config)
+    assert cmd.count("--router-tokenizer-path") == 1
+    assert cmd[cmd.index("--router-tokenizer-path") + 1] == "/tok"

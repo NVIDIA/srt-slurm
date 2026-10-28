@@ -33,7 +33,6 @@ frontend:
   enable_multiple_frontends: false
   args:
     router-policy: "kv-aware"
-    kv-tokenizer-path: "/model"
 
 engine: sglang
 roles:

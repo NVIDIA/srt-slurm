@@ -77,7 +77,7 @@ env_to_set:
 bash_preamble: |
     setup_script=install-infera.sh && script_path="/configs/${setup_script}" && patch_script_path="/configs/patches/${setup_script}" && echo "Running setup script: ${script_path} (fallback ${patch_script_path})" && if [ -f "${script_path}" ]; then bash "${script_path}"; elif [ -f "${patch_script_path}" ]; then bash "${patch_script_path}"; else echo "WARNING: ${script_path} or ${patch_script_path} not found"; fi
 command: |
-    infera-router --host 0.0.0.0 --port 8000 --discovery-backend etcd --etcd-endpoint http://127.0.0.1:2379 --request-transport http --kv-event-transport zmq --router-policy kv-aware --kv-tokenizer-path /model
+    python3 -m infera.server --router-backend rust --host 0.0.0.0 --port 8000 --discovery-backend etcd --etcd-endpoint http://127.0.0.1:2379 --request-transport http --kv-event-transport zmq --router-policy kv-aware --router-tokenizer-path /model
 
 ## service_dcgm-exporter_node-01
 nodelist: node-01
