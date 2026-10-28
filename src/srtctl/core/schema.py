@@ -2198,6 +2198,12 @@ TRTLLM_ENGINE_DEFAULTS: dict[str, bool] = {
 # path is reachable from every node without any extra recipe wiring.
 _DYNAMO_CACHE_ROOT = "/configs/dynamo-wheels"
 
+# Dynamo's release wheels are built with ``--features ...,nvtx``
+# (container/templates/wheel_builder.Dockerfile); without it the frontend emits no
+# Rust NVTX ranges whatever DYN_NVTX says. Revisions whose bindings predate the
+# feature build without it. Run from lib/bindings/python/.
+_MATURIN_BUILD = "maturin build --release $(grep -q '^nvtx *=' Cargo.toml && echo --features nvtx) -o /tmp"
+
 
 def dynamo_source_cache_key(dynamo_hash: str, cargo_patches: list[str] | None = None) -> str:
     """Return the cache key shared by Slurm and direct source builds.
@@ -2206,7 +2212,8 @@ def dynamo_source_cache_key(dynamo_hash: str, cargo_patches: list[str] | None = 
     could not pin it) is sanitized into a directory name; such a key can go
     stale as the ref moves, which is why apply pins refs to SHAs up front.
     """
-    key = dynamo_hash.strip().replace("/", "-")
+    # The suffix versions the build recipe: wheels cached before NVTX was enabled are rebuilt.
+    key = dynamo_hash.strip().replace("/", "-") + "-nvtx"
     if not cargo_patches:
         return key
     # Version the build recipe so a patching change invalidates old artifacts
@@ -2305,7 +2312,7 @@ def _hash_cached_source_install(
         f"cd lib/bindings/python/ && "
         f'export RUSTFLAGS="${{RUSTFLAGS:-}} -C target-cpu=native --cfg tokio_unstable" && '
         f"rm -f /tmp/ai_dynamo_runtime*.whl && "
-        f"maturin build --release -o /tmp && "
+        f"{_MATURIN_BUILD} && "
         # Populate cache atomically: copy artifacts first, touch .complete last.
         f"mkdir -p {cache} && "
         f"cp /tmp/ai_dynamo_runtime*.whl {cache}/ && "
@@ -2346,7 +2353,7 @@ def _live_source_install_for_top_of_tree() -> str:
         "cd dynamo && "
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
-        "maturin build --release -o /tmp && "
+        f"{_MATURIN_BUILD} && "
         "pip install /tmp/ai_dynamo_runtime*.whl && "
         "cd /sgl-workspace/dynamo/ && "
         "pip install -e . && "
@@ -2367,7 +2374,7 @@ def _live_source_install_for_top_of_tree() -> str:
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
         "rm -f /tmp/ai_dynamo_runtime*.whl && "
-        "maturin build --release -o /tmp && "
+        f"{_MATURIN_BUILD} && "
         "pip install --break-system-packages /tmp/ai_dynamo_runtime*.whl --force-reinstall && "
         "cd /tmp/dynamo_build/dynamo/ && "
         "pip install --break-system-packages -e . && "
