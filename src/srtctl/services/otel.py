@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
@@ -69,6 +71,15 @@ class OtelCollectorService(ServiceKind):
 
     def host_native(self, service: ServiceConfig) -> bool:
         return True
+
+    def setup_problem(self, service: ServiceConfig, srtctl_source: Path) -> str | None:
+        binary = Path(str(service.options.get("binary", DEFAULT_OTEL_BINARY)))
+        path = binary if binary.is_absolute() else srtctl_source / binary
+        if path.is_file() and os.access(path, os.X_OK):
+            return None
+        return (
+            f"{binary} (OTel collector for Dynamo lifecycle tracing; make otel-collector-download ARCH=<compute_arch>)"
+        )
 
     def prepare(self, service: ServiceConfig, runtime: RuntimeContext, config: SrtConfig) -> None:
         binary = str(service.options.get("binary", DEFAULT_OTEL_BINARY))

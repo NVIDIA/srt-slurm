@@ -960,8 +960,9 @@ def _tachometer_scraper_problem(srtctl_source: Path) -> str | None:
 def validate_setup(srtctl_source: Path, config: SrtConfig | None = None) -> None:
     """Validate that make setup has been run and required binaries exist.
 
-    Checks for NATS, etcd, Tachometer, and compute-arch uv binaries. Raises SystemExit
-    with a clear error message if anything is missing.
+    Checks for NATS, etcd, Tachometer, and compute-arch uv binaries, plus what each
+    service the job runs needs from ``make setup`` (the OTel collector of a Dynamo
+    frontend). Raises SystemExit with a clear error message if anything is missing.
 
     cpu-power-exporter is only required by recipes that configure
     telemetry.cpu_power_exporter; every other recipe submits without it.
@@ -989,6 +990,17 @@ def validate_setup(srtctl_source: Path, config: SrtConfig | None = None) -> None
     scraper_problem = _tachometer_scraper_problem(srtctl_source)
     if scraper_problem is not None and config is not None and config.observability.enabled:
         missing.append(scraper_problem)
+    if config is not None:
+        from srtctl.services import get_service_kind
+        from srtctl.services.implicit import effective_services
+
+        for entry in effective_services(config):
+            if entry.service.external:
+                continue
+            if (
+                problem := get_service_kind(entry.service.type).setup_problem(entry.service, srtctl_source)
+            ) is not None:
+                missing.append(problem)
 
     if missing:
         console.print(f"\n[red bold]ERROR:[/] Required binaries not found in {srtctl_source}:")

@@ -94,11 +94,35 @@ def test_old_tachometer_scraper_is_detected(tmp_path):
     assert submit._tachometer_scraper_problem(tmp_path) is None
 
 
+def setup_tree(root: Path, collector: bool = True) -> None:
+    """What make setup installs; the OTel collector is left out on request."""
+    names = ["configs/nats-server", "configs/etcd", "configs/process-exporter", "bin/uv"]
+    if collector:
+        names.append("configs/otelcol-contrib")
+    for name in names:
+        (root / name).parent.mkdir(exist_ok=True)
+        executable(root / name)
+    executable(root / "bin" / "tachometer-scraper", b"timestamp_ns")
+
+
 def test_validate_setup_stops_on_unusable_nsys(cluster, tmp_path):
-    for name in ("configs/nats-server", "configs/etcd", "configs/process-exporter", "bin/uv"):
-        (tmp_path / name).parent.mkdir(exist_ok=True)
-        executable(tmp_path / name)
-    executable(tmp_path / "bin" / "tachometer-scraper", b"timestamp_ns")
+    setup_tree(tmp_path)
     cluster["nsys_binary"] = str(tmp_path / "absent-nsys")
     with pytest.raises(SystemExit):
         submit.validate_setup(tmp_path, _make_config({**OBSERVED, "engine": "vllm"}))
+
+
+def test_dynamo_frontend_needs_the_otel_collector_before_the_allocation(cluster, tmp_path, capsys):
+    setup_tree(tmp_path, collector=False)
+    config = _make_config({"frontend": {"type": "dynamo"}})
+    with pytest.raises(SystemExit):
+        submit.validate_setup(tmp_path, config)
+    assert "otel-collector-download" in capsys.readouterr().out
+    executable(tmp_path / "configs" / "otelcol-contrib")
+    submit.validate_setup(tmp_path, config)
+
+
+def test_disabled_otel_collector_needs_no_binary(cluster, tmp_path):
+    setup_tree(tmp_path, collector=False)
+    services = [{"name": "otel-collector", "type": "otel-collector", "enabled": False}]
+    submit.validate_setup(tmp_path, _make_config({"frontend": {"type": "dynamo"}, "services": services}))
