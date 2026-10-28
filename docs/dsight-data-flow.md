@@ -144,7 +144,8 @@ correlation, source references and limits.
 | A recorded metric name | Optional engine-specific display metadata and units. The shared Tachometer catalog includes other captured families too; values, labels and source rows remain in the metric reader. |
 
 TRT-LLM currently supplies all three kinds of rules. SGLang and vLLM supply NVTX
-names or prefixes and metric definitions; neither has a worker-log decoder here. TokenSpeed supplies
+names or prefixes and metric definitions; neither has a worker-log decoder here,
+and both contribute worker-log metrics through a `LogMetricGenerator`. TokenSpeed supplies
 NVTX vocabulary, metric definitions and periodic batch snapshots. Its
 `DynamoTokenSpeedLogMetrics` generator also supplies active decode requests,
 configured batch limits, active KV pages and usable page pool sizes to **Metrics**.
