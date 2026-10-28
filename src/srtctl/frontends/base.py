@@ -191,8 +191,8 @@ class Frontend(ABC):
         """
         return frozenset()
 
-    def direct_worker_launcher(self, process: "Process", runtime: "RuntimeContext") -> list[str] | None:
-        """Argv that starts a direct worker in place of the engine's server module, or ``None``.
+    def direct_worker_launcher(self, backend: Any, process: "Process", runtime: "RuntimeContext") -> list[str] | None:
+        """Argv that starts ``backend``'s direct worker in place of its server module, or ``None``.
 
         A launcher runs the engine's own OpenAI server on the allocated port and
         registers it with this frontend's discovery plane (Infera's

@@ -41,6 +41,8 @@ ROUTER_MANAGED_ARGS = frozenset(
     {"host", "port", "discovery-backend", "etcd-endpoint", "request-transport", "kv-event-transport"}
 )
 _ROLE_BY_DISAGG_MODE = {"prefill": "prefill", "decode": "decode", "mixed": "decode"}
+# Infera's registering launcher for each engine this frontend pairs with.
+WORKER_LAUNCHERS = {"sglang": "infera.engine.sglang"}
 
 
 def etcd_endpoint(runtime: RuntimeContext) -> str:
@@ -107,8 +109,8 @@ class InferaFrontend(DynamicFrontend):
             )
         ]
 
-    def direct_worker_launcher(self, process: Process, runtime: RuntimeContext) -> list[str] | None:
-        """Start SGLang through ``infera.engine.sglang`` so the worker registers itself in etcd.
+    def direct_worker_launcher(self, backend: Any, process: Process, runtime: RuntimeContext) -> list[str] | None:
+        """Start the engine through Infera's launcher so the worker registers itself in etcd.
 
         The KV-events port is the allocator's: when the role publishes KV events
         the backend passes ``--kv-events-config`` with it, and the launcher
@@ -118,7 +120,7 @@ class InferaFrontend(DynamicFrontend):
         command = [
             "python3",
             "-m",
-            "infera.engine.sglang",
+            WORKER_LAUNCHERS[backend.type],
             "--discovery-backend",
             "etcd",
             "--etcd-endpoint",

@@ -355,7 +355,7 @@ class SGLangBackend(Backend):
         # Direct frontends run the native server; Dynamo frontends run the registering worker.
         use_sglang = frontend.worker_launch == "direct"
         python_module = "sglang.launch_server" if use_sglang else "dynamo.sglang"
-        launcher = frontend.direct_worker_launcher(process, runtime) if use_sglang else None
+        launcher = frontend.direct_worker_launcher(self, process, runtime) if use_sglang else None
 
         # Get served model name from config
         served_model_name = self.get_served_model_name(runtime.model_path.name)
