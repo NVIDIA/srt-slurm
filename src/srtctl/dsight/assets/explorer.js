@@ -89,8 +89,9 @@
   let detailsReady = Promise.resolve(), detailController, detailKey = "", metricController;
   const metricFamilies = metricData.listFamilies();
   const metricFamilyByName = new Map(metricFamilies.map(family => [family.name, family]));
-  const defaultMetric = metricFamilyByName.has("trtllm_num_requests_running")
-    ? "trtllm_num_requests_running"
+  // The importer names the engine's running-request gauge from the dialect table.
+  const defaultMetric = metricFamilyByName.has(D.default_metric)
+    ? D.default_metric
     : (metricFamilies.find(family => family.samples > 0) || metricFamilies[0])?.name || "";
   const history = [];
   let clientDrag = null,

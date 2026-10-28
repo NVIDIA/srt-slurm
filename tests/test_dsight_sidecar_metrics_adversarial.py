@@ -30,6 +30,8 @@ WORKER = {"hostname": "n0", "worker_index": "0", "worker_process": "0", "worker_
 # vLLM b272cff368 rust/src/metrics/src/{scheduler,request}.rs registers counters without
 # `_total` and prometheus-client appends it; SGLang 7591118794
 # python/sglang/srt/observability/metrics_collector.py names its counters with `_total`.
+# vLLM ac9126e5 v1/metrics/loggers.py, kv_connector/v1/nixl/stats.py and
+# kv_connector/v1/mooncake/store/metrics.py declare the prompt-source and KV-transfer families.
 # The catalog key is the sample name Tachometer records (the `_bucket` suffix and the
 # `le` label are stripped from histogram rows; `_total` is kept).
 UPSTREAM_KIND = {
@@ -58,6 +60,21 @@ UPSTREAM_KIND = {
     "vllm:request_decode_time_seconds": "histogram",
     "vllm:request_inference_time_seconds": "histogram",
     "vllm:request_time_per_output_token_seconds": "histogram",
+    "vllm:prompt_tokens_by_source_total": "counter",
+    "vllm:prompt_tokens_cached_total": "counter",
+    "vllm:request_prefill_kv_computed_tokens": "histogram",
+    "vllm:nixl_xfer_time_seconds": "histogram",
+    "vllm:nixl_post_time_seconds": "histogram",
+    "vllm:nixl_bytes_transferred": "histogram",
+    "vllm:nixl_num_descriptors": "histogram",
+    "vllm:nixl_num_failed_transfers_total": "counter",
+    "vllm:nixl_num_failed_notifications_total": "counter",
+    "vllm:nixl_num_kv_expired_reqs_total": "counter",
+    "vllm:mooncake_store_operation_total": "counter",
+    "vllm:mooncake_store_operation_keys_total": "counter",
+    "vllm:mooncake_store_operation_failed_keys_total": "counter",
+    "vllm:mooncake_store_operation_bytes_total": "counter",
+    "vllm:mooncake_store_operation_time_seconds": "histogram",
     "sglang:num_running_reqs": "gauge",
     "sglang:num_queue_reqs": "gauge",
     "sglang:num_grammar_queue_reqs": "gauge",

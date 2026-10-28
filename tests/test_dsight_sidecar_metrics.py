@@ -19,6 +19,7 @@ from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from srtctl.analysis.metric_catalog import describe_metric
 from srtctl.dsight.importer import Importer
@@ -189,7 +190,12 @@ def test_sglang_leader_and_follower_engine_endpoints_scope_dp_ranks_to_their_hos
                     ("sglang:num_prefill_bootstrap_queue_reqs", 1),
                 )
             ),
-            (f"{leader}_engine", 'sglang:time_to_first_token_seconds{is_streaming="true",model_name="m",le="1"}', 4, 1.0),
+            (
+                f"{leader}_engine",
+                'sglang:time_to_first_token_seconds{is_streaming="true",model_name="m",le="1"}',
+                4,
+                1.0,
+            ),
             (f"{leader}_engine", 'sglang:prompt_tokens_total{is_streaming="true",model_name="m"}', 50),
         ],
     )
@@ -264,6 +270,25 @@ def test_one_concept_shares_group_unit_and_title_across_engines():
         "Other captured metrics",
         "Some future gauge",
     )
+
+
+@pytest.mark.parametrize(
+    ("name", "group", "unit"),
+    [
+        ("vllm:nixl_xfer_time_seconds", "Engine KV transfer", "s"),
+        ("vllm:nixl_bytes_transferred", "Engine KV transfer", "bytes"),
+        ("vllm:nixl_num_failed_transfers_total", "Engine KV transfer", "transfers"),
+        ("vllm:nixl_num_kv_expired_reqs_total", "Engine KV transfer", "requests"),
+        ("vllm:mooncake_store_operation_total", "Engine KV transfer", "operations"),
+        ("vllm:mooncake_store_operation_time_seconds", "Engine KV transfer", "s"),
+        ("vllm:prompt_tokens_by_source_total", "Engine KV cache", "tokens"),
+        ("vllm:request_prefill_kv_computed_tokens", "Engine KV cache", "tokens"),
+    ],
+)
+def test_vllm_kv_transfer_and_prompt_source_families_are_cataloged(name, group, unit):
+    described = describe_metric(name)
+    assert (described["component"], described["group"], described["unit"]) == ("Workers", group, unit)
+    assert described["counter"] == name.endswith("_total")
 
 
 def test_router_dp_rank_labels_do_not_scope_frontend_series(tmp_path):

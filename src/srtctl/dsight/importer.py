@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 from .capabilities import capabilities
 from .clients import AgentPerfAdapter
-from .engines import parse_engine_log
+from .engines import default_metric, parse_engine_log
 from .identities import canonical_role, frontend_identity, worker_identity
 from .model import SCHEMA, activity_label, lifecycle
 from .nsys import read_profiles
@@ -658,6 +658,7 @@ class Importer:
             "server_spans": self.server_spans,
         }
         data["capabilities"] = capabilities(data)
+        data["default_metric"] = default_metric({s["name"] for s in self.metric_series if s["points"]})
         for source in self.sources:
             stat = Path(source["path"]).stat()
             if stat.st_size != source["bytes"] or str(stat.st_mtime_ns) != source["modified_ns"]:

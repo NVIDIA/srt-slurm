@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import re
 from typing import TYPE_CHECKING, Any
 
 from ..metrics import finalize_metrics
@@ -19,7 +20,17 @@ if TYPE_CHECKING:
     from ..importer import Importer
 
 
-def timestamp_ns(stamp: str, zone: ZoneInfo | None) -> int | None:
+_YEARLESS = re.compile(r"^\d\d-\d\d[ T]")
+
+
+def timestamp_ns(stamp: str, zone: ZoneInfo | None, reference_ns: int | None = None) -> int | None:
+    """Parse an ISO stamp; a month-day stamp takes the year that places it nearest ``reference_ns``."""
+    if _YEARLESS.match(stamp):
+        if zone is None or reference_ns is None:
+            return None
+        year = dt.datetime.fromtimestamp(reference_ns / 1e9, zone).year
+        candidates = [timestamp_ns(f"{y}-{stamp}", zone) for y in (year - 1, year, year + 1)]
+        return min((c for c in candidates if c is not None), key=lambda c: abs(c - reference_ns))
     time = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
     if time.tzinfo is None:
         if zone is None:
@@ -78,7 +89,7 @@ def read_log_metrics(run: Importer, generators: tuple[LogMetricGenerator, ...] =
                 event = generator.parse_line(line, source)
                 if event is None:
                     continue
-                stamp = timestamp_ns(event.time, run.iteration_zone)
+                stamp = timestamp_ns(event.time, run.iteration_zone, run.origin)
                 if stamp is None:
                     unaligned += 1
                     continue
