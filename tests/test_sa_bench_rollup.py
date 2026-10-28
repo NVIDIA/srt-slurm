@@ -418,6 +418,62 @@ def test_sa_bench_rollup_aggregated_deployment_reports_all_gpus(tmp_path):
     assert row["Total Token Throughput per GPU"] == "6307.5"
 
 
+def test_sa_bench_rollup_sub_node_agg_working_gpu_counts(tmp_path):
+    """When gpus_per_agg < gpus_per_node, per-GPU throughput uses the agg worker's GPUs, not the whole node."""
+    rollup = _load_rollup_module()
+
+    logs_dir = tmp_path / "logs"
+    result_dir = logs_dir / "sa-bench_isl_128_osl_1000"
+    result_dir.mkdir(parents=True)
+
+    # 1 agg node (4 GPUs) but the single agg worker uses only 2 of them
+    # Total GPU Count = 1 × 4 = 4 (node-based)
+    # Total Working GPU Count = 1 × 2 = 2 (worker-based, diverges from node count)
+    (tmp_path / "5002.json").write_text(
+        json.dumps(
+            {
+                "job_name": "sub-node-agg-job",
+                "backend_type": "vllm",
+                "resources": {
+                    "gpus_per_node": 4,
+                    "prefill_nodes": None,
+                    "decode_nodes": None,
+                    "agg_nodes": 1,
+                    "prefill_workers": 0,
+                    "decode_workers": 0,
+                    "agg_workers": 1,
+                    "gpus_per_prefill": 4,
+                    "gpus_per_decode": 4,
+                    "gpus_per_agg": 2,
+                },
+            }
+        )
+    )
+
+    result = {
+        "model_id": "test-model",
+        "max_concurrency": 1024,
+        "output_throughput": 32000.0,
+        "total_token_throughput": 36000.0,
+        "median_ttft_ms": 500.0,
+        "median_tpot_ms": 31.25,
+        "median_itl_ms": 31.25,
+    }
+    (result_dir / "results_concurrency_1024_gpus_4.json").write_text(json.dumps(result))
+
+    rollup.main(logs_dir)
+
+    rows = _read_csv_rows(logs_dir / "benchmark-rollup.csv")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["Total GPU Count"] == "4"
+    assert row["Decode GPU Count"] == "2"
+    assert row["Total Working GPU Count"] == "2"
+    assert row["Decode Working GPU Count"] == "2"
+    assert row["Prefill Working GPU Count"] == "0"
+    assert row["Total Token Throughput per GPU"] == "18000"
+
+
 def test_sa_bench_rollup_tolerates_null_resource_fields(tmp_path):
     """Legacy metadata with null optional fields must not crash _compute_gpu_counts."""
     rollup = _load_rollup_module()
