@@ -52,6 +52,10 @@ default_time_limit: "04:00:00"
 #   max_attempts: 540        # 540 * 10s = 90 min
 #   interval_seconds: 10
 
+# Reuse extracted container filesystems on each node (recipe true/false wins).
+# Requires Pyxis :no_exec support and a named-container cleanup policy.
+# default_reuse_container: true
+
 # Commands run on every allocated node's bare host, OUTSIDE the container,
 # before any worker starts -- for node state a container cannot reach, such as
 # locking GPU clocks on machines that need it. Runs as you, so anything
@@ -67,6 +71,13 @@ default_time_limit: "04:00:00"
 #   nodes: all                     # all | workers
 #   ignore_failure: false
 #   timeout_seconds: 300
+
+# Give idle nodes back to the scheduler before post-processing. After every
+# worker stops, the job shrinks to its batch host (`scontrol update
+# NodeList=<batch host>`) and the S3 upload / AI analysis run there. Needs job
+# shrinking allowed (no SchedulerParameters=disable_job_shrink); het jobs are
+# skipped. The outcome is written to <log_dir>/allocation-release.json.
+# release_nodes_before_postprocess: true   # Default: false
 
 # SLURM directive compatibility
 # Set to false if your cluster doesn't support --gpus-per-node

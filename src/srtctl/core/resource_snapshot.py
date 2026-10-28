@@ -131,6 +131,7 @@ def _backend_gpus_by_node(config: SrtConfig, runtime: RuntimeContext) -> dict[st
                 decode_nodes=runtime.nodes.decode_group,
                 gpus_per_node=resources.gpus_per_node,
                 pack_multinode_workers=config.backend.type == "trtllm",
+                gpu_indices_by_mode=resources.gpu_indices_by_mode,
             )
         else:
             endpoints = config.allocate_worker_endpoints(runtime.nodes.worker)

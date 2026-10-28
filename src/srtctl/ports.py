@@ -22,7 +22,7 @@ FRONTEND_INTERNAL_PORT = 8180
 # Shared worker endpoint ports.
 # SGLang uses this for --kv-events-config; vLLM uses it for
 # DYN_VLLM_KV_EVENT_PORT.
-KV_EVENTS_PORT_BASE = 5200
+KV_EVENTS_PORT_BASE = 3000
 
 # SGLang backend ports.
 SGLANG_HTTP_PORT_BASE = 6100

@@ -27,7 +27,7 @@ import tempfile
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 from rich.console import Console
@@ -38,6 +38,7 @@ from rich.table import Table
 from rich.text import Text
 
 from srtctl.backends import VLLMBackend, VLLMMooncakeKVStoreConfig
+from srtctl.backends.base import WorkerMode
 from srtctl.core.config import (
     expand_engine_config_defaults,
     generate_override_configs,
@@ -268,6 +269,13 @@ def show_config_details(config: SrtConfig) -> None:
     visible_devices_env = get_srtslurm_setting("visible_devices_env", "CUDA_VISIBLE_DEVICES")
     console.print(f"GPU subset visibility variable: {visible_devices_env}")
     for role, spec in config.roles.items():
+        layout = spec.gpu_layout
+        if layout:
+            slots = " | ".join(",".join(str(i) for i in sorted(slot)) for slot in layout)
+            console.print(
+                f"{role}: gpu_indices={slots} ({visible_devices_env} per worker; {len(layout)} worker(s) per node)",
+                crop=False,
+            )
         policy = spec.restart
         if policy.enabled:
             console.print(
@@ -298,24 +306,32 @@ def show_config_details(config: SrtConfig) -> None:
 
     from srtctl.backends.trtllm import TRTLLMBackend
 
-    if isinstance(config.backend, TRTLLMBackend):
-        if config.backend.numa_memory_bind == "local":
-            console.print("TRT-LLM NUMA: GPU-local CPU binding and strict GPU-local memory binding (--bind-memory)")
+    trtllm_statistics = []
+    for role, backend in config.active_role_backends():
+        if not isinstance(backend, TRTLLMBackend):
+            continue
+        mode = cast(WorkerMode, role)
+        if backend.numa_cpu_bind:
+            description = "GPU-local CPU affinity (numactl --cpunodebind=<node>)"
+            if policy := backend.numa_wrapper_policy:
+                description += f" and {policy.description} ({policy.flag})"
+            console.print(f"TRT-LLM NUMA ({mode}): {description}")
+            environment = {**backend.get_environment_for_mode(mode), **config.environment}
+            affinity = environment["TLLM_NUMA_AWARE_WORKER_AFFINITY"]
+            console.print(f"{mode}: TLLM_NUMA_AWARE_WORKER_AFFINITY={affinity} (effective)")
         # Engine-yaml statistics keys srtctl defaults at config load
         # (expand_trtllm_engine_defaults, expand_trtllm_serve_defaults,
         # expand_observability). Shown for both frontends so a run that expects
         # the iteration-level trtllm_* gauges can see before submitting that
         # enable_iter_perf_stats is off.
-        modes = ("prefill", "decode") if config.topology.is_disaggregated else ("agg",)
-        rows = []
-        for mode in modes:
-            section = config.backend.get_config_for_mode(mode)
-            rows.append(
-                f"{mode}: enable_iter_perf_stats={_engine_bool(section.get('enable_iter_perf_stats'))}, "
-                f"return_perf_metrics={_engine_bool(section.get('return_perf_metrics'))}"
-            )
-        rows.append("(engine yaml; the iteration-level trtllm_* gauges need enable_iter_perf_stats: true)")
-        console.print(Panel("\n".join(rows), title="TRT-LLM Engine Statistics", border_style="cyan"))
+        section = backend.get_config_for_mode(mode)
+        trtllm_statistics.append(
+            f"{mode}: enable_iter_perf_stats={_engine_bool(section.get('enable_iter_perf_stats'))}, "
+            f"return_perf_metrics={_engine_bool(section.get('return_perf_metrics'))}"
+        )
+    if trtllm_statistics:
+        trtllm_statistics.append("(engine yaml; the iteration-level trtllm_* gauges need enable_iter_perf_stats: true)")
+        console.print(Panel("\n".join(trtllm_statistics), title="TRT-LLM Engine Statistics", border_style="cyan"))
 
     if config.frontend.type == "vllm":
         from srtctl.backends.vllm import find_vllm_orchestration_recipe_flags
@@ -539,6 +555,14 @@ def show_config_details(config: SrtConfig) -> None:
                 "outlives this allocation and is inherited by the next job on these nodes."
             )
 
+    # --- Node release before post-processing (srtslurm.yaml) ---
+    if get_srtslurm_setting("release_nodes_before_postprocess", False):
+        console.print(
+            "[bold cyan]Node release:[/] after workers stop, the job shrinks to its batch host "
+            "(scontrol update NodeList=<batch host>); the S3 upload and AI analysis run there "
+            "[dim]source: srtslurm.yaml release_nodes_before_postprocess[/]"
+        )
+
     # --- post_eval (RUN_EVAL / EVAL_ONLY dispatch) ---
     if config.post_eval.passthrough_env or config.post_eval.command:
         console.print("[bold cyan]Post-eval dispatch:[/]")
@@ -599,6 +623,11 @@ def show_config_details(config: SrtConfig) -> None:
                 console.print(f"    [yellow]env.{var}:[/] {val}", crop=False)
 
     # --- srun options ---
+    if config.reuse_container:
+        console.print(
+            "[dim]reuse_container: true[/] --container-name=srtctl_<image hash>_<job id>:no_exec "
+            "[dim](shared per image and root-remap mode on each node; preparation timeout follows health_check)[/]"
+        )
     if config.srun_options:
         opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in config.srun_options.items())
         console.print(f"[dim]srun options:[/] {opts}")

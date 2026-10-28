@@ -18,7 +18,7 @@ After (Python):
         print(f"{endpoint.mode} worker {endpoint.index} on {endpoint.nodes}")
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from srtctl.backends.base import WorkerMode
@@ -97,7 +97,10 @@ class Endpoint:
         mode: Worker mode ("prefill", "decode", or "agg")
         index: Zero-based index within the mode (e.g., prefill worker 0, 1, 2)
         nodes: Tuple of node hostnames this endpoint uses
-        gpu_indices: Set of GPU indices used on each node (e.g., {0,1,2,3,4,5,6,7})
+        gpu_indices: GPU indices used on each node. Multi-node workers that do
+            not fill the node (e.g. 6 GPUs on 2×4-GPU nodes) use the same
+            subset on every node ({0,1,2}) so ``--nnodes`` local world sizes
+            match. Leftover GPUs stay idle.
         gpus_per_node: Number of GPUs per node in the cluster
     """
 
@@ -151,7 +154,8 @@ class Process:
         sys_port: DYN_SYSTEM_PORT for this process
         http_port: HTTP serving port for this process (avoids conflicts on same node)
         bootstrap_port: P/D coordination port (only for prefill leaders)
-        kv_events_port: ZMQ port for kv-events publishing (all worker leaders)
+        kv_events_port: First port of the process's KV-events block; an engine with several
+            publishers binds this port plus the publisher's DP rank (all worker processes)
         nixl_port: NIXL side channel port for KV transfers (vLLM only)
         endpoint_mode: The mode of the parent endpoint
         endpoint_index: The index of the parent endpoint
@@ -271,6 +275,7 @@ def allocate_endpoints(
     spread_workers: bool = False,
     allow_prefill_decode_colocation: bool = False,
     pack_multinode_workers: bool = False,
+    gpu_indices_by_mode: Mapping[WorkerMode, Sequence[frozenset[int]]] | None = None,
 ) -> list[Endpoint]:
     """Allocate endpoints to nodes based on GPU requirements.
 
@@ -292,6 +297,12 @@ def allocate_endpoints(
             workers, allowing adjacent workers to share a partially filled node.
         allow_prefill_decode_colocation: If True, decode workers may use
             remaining GPUs on a node already used by prefill workers.
+        gpu_indices_by_mode: The GPU layout of a node for a mode, as the physical
+            GPU set of each worker slot on the node, for partial-node workers
+            whose GPUs must not be the first contiguous ones (one GPU per socket,
+            for example). One slot means one worker per node; two slots such as
+            ({0, 2}, {1, 3}) put two workers on each node. Workers fill the slots
+            in order and move to the next node when the slots are used up.
 
     Returns:
         List of Endpoint objects with node assignments
@@ -390,6 +401,41 @@ def allocate_endpoints(
         result = []
 
         nodes_per_worker = (gpus_per_worker + gpus_per_node - 1) // gpus_per_node
+        slots = tuple((gpu_indices_by_mode or {}).get(mode) or ())
+        if slots:
+            # The explicit layout is the node's: workers fill its slots in order and
+            # take a fresh node when the slots are used up, whatever the packing
+            # policy, so the mask and the GPU-local bindings follow the named GPUs.
+            used: set[int] = set()
+            for slot in slots:
+                if len(slot) != gpus_per_worker:
+                    raise ValueError(f"{mode} workers use GPUs {sorted(slot)} but need {gpus_per_worker} GPUs each")
+                if max(slot) >= gpus_per_node or min(slot) < 0:
+                    raise ValueError(f"{mode} GPU indices {sorted(slot)} do not fit a {gpus_per_node}-GPU node")
+                if used & slot:
+                    raise ValueError(f"{mode} GPU layouts overlap on GPUs {sorted(used & slot)}")
+                used |= slot
+            if gpu_offset > 0:
+                node_idx += 1
+                gpu_offset = 0
+            nodes_needed = (count + len(slots) - 1) // len(slots)
+            if node_idx + nodes_needed > len(available_nodes):
+                raise ValueError(
+                    f"Not enough nodes: {mode} needs {nodes_needed} node(s) for {count} worker(s) "
+                    f"at {len(slots)} per node, but only {len(available_nodes) - node_idx} remain"
+                )
+            for i in range(count):
+                result.append(
+                    Endpoint(
+                        mode=mode,
+                        index=i,
+                        nodes=(available_nodes[node_idx + i // len(slots)],),
+                        gpu_indices=frozenset(slots[i % len(slots)]),
+                        gpus_per_node=gpus_per_node,
+                    )
+                )
+            node_idx += nodes_needed
+            return result
 
         for i in range(count):
             if pack_multinode_workers:
@@ -429,16 +475,31 @@ def allocate_endpoints(
                     node_idx += 1
                     gpu_offset = 0
             elif nodes_per_worker >= 1 and gpus_per_worker >= gpus_per_node:
-                # Multi-node or full-node worker
+                # Multi-node or full-node worker. When gpus_per_worker is not a
+                # multiple of gpus_per_node, leave GPUs idle so every node of
+                # this worker sees the same count (required by --nnodes).
+                # 6 GPUs on 4-GPU nodes → 2 nodes × {0,1,2}, not 4+2.
                 worker_nodes = tuple(available_nodes[node_idx + j] for j in range(nodes_per_worker))
                 node_idx += nodes_per_worker
+                per_node, uneven = divmod(gpus_per_worker, nodes_per_worker)
+                if uneven:
+                    raise ValueError(
+                        f"{mode} worker {i} needs {gpus_per_worker} GPUs across "
+                        f"{nodes_per_worker} nodes, which is not an even split "
+                        f"({gpus_per_worker} % {nodes_per_worker} = {uneven}). "
+                        f"--nnodes requires the same GPU count on every node; "
+                        f"use {per_node * nodes_per_worker} or "
+                        f"{(per_node + 1) * nodes_per_worker} GPUs"
+                    )
+                if per_node > gpus_per_node:
+                    raise ValueError(f"{mode} worker {i} would place {per_node} GPUs on a {gpus_per_node}-GPU node")
 
                 result.append(
                     Endpoint(
                         mode=mode,
                         index=i,
                         nodes=worker_nodes,
-                        gpu_indices=frozenset(range(gpus_per_node)),
+                        gpu_indices=frozenset(range(per_node)),
                         gpus_per_node=gpus_per_node,
                     )
                 )
@@ -499,6 +560,7 @@ def allocate_endpoints_het(
     decode_nodes: Sequence[str],
     gpus_per_node: int,
     pack_multinode_workers: bool = False,
+    gpu_indices_by_mode: Mapping[WorkerMode, Sequence[frozenset[int]]] | None = None,
 ) -> list[Endpoint]:
     """Allocate endpoints for a SLURM heterogeneous job.
 
@@ -522,6 +584,7 @@ def allocate_endpoints_het(
         gpus_per_node=gpus_per_node,
         available_nodes=prefill_nodes,
         pack_multinode_workers=pack_multinode_workers,
+        gpu_indices_by_mode=gpu_indices_by_mode,
     )
     decode_eps = allocate_endpoints(
         num_prefill=0,
@@ -533,6 +596,7 @@ def allocate_endpoints_het(
         gpus_per_node=gpus_per_node,
         available_nodes=decode_nodes,
         pack_multinode_workers=pack_multinode_workers,
+        gpu_indices_by_mode=gpu_indices_by_mode,
     )
     # Endpoint is frozen; re-emit with het_group set.
     tagged: list[Endpoint] = []
@@ -599,7 +663,10 @@ def endpoints_to_processes(
             engine of a node then gets its own Process (same GPUs and node_rank,
             distinct ports, ``engine_id`` 0..n-1), emitted engine 0 first.
         sidecar_grpc: Allocate a Dynamo sidecar gRPC port for every process.
-        kv_events_port_sizes: KV publisher port range per process, keyed by worker mode.
+        kv_events_port_sizes: KV publisher port range per process, keyed by worker mode
+            (default 1). An engine that opens one publisher per DP rank binds
+            ``kv_events_port + rank``, so each process reserves that many consecutive
+            ports; otherwise two DP workers on one node collide.
         bootstrap_ports: Allocate the prefill bootstrap port; ``False`` for an engine
             that has no bootstrap rendezvous (vLLM hands KV over its NIXL side channel).
 

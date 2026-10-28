@@ -313,7 +313,7 @@ In InferenceX CI, recipes normally keep their throughput benchmark configuration
 2. `do_sweep.py` starts infrastructure, workers, and the frontend for the normal recipe topology.
 3. For `EVAL_ONLY=true`, `do_sweep.py` skips the throughput benchmark stage and runs `_run_post_eval()` directly after frontend startup.
 4. `_run_post_eval()` waits for the OpenAI-compatible endpoint on port 8000 and, in eval-only mode, performs the full `wait_for_model()` health check for the configured prefill/decode or aggregated topology.
-5. `_run_post_eval()` launches the registered `lm-eval` runner on the head node and passes through InferenceX metadata such as framework, precision, sequence length, prefill/decode topology, and eval concurrency.
+5. `_run_post_eval()` launches the registered `lm-eval` runner on the node hosting the resolved public endpoint and passes through InferenceX metadata such as framework, precision, sequence length, prefill/decode topology, and eval concurrency. The eval step uses that node's Slurm heterogeneous allocation component when applicable.
 6. The runner script (`benchmarks/scripts/lm-eval/bench.sh`) uses `MODEL_NAME` from `do_sweep.py`, or auto-discovers the served model from `/v1/models` as a fallback.
 7. The runner sources `/infmax-workspace/benchmarks/benchmark_lib.sh`, runs `run_eval --framework lm-eval`, and calls `append_lm_eval_summary`.
 8. Eval artifacts are copied to `/logs/eval_results/` for InferenceX launcher-side artifact pickup.
@@ -331,12 +331,30 @@ srt-slurm supports an `EVAL_ONLY` mode for CI jobs that should only validate acc
 | `MODEL_NAME` | Served model alias for OpenAI-compatible requests; set by `do_sweep.py` from `config.served_model_name` |
 
 When `EVAL_ONLY=true`:
+
 - Stage 4 skips the throughput benchmark entirely. No throughput result JSON is expected from srt-slurm.
 - The eval path uses the full `wait_for_model()` health check before starting lm-eval.
 - `_run_post_eval()` launches the `lm-eval` runner and returns its exit code.
 - Eval failure is fatal because eval is the only purpose of the job.
 
+Evaluation uses the same public endpoint as readiness checks. For
+`frontend.placement.node: first_decode` or `last_decode`, eval runs on that
+frontend node and its `localhost` URL reaches the frontend there. With nginx,
+eval runs on the public nginx node; with a direct aggregate server, it runs on
+the worker's endpoint node. Both the built-in runner and `post_eval.command`'s
+`{endpoint}` placeholder follow this placement. The benchmark client's
+placement does not control the eval step.
+
+See the [first-decode eval example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/trtllm/trtllm-serve-disagg-eval-only.yaml).
+With an InferenceX checkout available, run it using:
+
+```bash
+EVAL_ONLY=true INFMAX_WORKSPACE=/path/to/InferenceX \
+  srtctl apply -f examples/trtllm/trtllm-serve-disagg-eval-only.yaml
+```
+
 When `RUN_EVAL=true` (without `EVAL_ONLY`):
+
 - Throughput benchmark runs normally
 - After benchmark completes successfully, eval runs as a post-step
 - Eval failure is non-fatal; the benchmark job still succeeds if throughput passed

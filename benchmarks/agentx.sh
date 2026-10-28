@@ -53,14 +53,26 @@ if [[ -n "${AGENTX_INFERENCEX_REF:-}" ]]; then
     git -C "$checkout_root/InferenceX" fetch --depth 1 origin "$AGENTX_INFERENCEX_REF"
     git -C "$checkout_root/InferenceX" checkout --detach FETCH_HEAD
 fi
-git -C "$checkout_root/InferenceX" submodule update --init --depth 1 inferencex-e2e/utils/aiperf
 
 export INFMAX_CONTAINER_WORKSPACE="$checkout_root/InferenceX/inferencex-e2e"
 entrypoint="$INFMAX_CONTAINER_WORKSPACE/benchmarks/srt_agentic.sh"
-if [[ ! -f "$entrypoint" || ! -f "$INFMAX_CONTAINER_WORKSPACE/utils/aiperf/pyproject.toml" ]]; then
-    echo "AgentX entrypoint or AIPerf submodule missing in InferenceX checkout" >&2
+if [[ ! -f "$entrypoint" ]]; then
+    echo "AgentX entrypoint missing in InferenceX checkout" >&2
     exit 1
 fi
 echo "Running InferenceX AgentX at $(git -C "$checkout_root/InferenceX" rev-parse HEAD)"
-echo "Using AIPerf at $(git -C "$INFMAX_CONTAINER_WORKSPACE/utils/aiperf" rev-parse HEAD)"
+# InferenceX vendored the harness as the utils/aiperf submodule until
+# SemiAnalysisAI/InferenceX#3940; later refs install the agentx-harness release
+# pinned in requirements.txt. Fetch the submodule only for refs that still have it.
+if [[ -n "$(git -C "$checkout_root/InferenceX" ls-tree HEAD inferencex-e2e/utils/aiperf)" ]]; then
+    git -C "$checkout_root/InferenceX" submodule update --init --depth 1 inferencex-e2e/utils/aiperf
+    if [[ ! -f "$INFMAX_CONTAINER_WORKSPACE/utils/aiperf/pyproject.toml" ]]; then
+        echo "AIPerf submodule missing in InferenceX checkout" >&2
+        exit 1
+    fi
+    echo "Using AIPerf at $(git -C "$INFMAX_CONTAINER_WORKSPACE/utils/aiperf" rev-parse HEAD)"
+else
+    pin=$(grep -m1 '^agentx-harness' "$INFMAX_CONTAINER_WORKSPACE/infx/bench/agentic/requirements.txt" 2>/dev/null || true)
+    echo "Using ${pin:-the AgentX harness pinned by InferenceX}"
+fi
 bash "$entrypoint"

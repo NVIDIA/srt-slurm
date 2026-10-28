@@ -1,0 +1,268 @@
+# examples/vllm/dynamo-sidecar-agg.yaml
+# exit_code: 0
+# srun calls: 12
+
+## service_etcd
+nodelist: node-01
+output: <output>/logs/service_etcd.out
+container_image: vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: True
+bash_preamble: |
+    rm -rf /tmp/etcd && mkdir -p /tmp/etcd
+command: |
+    /configs/etcd --data-dir /tmp/etcd --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://127.0.0.1:2379
+
+## service_otel-collector
+nodelist: node-01
+output: <output>/logs/service_otel-collector.out
+env_to_set:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: True
+command: |
+    configs/otelcol-contrib --config <output>/logs/otel-collector.yaml
+
+## agg_0_node-01
+nodelist: node-01
+output: <output>/logs/node-01_agg_w0.out
+container_image: vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 0
+    DYNAMO_VERSION: <nightly-with-sidecars>
+    DYNAMO_WHEEL_NAME: ai_dynamo-<nightly-with-sidecars>-py3-none-any.whl
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7500
+    DYN_VLLM_KV_EVENT_PORT: 3000
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    HEAD_NODE_IP: 127.0.0.1
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-agg
+    PYTHONUNBUFFERED: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PLUGINS:
+    VLLM_PORT: 20000
+srun_export_env:
+    ENROOT_REMAP_ROOT: yes
+bash_preamble: |
+    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing ai-dynamo-runtime and ai-dynamo from wheel ai_dynamo-<nightly-with-sidecars>-py3-none-any.whl...' && if [ -f /srtctl-runtime/dynamo_wheels.py ]; then python3 /srtctl-runtime/dynamo_wheels.py install; else echo 'ERROR: /srtctl-runtime/dynamo_wheels.py not found for ai-dynamo wheel install' >&2; exit 1; fi && echo 'ai-dynamo-runtime and ai-dynamo install path completed for ai_dynamo-<nightly-with-sidecars>-py3-none-any.whl' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock" && ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    bash -lc 'set -euo pipefail
+    ENGINE_PID=
+    SIDECAR_PID=
+    request_stop() {
+        local pid="${1:-}"
+        if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+            kill "${pid}" 2>/dev/null || true
+        fi
+    }
+    reap_with_timeout() {
+        local pid="${1:-}"
+        if [[ -z "${pid}" ]]; then return; fi
+        for _ in $(seq 1 10); do
+            if ! kill -0 "${pid}" 2>/dev/null; then break; fi
+            sleep 1
+        done
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill -KILL "${pid}" 2>/dev/null || true
+        fi
+        wait "${pid}" 2>/dev/null || true
+    }
+    cleanup() {
+        status=$?
+        trap - EXIT INT TERM
+        request_stop "${SIDECAR_PID}"
+        request_stop "${ENGINE_PID}"
+        reap_with_timeout "${SIDECAR_PID}"
+        reap_with_timeout "${ENGINE_PID}"
+        exit "${status}"
+    }
+    trap cleanup EXIT INT TERM
+    vllm-rs serve /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --grpc-port 19000 --max-model-len 4096 --kv-transfer-config '"'"'{"kv_connector": "NixlConnector", "kv_role": "kv_both"}'"'"' --kv-events-config '"'"'{"publisher": "zmq", "topic": "kv-events", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:3000"}'"'"' --gpu-memory-utilization 0.5 --tensor-parallel-size 1 &
+    ENGINE_PID=$!
+    port_ready=0
+    for _ in $(seq 1 3600); do
+        if ! kill -0 "${ENGINE_PID}" 2>/dev/null; then
+            echo "vLLM exited before native gRPC became ready" >&2
+            exit 1
+        fi
+        if grep -qE '"'"'^ *[0-9]+: [0-9A-F]+:4A38 [0-9A-F]+:0000 0A '"'"' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+            port_ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [[ "${port_ready}" != 1 ]]; then
+        echo "Timed out waiting for vLLM native gRPC on port 19000" >&2
+        exit 1
+    fi
+    python3 -m dynamo.vllm.sidecar --grpc-endpoint 127.0.0.1:19000 &
+    SIDECAR_PID=$!
+    set +e
+    wait -n "${ENGINE_PID}" "${SIDECAR_PID}"
+    status=$?
+    set -e
+    if [[ "${status}" == 0 ]]; then status=1; fi
+    exit "${status}"
+    
+    '
+
+## frontend_0
+nodelist: node-01
+output: <output>/logs/node-01_frontend_0.out
+container_image: vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYNAMO_VERSION: <nightly-with-sidecars>
+    DYNAMO_WHEEL_NAME: ai_dynamo-<nightly-with-sidecars>-py3-none-any.whl
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-frontend
+srun_export_env:
+    ENROOT_REMAP_ROOT: yes
+mpi: pmix
+bash_preamble: |
+    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing ai-dynamo-runtime and ai-dynamo from wheel ai_dynamo-<nightly-with-sidecars>-py3-none-any.whl...' && if [ -f /srtctl-runtime/dynamo_wheels.py ]; then python3 /srtctl-runtime/dynamo_wheels.py install; else echo 'ERROR: /srtctl-runtime/dynamo_wheels.py not found for ai-dynamo wheel install' >&2; exit 1; fi && echo 'ai-dynamo-runtime and ai-dynamo install path completed for ai_dynamo-<nightly-with-sidecars>-py3-none-any.whl' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock"
+command: |
+    python3 -m dynamo.frontend --http-port=8000 --router-mode kv
+
+## service_dcgm-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_dcgm-exporter_node-01.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_dcgm-exporter_node-02.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_dcgm-exporter_node-03.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_node-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_node-exporter_node-01.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_node-exporter_node-02.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_node-exporter_node-03.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## tachometer
+nodelist: node-01
+output: <output>/logs/tachometer.out
+srun_export_env:
+    POLARS_MAX_THREADS: 4
+use_bash_wrapper: False
+command: |
+    tachometer-scraper --config <output>/logs/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120
+
+## <unnamed>
+nodelist: node-01
+output: <output>/logs/benchmark.out
+container_image: vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYNAMO_VERSION: <nightly-with-sidecars>
+    DYNAMO_WHEEL_NAME: ai_dynamo-<nightly-with-sidecars>-py3-none-any.whl
+    SRTCTL_FRONTEND_TYPE: dynamo
+    SRT_FRONTEND_HOST: 127.0.0.1
+    SRT_FRONTEND_PORT: 8000
+command: |
+    bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 128 128 4x8 inf /model Qwen/Qwen3-0.6B false 8 0 0 0.8 10 2 '' true random '' false

@@ -5,6 +5,7 @@
 Post-process stage mixin for SweepOrchestrator.
 
 Handles:
+- Releasing idle nodes back to Slurm before post-processing (opt-in)
 - Benchmark result extraction
 - S3 upload of the whole log directory
 - AI-powered failure analysis using Claude Code CLI
@@ -29,7 +30,7 @@ from srtctl.core.config import load_cluster_config
 from srtctl.core.git_state import GIT_STATE_FILENAME
 from srtctl.core.lockfile import collect_worker_fingerprints, generate_reproduction_report, write_lockfile
 from srtctl.core.schema import DEFAULT_S3_ARCHIVE, DEFAULT_S3_EXCLUDE, AIAnalysisConfig, S3Config
-from srtctl.core.slurm import start_srun_process
+from srtctl.core.slurm import AllocationShrink, get_batch_host, shrink_job_allocation, start_srun_process
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
@@ -39,6 +40,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 POSTPROCESS_UPLOAD_FAILED_EXIT = 11
+
+# Written to the log directory by release_idle_nodes(), so the release ships with the uploaded logs.
+ALLOCATION_RELEASE_FILENAME = "allocation-release.json"
 
 # Runs inside the upload container (plain python:3.11, srtctl is not installed there), so it
 # is stdlib plus an optional ``zstandard``. argv: <root> <out_dir> <json list of glob patterns>.
@@ -87,6 +91,19 @@ def s3_sync_exclude_pattern(archive_pattern: str) -> str:
     return archive_pattern.replace("**", "*")
 
 
+def _skipped_shrink(retained: str, reason: str) -> AllocationShrink:
+    """An ``AllocationShrink`` for a release that was never attempted."""
+    return AllocationShrink(
+        requested=False,
+        succeeded=False,
+        retained=retained,
+        released=(),
+        verified=False,
+        reason=reason,
+        duration_s=0.0,
+    )
+
+
 class PostProcessStageMixin:
     """Mixin for post-process stage after benchmark completion.
 
@@ -101,6 +118,9 @@ class PostProcessStageMixin:
     # Type hints for mixin dependencies
     config: "SrtConfig"
     runtime: "RuntimeContext"
+
+    # Node the allocation was shrunk to by release_idle_nodes(); None while the job keeps every node.
+    _retained_node: str | None = None
 
     def _get_ai_analysis_config(self) -> AIAnalysisConfig | None:
         """Load AI analysis config from cluster config (reporting.ai_analysis).
@@ -192,20 +212,124 @@ class PostProcessStageMixin:
             except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to copy %s to log directory: %s", name, e)
 
-    def run_postprocess(self, exit_code: int, reporter: "StatusReporter | None" = None) -> None:
+    def release_idle_nodes(self, received_signal: str | None = None) -> AllocationShrink | None:
+        """Shrink the job to its batch host so the other nodes return to Slurm before post-processing.
+
+        Opt-in through ``release_nodes_before_postprocess`` in srtslurm.yaml; returns
+        None without touching Slurm when it is off. ``run_postprocess`` calls it
+        after the lockfile and energy report are written (they read the job's
+        ``SLURM_*`` environment, which a release rewrites) and before the S3
+        upload; every worker, frontend and service step has stopped by then, and
+        Slurm kills any step still running on a released node. On success the S3
+        upload and AI analysis run on the retained node (``_postprocess_node``);
+        on a refusal (``disable_job_shrink``, arbitrary distribution) or a skip
+        they run on the head node as before. A job shutting down on a signal
+        (``received_signal``: walltime or scancel) is skipped, since Slurm refuses
+        to resize a job that is already ending. The outcome is written to
+        ``allocation-release.json`` in the log directory. Never raises.
+        """
+        if not self.runtime.release_nodes_before_postprocess:
+            return None
+
+        job_id = self.runtime.job_id
+        batch_host: str | None = None
+        try:
+            if received_signal is not None:
+                shrink = _skipped_shrink(
+                    "", f"job is ending on {received_signal}; Slurm refuses to resize a job that is finishing"
+                )
+            elif self.runtime.nodes.het:
+                shrink = _skipped_shrink("", "heterogeneous job: Slurm cannot shrink a het allocation to one node")
+            elif not job_id:
+                shrink = _skipped_shrink("", "no Slurm job id")
+            elif (batch_host := get_batch_host()) is None:
+                shrink = _skipped_shrink("", "batch host unknown (SLURMD_NODENAME and SLURM_NODELIST unset)")
+            else:
+                logger.info("Releasing every node except batch host %s before post-processing", batch_host)
+                shrink = shrink_job_allocation(job_id, batch_host)
+        except Exception as e:  # noqa: BLE001 - cleanup path, never fatal
+            shrink = _skipped_shrink("", f"node release failed: {e}")
+        except BaseException:
+            # The signal handler's SystemExit (walltime or scancel while scontrol runs). The
+            # controller may already have shrunk the job, so record the attempt before exiting.
+            self._write_release_evidence(
+                AllocationShrink(
+                    requested=batch_host is not None,
+                    succeeded=False,
+                    retained=batch_host or "",
+                    released=(),
+                    verified=False,
+                    reason="interrupted by a shutdown signal during the release; Slurm may already have shrunk the job",
+                    duration_s=0.0,
+                ),
+                job_id,
+            )
+            raise
+
+        if shrink.succeeded:
+            self._retained_node = shrink.retained
+            logger.info(
+                "Released %d node(s) to Slurm in %.1fs (%s); post-processing runs on %s",
+                len(shrink.released),
+                shrink.duration_s,
+                ", ".join(shrink.released),
+                shrink.retained,
+            )
+            if not shrink.verified:
+                logger.warning("Node release not verified: %s", shrink.reason)
+        elif shrink.requested:
+            logger.warning("Node release failed, keeping the full allocation: %s", shrink.reason)
+        else:
+            logger.info("Node release skipped: %s", shrink.reason)
+
+        self._write_release_evidence(shrink, job_id)
+        return shrink
+
+    def _write_release_evidence(self, shrink: AllocationShrink, job_id: str) -> None:
+        """Write ``allocation-release.json`` into the log directory so the outcome ships with the upload."""
+        record = {
+            **shrink.to_dict(),
+            "job_id": job_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            (self.runtime.log_dir / ALLOCATION_RELEASE_FILENAME).write_text(json.dumps(record, indent=2) + "\n")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to write %s: %s", ALLOCATION_RELEASE_FILENAME, e)
+
+    def _postprocess_node(self) -> tuple[str, int | None]:
+        """Node and het group for the post-processing sruns (S3 upload, AI analysis).
+
+        The node kept by ``release_idle_nodes`` once the job has shrunk (a shrunk
+        job is never het), otherwise the head node in its het component.
+        """
+        if self._retained_node is not None:
+            return self._retained_node, None
+        head = self.runtime.nodes.head
+        return head, self.runtime.nodes.het_group_for(head)
+
+    def run_postprocess(
+        self,
+        exit_code: int,
+        reporter: "StatusReporter | None" = None,
+        received_signal: str | None = None,
+    ) -> None:
         """Run post-processing after benchmark completion.
 
         Handles:
         1. Copy config YAML into log directory (for S3 upload)
         2. Rollup generation (benchmark-specific normalization)
         3. Benchmark result extraction (reads rollup or falls back to raw)
-        4. S3 upload of the whole log directory (if S3 configured)
-        5. Eager push of ``logs_url`` to the status API right after the S3 sync
+        4. Release of the idle nodes to Slurm (``release_idle_nodes``, opt-in),
+           after the lockfile and energy report so they record the allocation
+           the run used
+        5. S3 upload of the whole log directory (if S3 configured)
+        6. Eager push of ``logs_url`` to the status API right after the S3 sync
            completes, so downstream consumers can fetch results from S3 even
            if later stages below fail or hang.
-        6. Stash ``logs_url`` on self so the caller's final
+        7. Stash ``logs_url`` on self so the caller's final
            ``report_completed`` PUT in do_sweep can reassert the pointer.
-        7. AI-powered failure analysis (only on failures, if enabled).
+        8. AI-powered failure analysis (only on failures, if enabled).
 
         Benchmark results themselves are NOT pushed to the status API — S3 is
         the source of truth for artifacts. The collector only stores pointers.
@@ -213,8 +337,10 @@ class PostProcessStageMixin:
         Args:
             exit_code: Exit code from the benchmark run
             reporter: Optional StatusReporter for eager mid-run pushes. When
-                provided, ``logs_url`` is PUT as soon as it's known (step 5);
+                provided, ``logs_url`` is PUT as soon as it's known (step 6);
                 when None, only the stash path is used.
+            received_signal: Signal that started the shutdown (``ProcessRegistry.received_signal``),
+                or None; a signalled job skips the node release.
         """
         # Copy config into log directory so it's included in S3 upload
         self._copy_config_to_logs()
@@ -245,6 +371,10 @@ class PostProcessStageMixin:
         # Best-effort CPU/GPU energy-per-token report. Must land before the S3
         # sync so it ships with the rest of the log directory.
         self._build_power_energy_report()
+
+        # Everything above reads the job's SLURM_* environment, which a release
+        # rewrites; the upload and AI analysis below run on the retained node.
+        self.release_idle_nodes(received_signal)
 
         # Upload the log directory to S3 (if configured)
         s3_url = self._run_postprocess_container()
@@ -427,7 +557,7 @@ class PostProcessStageMixin:
             logger.debug("Lockfile comparison skipped: %s", e)
 
     def _run_postprocess_container(self) -> str | None:
-        """Upload the log directory to S3 from a small container on the head node.
+        """Upload the log directory to S3 from a small container on the post-processing node.
 
         Ships the run identity (config, lockfile, job JSON, sbatch script, git
         state), every orchestrator, worker, frontend and service log, the
@@ -470,16 +600,19 @@ class PostProcessStageMixin:
         if s3_config.region:
             env["AWS_DEFAULT_REGION"] = s3_config.region
 
+        node, het_group = self._postprocess_node()
         try:
             logger.info("Uploading the log directory to %s...", s3_url)
             proc = start_srun_process(
                 command=["bash", "-c", script],
-                nodelist=[self.runtime.nodes.head],
+                nodelist=[node],
                 output=str(self.runtime.log_dir / "postprocess.log"),
                 container_image="python:3.11",
+                reuse_container=self.runtime.reuse_container,
+                container_prepare_timeout_seconds=self.runtime.container_prepare_timeout_seconds,
                 container_mounts={self.runtime.log_dir: Path("/logs")},
                 env_to_set=env,
-                het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
+                het_group=het_group,
             )
             proc.wait(timeout=600)  # 10 min for the awscli install plus a full sync
 
@@ -633,15 +766,18 @@ echo "AI analysis complete."
         analysis_log = self.runtime.log_dir / "ai_analysis.log"
         logger.info("Starting Claude Code analysis (log: %s)", analysis_log)
 
+        node, het_group = self._postprocess_node()
         try:
             proc = start_srun_process(
                 command=["bash", "-c", script],
-                nodelist=[self.runtime.nodes.head],
+                nodelist=[node],
                 output=str(analysis_log),
                 container_image="python:3.11",
+                reuse_container=self.runtime.reuse_container,
+                container_prepare_timeout_seconds=self.runtime.container_prepare_timeout_seconds,
                 container_mounts={self.runtime.log_dir: Path("/logs")},
                 env_to_set=env_to_set,
-                het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
+                het_group=het_group,
             )
 
             # Wait for completion with timeout (15 minutes for install + analysis)

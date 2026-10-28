@@ -69,11 +69,11 @@ Every custom benchmark command receives frontend metadata plus mode-specific met
 | `SRT_GPUS_PER_NODE`             | int                            | `resources.gpus_per_node` |
 | `SRT_WORKER_NODES`              | comma-separated hostnames      | Every engine worker node (empty when the job has no engine roles) |
 
-Only variables for roles present in the recipe are emitted. Entries follow logical topology order (prefill index, decode index, or aggregated index). Multi-node follower ranks are excluded because they do not own separate engines; co-located logical workers retain repeated IPs and distinct ports so list positions remain aligned. One exception applies to `AIPERF_SERVER_METRICS_URLS`: an SGLang role with `dp-size` (or `data-parallel-size`) greater than 1 also lists each follower's URL right after its leader, because every node of an attention-DP worker schedules its own DP ranks and exports their metrics. For such a role the metrics list no longer aligns position by position with `SRT_*_ENDPOINTS`. Dynamo sidecar workers keep logical leaders only. With a Dynamo frontend, endpoint and metrics URLs use each leader's `DYN_SYSTEM_PORT`; other frontends use the worker HTTP port. If KVBM metrics are configured, their URLs are appended to `AIPERF_SERVER_METRICS_URLS` after the logical worker URLs.
+Only variables for roles present in the recipe are emitted. Entries follow logical topology order (prefill index, decode index, or aggregated index). Multi-node follower ranks are excluded because they do not own separate engines; co-located logical workers retain repeated IPs and distinct ports so list positions remain aligned. One exception applies to `AIPERF_SERVER_METRICS_URLS`: an SGLang role with more than one DP rank (`attn-dp-size`, or `dp-size` / `data-parallel-size`, greater than 1) also lists each follower's URL right after its leader, because every node of an attention-DP worker schedules its own DP ranks and exports their metrics. For such a role the metrics list no longer aligns position by position with `SRT_*_ENDPOINTS`. With a Dynamo frontend, endpoint and metrics URLs use each leader's `DYN_SYSTEM_PORT`; other frontends use the worker HTTP port. Dynamo sidecar workers keep logical leaders only, also for SGLang attention DP: `SRT_*_ENDPOINTS` names each leader's native engine HTTP port, and `AIPERF_SERVER_METRICS_URLS` names, at the same position, that leader's native engine `/metrics` on the same port, or, where the engine serves none (TRT-LLM's OpenEngine gRPC server), the sidecar's runtime `/metrics` on its `DYN_SYSTEM_PORT`. Built-in AIPerf runners instead receive every target Tachometer scrapes (see [Native sidecars](sidecars.md#metrics)). If KVBM metrics are configured, their URLs are appended to `AIPERF_SERVER_METRICS_URLS` after the logical worker URLs.
 
 Two caveats for `AIPERF_SERVER_METRICS_URLS`:
 
-- **Dynamo TRT-LLM worker URLs are advertised when engine metrics are enabled.** This is the default via `engine.publish_metrics: true` (`--publish-metrics`) when the combined setting is omitted; `engine.publish_events_and_metrics: true` also enables them. False or unset uses `engine.publish_metrics` to decide whether to publish metrics and advertise worker URLs. URLs are omitted when metrics-only is false and the legacy combined flag is false or unset, including with observability enabled. This applies to built-in AIPerf and custom benchmarks, excluding sidecars, whose behavior is unchanged. Runtime-only metrics may still exist but do not constitute an engine-metrics capture. With `frontend.type: trtllm_serve` the gate is the worker's own engine config instead: its `/prometheus/metrics` URL is advertised when that role's `args.return_perf_metrics` is true (the srtctl default for trtllm_serve recipes; an explicit `false` drops the URL). KVBM URLs are unaffected; KVBM serves its own endpoint regardless of the flag.
+- **Dynamo TRT-LLM worker URLs are advertised when engine metrics are enabled.** This is the default via `engine.publish_metrics: true` (`--publish-metrics`) when the combined setting is omitted; `engine.publish_events_and_metrics: true` also enables them. False or unset uses `engine.publish_metrics` to decide whether to publish metrics and advertise worker URLs. URLs are omitted when metrics-only is false and the legacy combined flag is false or unset, including with observability enabled. This applies to built-in AIPerf and custom benchmarks, excluding custom benchmarks with sidecars, which always receive one URL per logical worker. TRT-LLM sidecars do not receive `--publish-metrics`, so for built-in AIPerf only `engine.publish_events_and_metrics: true` advertises their sidecar runtime URLs; OpenEngine gRPC serves no engine metrics endpoint. Runtime-only metrics may still exist but do not constitute an engine-metrics capture. With `frontend.type: trtllm_serve` the gate is the worker's own engine config instead: its `/prometheus/metrics` URL is advertised when that role's `args.return_perf_metrics` is true (the srtctl default for trtllm_serve recipes; an explicit `false` drops the URL). KVBM URLs are unaffected; KVBM serves its own endpoint regardless of the flag.
 - **An explicit `AIPERF_SERVER_METRICS_URLS` in the recipe `environment:` wins.** Injection is skipped when the variable is already set, so a curated endpoint list is never clobbered.
 
 Values in `benchmark.env` are applied last and can explicitly override any automatically injected variable.
@@ -98,11 +98,15 @@ benchmark:
 ```
 
 The launcher checks these seven values before downloading anything. It clones InferenceX `main`
-and its AIPerf submodule into temporary storage, runs InferenceX's `srt_agentic.sh` against the
-ready srt-slurm frontend, and removes the checkout afterward. AIPerf artifacts and the aggregate
-JSON are written under `/logs/agentic` by default. The benchmark container needs network access
-to GitHub, package downloads, and the AgentX trace dataset. The launch log records the resolved
-InferenceX and AIPerf commits.
+into temporary storage, runs InferenceX's `srt_agentic.sh` against the ready srt-slurm frontend,
+and removes the checkout afterward. InferenceX installs the `agentx-harness` release pinned in its
+`requirements.txt`; for InferenceX commits before
+[SemiAnalysisAI/InferenceX#3940](https://github.com/SemiAnalysisAI/InferenceX/pull/3940), which
+still vendor the harness as the `utils/aiperf` submodule, the launcher also fetches that
+submodule. AIPerf artifacts and the aggregate JSON are written under `/logs/agentic` by default.
+The benchmark container needs network access to GitHub, package downloads, and the AgentX trace
+dataset. The launch log records the resolved InferenceX commit and the pinned `agentx-harness`
+version or AIPerf submodule commit.
 
 Set `AGENTX_INFERENCEX_REF` in `benchmark.env` to pin an InferenceX commit for repeatable runs.
 `CONC_LIST` can specify multiple space-separated concurrency values; `CONC` is still required.
@@ -164,7 +168,7 @@ Cache files are named for the values that matter when deciding what to delete â€
 my-model-fp8_isl8192_osl1_n32_3f9ac2b1.pkl
 ```
 
-The digest covers the seed, range ratio, prefix length, chat-template behavior and tokenizer, so datasets that differ only in those never collide. A separate file per prompt count is expected: `num_prompts` is derived from the concurrency level, and because it changes how many draws come out of the seeded RNG, a dataset built for one concurrency is not a subset of another.
+The digest covers the seed, range ratio, prefix length, chat-template behavior and tokenizer, so datasets that differ only in those never collide. The tokenizer is identified by its file fingerprint, not by its container path, so `srtctl cache-inputs` and a job that mount the same model at different paths share one file. A separate file per prompt count is expected: `num_prompts` is derived from the concurrency level, and because it changes how many draws come out of the seeded RNG, a dataset built for one concurrency is not a subset of another.
 
 Each file stores the full parameter set alongside the prompts, including a SHA-256 fingerprint of the tokenizer files (`tokenizer.json`, `tokenizer_config.json`, `special_tokens_map.json`). That fingerprint is verified on load, so replacing a checkpoint at the same path invalidates the cache instead of silently reusing prompts built for the old tokenizer. Model weights are deliberately not hashed â€” they never affect prompt generation.
 

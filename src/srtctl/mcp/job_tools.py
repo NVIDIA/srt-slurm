@@ -159,11 +159,15 @@ def _sacct(job_id: str) -> dict[str, Any] | None:
     )
     if result.returncode != 0:
         return {"error": result.stderr.strip() or f"sacct exited {result.returncode}"}
-    for line in result.stdout.splitlines():
-        parts = line.split("|")
-        if len(parts) >= len(SACCT_FIELDS) and parts[0] == job_id:
-            return dict(zip((f.lower() for f in SACCT_FIELDS), parts[: len(SACCT_FIELDS)], strict=True))
-    return None
+    rows: list[dict[str, Any]] = [
+        dict(zip((f.lower() for f in SACCT_FIELDS), parts[: len(SACCT_FIELDS)], strict=True))
+        for parts in (line.split("|") for line in result.stdout.splitlines())
+        if len(parts) >= len(SACCT_FIELDS) and parts[0] == job_id
+    ]
+    # A job shrunk by release_nodes_before_postprocess keeps one RESIZING record per resize, listed
+    # before its current record (sacct prints every RESIZING duplicate, oldest first).
+    current = [row for row in rows if not row["state"].startswith("RESIZING")]
+    return (current or rows)[-1] if rows else None
 
 
 def _tail(path: Path, lines: int) -> list[str]:

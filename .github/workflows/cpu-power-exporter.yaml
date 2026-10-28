@@ -42,9 +42,10 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --locked
 
-  # The released binaries are the cross-compiled musl ones, so a native cargo
-  # build would not catch a linker or target regression. Both release targets
-  # are built here, through the same Dockerfile the release workflow uses.
+  # The released binaries are cross-compiled (aarch64 glibc, x86_64 musl), so a
+  # native cargo build would not catch a linker or target regression. Both
+  # release targets are built here, through the same Dockerfile the release
+  # workflow uses.
   release-build:
     runs-on: ubuntu-latest
     timeout-minutes: 30

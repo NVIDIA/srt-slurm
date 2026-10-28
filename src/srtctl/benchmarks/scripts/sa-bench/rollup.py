@@ -217,6 +217,8 @@ def _compute_working_gpu_counts(resources: dict[str, Any]) -> tuple[int | None, 
     gpus_per_prefill = _as_int(resources.get("gpus_per_prefill"))
     decode_workers = _as_int(resources.get("decode_workers"))
     gpus_per_decode = _as_int(resources.get("gpus_per_decode"))
+    agg_workers = _as_int(resources.get("agg_workers"))
+    gpus_per_agg = _as_int(resources.get("gpus_per_agg"))
 
     prefill_working = prefill_workers * gpus_per_prefill if prefill_workers > 0 and gpus_per_prefill > 0 else None
     decode_working = decode_workers * gpus_per_decode if decode_workers > 0 and gpus_per_decode > 0 else None
@@ -227,6 +229,9 @@ def _compute_working_gpu_counts(resources: dict[str, Any]) -> tuple[int | None, 
         total_working = prefill_working
     elif decode_working is not None:
         total_working = decode_working
+    elif agg_workers > 0 and gpus_per_agg > 0:
+        # Aggregated workers may use only part of a node; idle GPUs on it are not working GPUs.
+        total_working = agg_workers * gpus_per_agg
     else:
         total_working = None
 
@@ -264,7 +269,7 @@ def _build_csv_row(
     """Build one CSV row from a parsed sa-bench result."""
     total_token_throughput = data.get("total_token_throughput")
     median_tpot = data.get("median_tpot_ms")
-    # Fall back to node-based GPU counts when worker-level counts are unavailable (e.g. agg mode).
+    # Fall back to node-based GPU counts when worker-level counts are unavailable (e.g. legacy metadata).
     effective_total_working = total_working_gpu_count if total_working_gpu_count is not None else gpu_num
     effective_decode_working = decode_working_gpu_count if decode_working_gpu_count is not None else decode_gpu_count
     effective_prefill_working = prefill_working_gpu_count if prefill_working_gpu_count is not None else (0 if gpu_num is not None else None)

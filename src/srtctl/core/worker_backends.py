@@ -46,6 +46,7 @@ def allocate_worker_endpoints(config: SrtConfig, nodes: Sequence[str]) -> list[E
         gpus_per_node=topology.gpus_per_node,
         available_nodes=nodes,
         spread_workers=config.resources.spread_workers,
+        gpu_indices_by_mode=topology.gpu_indices_by_mode,
     )
 
 

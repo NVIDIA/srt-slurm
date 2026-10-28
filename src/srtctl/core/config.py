@@ -321,6 +321,9 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         config["health_check"] = cluster_config["default_health_check"]
         logger.debug("Applied default_health_check: %s", config["health_check"])
 
+    if "reuse_container" not in config and "default_reuse_container" in cluster_config:
+        config["reuse_container"] = cluster_config["default_reuse_container"]
+
     # Cluster-wide host setup (e.g. locking GPU clocks on nodes that need it).
     # Whole-block replace, like default_health_check: a recipe that sets
     # host_setup owns it entirely, so `host_setup: {commands: []}` is the way to

@@ -504,10 +504,13 @@ def _random_dataset_cache_key(
     num_prompts and output_len belong here even though they look like sizing
     knobs: both consume draws from the seeded RNG, so changing either shifts
     every prompt in the dataset.
+
+    The tokenizer is identified by its fingerprint alone, never by ``tokenizer_id``:
+    the same files mounted at another container path (``cache-inputs`` vs a job)
+    must share one entry. The fingerprint already embeds the id for HF repo ids.
     """
     return {
         "version": RANDOM_DATASET_CACHE_VERSION,
-        "tokenizer_id": tokenizer_id,
         "tokenizer_fingerprint": _tokenizer_fingerprint(tokenizer_id),
         "tokenizer_mode": tokenizer_mode,
         "custom_tokenizer": custom_tokenizer or "",

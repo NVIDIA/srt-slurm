@@ -151,7 +151,6 @@ RULES = [
         "deriving it from another port; a derived port collides when two processes share a node.",
         frozenset(
             {
-                ("backends/vllm.py", "grpc_port + 1"),
                 # KVBM_ZMQ_PORTS allocates a two-port block; the ACK port is the block's second port.
                 ("cli/mixins/worker_stage.py", "leader.kvbm_zmq_port + 1"),
             }

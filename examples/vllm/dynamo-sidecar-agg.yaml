@@ -1,0 +1,58 @@
+# vLLM aggregated through a native Dynamo sidecar.
+#
+# One TP1 worker runs the Rust frontend (`vllm-rs serve`) beside a CPU-only
+# `python3 -m dynamo.vllm.sidecar` that registers it with the Dynamo frontend
+# over native gRPC. Tachometer scrapes two endpoints per worker: the sidecar's
+# Dynamo runtime metrics on its system port and the engine's own `vllm:*`
+# metrics on its HTTP port (docs/sidecars.md#metrics).
+#
+# The image must ship `vllm-rs` on PATH (vLLM #57606 or later), and the Dynamo
+# wheel must include the vLLM sidecar launcher; see docs/sidecars.md.
+# Aliases (`qwen3-0.6b`, `vllm`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-vllm-dynamo-sidecar-agg"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "vllm"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+
+dynamo:
+  source:
+    wheel: "<nightly-with-sidecars>"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: "kv"
+
+engine: vllm
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    sidecar: true
+    kv_events: true
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

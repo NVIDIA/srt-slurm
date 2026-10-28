@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from srtctl.core.slurm import AllocationShrink
+
 __all__ = [
     "FakePopen",
     "MockOptions",
@@ -247,6 +249,20 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
     def _fake_nodelist() -> list[str]:
         return list(options.nodelist)
 
+    def _fake_batch_host() -> str | None:
+        return options.nodelist[0] if options.nodelist else None
+
+    def _fake_shrink(job_id: str, keep: str, **_kwargs) -> AllocationShrink:
+        return AllocationShrink(
+            requested=True,
+            succeeded=True,
+            retained=keep,
+            released=tuple(node for node in options.nodelist if node != keep),
+            verified=True,
+            reason=None,
+            duration_s=0.0,
+        )
+
     def _fake_put(url, json=None, timeout=None, **_kwargs):
         payload = dict(json or {})
         payload["_sink"] = "put"
@@ -273,6 +289,9 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
         ("srtctl.cli.mixins.benchmark_stage.start_srun_process", _fake_srun),
         ("srtctl.cli.mixins.postprocess_stage.start_srun_process", _fake_srun),
         ("srtctl.cli.mixins.service_stage.start_srun_process", _fake_srun),
+        # Node release before post-processing (srtslurm.yaml release_nodes_before_postprocess).
+        ("srtctl.cli.mixins.postprocess_stage.get_batch_host", _fake_batch_host),
+        ("srtctl.cli.mixins.postprocess_stage.shrink_job_allocation", _fake_shrink),
         ("srtctl.frontends.dynamo.start_srun_process", _fake_srun),
         ("srtctl.frontends.sglang.start_srun_process", _fake_srun),
         ("srtctl.frontends.static_router.start_srun_process", _fake_srun),

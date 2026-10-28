@@ -440,7 +440,7 @@ flowchart TD
     end
     subgraph FRONTEND["Frontend layer"]
         frontend["Frontend (ABC)<br/>start_frontends(), probe_ready(), worker_launch"]
-        frontend_impls["DynamoFrontend: srun process, /health JSON, dynamo launch<br/>SGLangRouter: srun process, /workers JSON, direct launch<br/>TRTLLMServe: srun process, bare 200, direct launch<br/>VLLMFrontend: no process, /health + /v1/models, direct launch"]
+        frontend_impls["DynamoFrontend: srun process, /health instance listing, dynamo launch<br/>SGLangRouter: srun process, /workers JSON, direct launch<br/>TRTLLMServe: srun process, bare 200, direct launch<br/>VLLMFrontend: no process, /health + /v1/models, direct launch"]
     end
     subgraph INFRA["Infrastructure layer"]
         slurm["slurm.py<br/>start_srun_process(), get_slurm_nodelist(), get_hostname_ip()"]
@@ -512,7 +512,9 @@ sequenceDiagram
     Note over wait: counts from frontend.health_expectations(config, processes)
     loop until ready or timeout (the loop owns timing, abort, logging)
         wait->>fe: probe_ready(host, port, n_prefill, n_decode, config)
-        alt dynamo /health, routers /workers
+        alt dynamo /health, then /health?instances=true if status-only
+            Note over fe: DynamoFrontend.probe_ready, then parse_health
+        else routers /workers
             Note over fe: probe_json_health
         else trtllm-serve (bare 200)
             Note over fe: probe_http_ok
@@ -560,7 +562,7 @@ consumer derives one port from another.
 | `sys` | 7500 | 1 | global | every process (`DYN_SYSTEM_PORT`) |
 | `http` | 6100 | 32 | per node | endpoint leaders (a router connects) |
 | `bootstrap` | 7200 | 1 | per node | prefill endpoints |
-| `kv_events` | 5200 | 1 | global | every process (block per local DP size) |
+| `kv_events` | 5200 | 1 | global | every process (block per DP rank: vLLM local, SGLang the worker's) |
 | `nixl` | 5400 | 1 | global | every process (block per DP size) |
 | `dp_rpc` | 8400 | 1 | per node | vLLM DP endpoints |
 | `kvbm_zmq` | 5600 | 2 | global | KVBM leaders (pub, ack = pub + 1) |

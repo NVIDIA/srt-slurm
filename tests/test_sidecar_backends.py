@@ -183,6 +183,8 @@ def test_sglang_sidecar_kv_events_config_true_covers_aggregated_mode() -> None:
         {"tensor_parallel_size": 8, "data_parallel_size": 2, "enable_dp_attention": True},
         {"tp-size": 8, "dp-size": 2, "enable-dp-attention": True},
         {"tp_size": 8, "dp_size": 2, "enable_dp_attention": True},
+        {"tp-size": 8, "attn-dp-size": 2},
+        {"tensor_parallel_size": 8, "attention_data_parallel_size": 2},
     ],
 )
 def test_sglang_multinode_dp_sidecar_relays_follower_kv_events(mode: str, args: dict) -> None:
@@ -305,6 +307,9 @@ def test_sglang_disagg_dp_example_launches_two_disjoint_worker_groups(tmp_path: 
         ({"tp-size": 8, "dp-size": 4, "enable-dp-attention": True}, 2, 4, {0, 1}),
         # Each attention-DP group spans two nodes; only its first node publishes.
         ({"tp-size": 8, "dp-size": 2, "enable-dp-attention": True}, 4, 2, {0, 2}),
+        ({"tp-size": 8, "attn-dp-size": 2}, 4, 2, {0, 2}),
+        # The deprecated spelling with one DP rank leaves attention DP off.
+        ({"tp-size": 8, "dp-size": 1, "enable-dp-attention": True}, 2, 4, {0}),
         # CP rank zero is the publisher even when all attention TP ranks are zero.
         ({"tp-size": 8, "dp-size": 2, "attn-cp-size": 4, "enable-dp-attention": True}, 4, 2, {0, 2}),
         # Later pipeline stages cannot publish the rank's KV events.
@@ -776,7 +781,16 @@ def test_sidecar_waits_for_listener_without_connecting(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("mode", "memory_bind"),
-    [("agg", False), ("agg", True), ("agg", "local"), ("prefill", False), ("decode", False)],
+    [
+        ("agg", False),
+        ("agg", True),
+        ("agg", "local"),
+        ("agg", "preferred"),
+        ("prefill", False),
+        ("prefill", "preferred"),
+        ("decode", False),
+        ("decode", "preferred"),
+    ],
 )
 def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path, mode: str, memory_bind: bool | str) -> None:
     process = _process(mode=mode)
@@ -792,6 +806,7 @@ def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path, mode: str,
     script = command[2]
     assert "trtllm-llmapi-launch python3 -m tensorrt_llm.commands.serve /model" in script
     assert ("bash /configs/numa_cpu_bind.sh --bind-memory" in script) is (memory_bind == "local")
+    assert ("bash /configs/numa_cpu_bind.sh --prefer-memory" in script) is (memory_bind == "preferred")
     assert ("numactl -m 0,1" in script) is (memory_bind is True)
     assert "--grpc --grpc-protocol openengine --host 127.0.0.1 --port 19000" in script
     assert "python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19000 --model-path /model" in script

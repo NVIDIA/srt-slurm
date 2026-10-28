@@ -54,8 +54,8 @@ def query_trace(
     iterations, or sources. start/end are seconds relative to summary.meta.origin_ns.
     request/lifecycle require request_id. All list queries have offset/limit
     (maximum 1000). Rank selects the recorded Nsight rank or the observation's
-    rank_kind (global rank for TRT-LLM, attention TP for TokenSpeed), not router DP
-    rank. Runtime spans and shared batch activity are not exclusive request costs.
+    rank_kind (global rank for TRT-LLM, attention TP for TokenSpeed, DP rank for
+    vLLM/SGLang engine metrics), not router DP rank. Runtime spans and shared batch activity are not exclusive request costs.
     Generate the dataset explicitly with srtctl dsight build before querying.
     """
 

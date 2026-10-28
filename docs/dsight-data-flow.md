@@ -151,6 +151,53 @@ configured batch limits, active KV pages and usable page pool sizes to **Metrics
 A dialect can
 omit sources it cannot interpret.
 
+## Worker metrics with Dynamo sidecars
+
+When workers run with Dynamo sidecars, Tachometer scrapes up to two endpoints
+per worker process. Both use the scraper's `backend` filter, which writes the
+endpoint's `hostname`, `worker_index`, `worker_process` and `worker_role` as row
+columns. DSight attributes both endpoints to the same `{role}-{index}` worker.
+`scraper_endpoint` is part of each series identity, so the two endpoints never
+merge, and a family's catalog entry lists only the endpoints that served it.
+
+| Endpoint | Serves | vLLM | SGLang | TRT-LLM |
+| --- | --- | --- | --- | --- |
+| `backend_{mode}{index}_rank{rank}` | The sidecar's Dynamo system status server | Yes | Ranks that run a sidecar | Yes |
+| `backend_{mode}{index}_rank{rank}_engine` | The engine's native Prometheus server | `vllm:*` families and the API server's `http_*` families | `sglang:*` families from every node | Not available |
+
+What each endpoint contributes to **Metrics**:
+
+- **Sidecar.** `dynamo_component_*` request, in-flight, duration, byte, error and
+  cancellation series appear under Workers / Request lifecycle and First response
+  and transport. Uptime and engine start, drain and cleanup times appear under
+  Component lifecycle. `dynamo_work_handler_*` queue, permit and pool series appear
+  under Admission and queues and Work-handler pool. vLLM and SGLang sidecars that
+  relay KV events add `dynamo_component_kv_publisher_*` counters under Engine KV
+  events. Sidecars publish no per-rank KV block or cache-usage gauges; those come
+  from the engine endpoint.
+- **vLLM engine.** Each data-parallel engine is a separate series with its
+  `engine` label. That label is the engine's DP rank, so the series has rank kind
+  `dp` and `--rank` selects one engine.
+- **SGLang engine.** Each node publishes the scheduler series for its own ranks
+  on its own endpoint, so a multi-node worker has one series per host. The
+  `dp_rank` label sets rank kind `dp`; `tp_rank`, `pp_rank` and `moe_ep_rank` stay
+  labels. Request histograms and token counters from SGLang's tokenizer carry an
+  `is_streaming` label instead of scheduler ranks.
+- **TRT-LLM engine.** In sidecar mode TRT-LLM serves its engine over OpenEngine
+  gRPC, which starts no HTTP or Prometheus server (TRT-LLM `7695494b8f`,
+  `tensorrt_llm/commands/serve.py`). A sidecar-mode capture therefore has no
+  `trtllm_*` families. TRT-LLM iteration lines in worker logs, when recorded,
+  remain the only source of engine iteration and KV utilization evidence.
+
+Engine families share groups, units and titles by concept: running and queued
+requests are under Engine scheduling, KV usage and prefix-cache counters under
+Engine KV cache, SGLang's disaggregation queues and transfer histograms under
+Engine KV transfer, and engine TTFT, inter-token latency, request lifetime and
+per-request time per output token under Engine requests and latency. Engine
+families without a catalog row stay under Workers / Other captured metrics with
+their raw names. A router series' `dp_rank` names the worker it routes to, so
+DSight does not use it as the router series' rank.
+
 ## Missing inputs
 
 | Missing input | Current behavior |

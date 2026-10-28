@@ -42,6 +42,30 @@ The [disaggregated TRT-LLM example](https://github.com/NVIDIA/srt-slurm/blob/mai
 
 For a TRT-LLM `hf:` model, set `model.hf_snapshot_path` to the absolute path of its commit-specific snapshot inside the container, such as `/hf/hub/models--org--name/snapshots/<40-character-commit>`. Set `identity.model.revision` to the same commit and mount the full Hugging Face hub cache at `/hf/hub` so the snapshot's links to `blobs/` resolve. The TRT-LLM workers, sidecars, and sa-bench tokenizer then use that snapshot path; the served model name remains the configured model ID. An absent snapshot fails the launch instead of selecting a moving cache reference.
 
+## Metrics
+
+A sidecar job has two kinds of worker metrics, served by different processes on different ports:
+
+- **Dynamo runtime metrics.** Every Rust sidecar starts the Dynamo runtime's system status server on `DYN_SYSTEM_PORT` (the worker's allocated system port) and serves the `dynamo_component_*` runtime, request-handler, and lifecycle families at `/metrics`; the vLLM and SGLang KV relays add `kv_publisher_*`. Only a process that runs a sidecar binds this port.
+- **Native engine metrics.** No sidecar bridges or polls the engine's own metrics ([ai-dynamo/dynamo `3e72af98f8a5`](https://github.com/ai-dynamo/dynamo/tree/3e72af98f8a5/lib/sidecar)), so the engine's Prometheus families come from the engine's own HTTP server, on the worker's allocated HTTP port.
+
+Tachometer scrapes both, and built-in AIPerf runners receive the same URLs in `AIPERF_SERVER_METRICS_URLS`. Custom benchmarks keep one URL per logical worker, aligned with `SRT_*_ENDPOINTS`: the leader's native engine endpoint, or the sidecar's runtime endpoint where the engine serves none (see [Benchmarks](benchmarks.md#custom)). Every target has the worker's `hostname`, `worker_index`, `worker_process`, and `worker_role` metadata and the `backend` filter:
+
+| Target name | URL |
+| --- | --- |
+| `backend_{mode}{index}_rank{rank}` | `http://<node>:<system port>/metrics`, the sidecar's runtime metrics |
+| `backend_{mode}{index}_rank{rank}_engine` | `http://<node>:<HTTP port>/metrics`, the native engine's metrics |
+
+`{rank}` is the process's rank within the worker: the node rank, or for vLLM hybrid DP the node's first global DP rank.
+
+| Engine | Sidecar runtime endpoint | Native engine endpoint |
+| --- | --- | --- |
+| vLLM | Every node that runs the Rust frontend: the single-node worker, each hybrid-DP node, and the leader of a cross-node TP/PP replica | Same nodes: `vllm-rs` serves `vllm:*` families labelled per DP engine (`model_name`, `engine`) on its HTTP server, which always runs beside gRPC and binds `0.0.0.0` in sidecar mode ([vLLM `b272cff368`](https://github.com/vllm-project/vllm/tree/b272cff368/rust/src/server/src)). `--disable-log-stats` turns the engine series off. Headless followers serve neither |
+| SGLang | The endpoint leader, plus each follower that runs a KV-relay sidecar ([topology](#sglang-topology-and-launch-requirements)) | Every node's `--port`, with `--enable-metrics`, which srtctl passes unless the role's `args` set `enable-metrics`. The leader runs the full HTTP server beside native gRPC: tokenizer histograms (TTFT, ITL, end-to-end latency) and its node's scheduler series. Each follower runs SGLang's health server, whose `/metrics` carries the scheduler series of the DP ranks on that node, labelled `dp_rank` ([SGLang `759111879457`](https://github.com/sgl-project/sglang/tree/759111879457/python/sglang/srt/entrypoints)). srtctl allocates each follower its own HTTP port for it |
+| TRT-LLM | The endpoint leader, where global MPI rank zero runs the sidecar | None |
+
+TRT-LLM's OpenEngine gRPC server (`tensorrt_llm.commands.serve --grpc --grpc-protocol openengine`) replaces the OpenAI HTTP server and has no Prometheus or iteration-statistics endpoint; its only load signal is the `GetLoad` RPC ([TensorRT-LLM `7695494b8f`](https://github.com/NVIDIA/TensorRT-LLM/blob/7695494b8f/tensorrt_llm/commands/serve.py)), which the sidecar does not export. A TRT-LLM sidecar job therefore records only the sidecar's `dynamo_component_*` metrics and no engine series such as KV-cache usage or iteration statistics. For built-in AIPerf runners, TRT-LLM sidecar URLs also follow the `engine.publish_events_and_metrics` gate described in [Benchmarks](benchmarks.md#custom); custom benchmarks always receive each leader's sidecar runtime URL, and Tachometer scrapes them regardless.
+
 ## SGLang topology and launch requirements
 
 SGLang's endpoint leader runs the serving sidecar and registers the complete global DP range. With attention DP and `roles.<role>.kv_events: true`, srtctl also exposes native gRPC and runs a sidecar on each follower that owns a KV publisher. Dynamo automatically selects serving or telemetry-only mode from the local engine's `GetServerInfo` metadata; no mode flag is passed. These followers relay their node-local events with the leader's serving-worker identity and the source's global DP rank; they do not add inference workers. Followers without publishers, including TP-only ranks and later pipeline stages, remain engine-only. For example, TP8/DP2 across four nodes publishes on nodes 0 and 2, so only node 2 needs a telemetry sidecar. Each sidecar discovers its local sources through SGLang's `GetServerInfo`; no context file or manually assigned DP rank is needed.

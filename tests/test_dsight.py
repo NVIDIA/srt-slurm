@@ -23,11 +23,25 @@ from srtctl.dsight.importer import Importer
 from srtctl.dsight.mcp import query_trace
 from srtctl.dsight.model import lifecycle
 from srtctl.dsight.query import TraceDataset
+from srtctl.dsight.storage import FILENAME, write_store
 
 ORIGIN = 1789642711000000000
 CLIENT = "11111111-1111-4111-8111-111111111111"
 SERVER = "22222222-2222-4222-8222-222222222222"
 TRACE = "1234567890abcdef1234567890abcdef"
+
+
+def trtllm_iteration_line(iteration: int, global_rank: int, stamp: str, *, scheduled: int = 18) -> str:
+    """A PyExecutor iteration log line in the TensorRT-LLM v1.3.0rc29 format."""
+    return (
+        f"[09/17/2026-10:58:33] [TRT-LLM] [I] [_torch  ] [RANK {global_rank}] iter = {iteration}, "
+        f"global_rank = {global_rank}, rank = 0, num_scheduled_requests = {scheduled}, adp_dummy_ctx_tokens = 0, "
+        "adp_dummy_gen_tokens = 0, kv_cache_util = 0.250, currank_total_requests = 32/64, "
+        "host_step_time = 1e-3ms, prev_device_step_time = 2.5E+1ms, "
+        f"timestamp = {stamp}, states = {{'num_ctx_requests': 1, 'num_ctx_tokens': 3198, "
+        "'num_generation_tokens': 17, 'cached_kv_tokens': 512}, num_active = 20, num_fetched = 2, "
+        "num_dummy = 0, num_unscheduled = 2"
+    )
 
 
 def write_run(root: Path) -> tuple[Path, Path]:
@@ -122,8 +136,8 @@ def write_run(root: Path) -> tuple[Path, Path]:
     for role in ("prefill", "decode"):
         (logs / f"{role}-host_{role}_w0.out").write_text(
             f"2026-09-17T10:58:33.230Z Engine ID map: request_id={SERVER} trtllm_client_id=7 disagg_request_id=99\n"
-            "[TRT-LLM] iter = 12588, global_rank = 0, rank = 0, num_scheduled_requests = 18, kv_cache_util = 0.08, "
-            "host_step_time = 29.9ms, prev_device_step_time = 28.6ms, timestamp = 2026-09-17 10:58:33\n"
+            + trtllm_iteration_line(12588, 0, "2026-09-17 10:58:33")
+            + "\n"
         )
     metrics = logs / "tachometer" / "local"
     metrics.mkdir(parents=True)
@@ -539,20 +553,13 @@ def test_engine_gauges_are_imported(artifacts, name, label, unit):
 def test_iteration_and_identity_on_one_line_preserve_ranks_window_and_provenance(artifacts, timezone):
     logs, _ = artifacts
     worker_log = logs / "decode-host_decode_w0.out"
-    iteration = (
-        "[TRT-LLM] iter = 42, global_rank = 4, rank = 0, num_scheduled_requests = 2, "
-        "kv_cache_util = 0.25, host_step_time = 1e-3ms, prev_device_step_time = 2.5E+1ms, "
-        "timestamp = "
-    )
-    identity = f" Engine ID map: request_id={SERVER} trtllm_client_id=8 disagg_request_id=101"
+    identity = f"Engine ID map: request_id={SERVER} trtllm_client_id=8 disagg_request_id=101 "
     worker_log.write_text(
-        iteration
-        + "2026-09-17 10:58:34"
-        + identity
+        identity
+        + trtllm_iteration_line(42, 4, "2026-09-17 10:58:34", scheduled=2)
         + "\n"
-        + iteration
-        + "2026-09-17 10:58:10"
         + identity.replace("client_id=8", "client_id=9")
+        + trtllm_iteration_line(42, 4, "2026-09-17 10:58:10", scheduled=2)
         + "\n"
     )
     data = Importer(logs, iteration_timezone=timezone).run()
@@ -578,6 +585,27 @@ def test_iteration_and_identity_on_one_line_preserve_ranks_window_and_provenance
         "host_step_ms": 0.001,
         "previous_device_step_ms": 25.0,
         "local_time": "2026-09-17 10:58:34",
+        "fields": {
+            "iter": 42,
+            "global_rank": 4,
+            "rank": 0,
+            "num_scheduled_requests": 2,
+            "adp_dummy_ctx_tokens": 0,
+            "adp_dummy_gen_tokens": 0,
+            "kv_cache_util": 0.25,
+            "currank_total_requests": [32, 64],
+            "host_step_time": 0.001,
+            "prev_device_step_time": 25.0,
+            "timestamp": "2026-09-17 10:58:34",
+            "states.num_ctx_requests": 1,
+            "states.num_ctx_tokens": 3198,
+            "states.num_generation_tokens": 17,
+            "states.cached_kv_tokens": 512,
+            "num_active": 20,
+            "num_fetched": 2,
+            "num_dummy": 0,
+            "num_unscheduled": 2,
+        },
         "start": 3.0 if timezone else None,
         "end": 4.0 if timezone else None,
         "evidence": [source, 1],
@@ -593,6 +621,38 @@ def test_iteration_and_identity_on_one_line_preserve_ranks_window_and_provenance
         "evidence": [source, 1],
         "identity_ambiguous": False,
     }
+
+
+def test_sparse_iteration_fields_are_json_native_and_round_trip_through_the_store(artifacts, tmp_path):
+    logs, sqlites = artifacts
+    # A future format: shared keys removed or N/A, a new key, and an empty per-request list.
+    (logs / "prefill-host_prefill_w0.out").write_text(
+        "[TRT-LLM] [I] [_torch][RANK 2] iter = 7, global_rank = 2, rank = 0, kv_cache_util = N/A, "
+        "currank_total_requests = 0/0, prev_device_step_time = N/A, timestamp = 2026-09-17 10:58:33, "
+        "states = {'cached_kv_tokens_per_req': [], 'num_ctx_tokens': 0}, future_mode = warm\n"
+    )
+    data = Importer(logs, sqlites, iteration_timezone="UTC").run()
+    row = next(r for r in data["iterations"] if r["worker"] == "prefill-0")
+    assert [row[k] for k in ("batch_requests", "kv_cache_util", "host_step_ms", "previous_device_step_ms")] == [
+        None
+    ] * 4
+    assert list(row["fields"].items()) == [
+        ("iter", 7),
+        ("global_rank", 2),
+        ("rank", 0),
+        ("kv_cache_util", None),
+        ("currank_total_requests", [0, 0]),
+        ("prev_device_step_time", None),
+        ("timestamp", "2026-09-17 10:58:33"),
+        ("states.cached_kv_tokens_per_req", []),
+        ("states.num_ctx_tokens", 0),
+        ("future_mode", "warm"),
+    ]
+    assert json.loads(json.dumps(row["fields"], allow_nan=False)) == row["fields"]
+    write_store(data, tmp_path / FILENAME)
+    stored = TraceDataset.from_path(tmp_path / FILENAME).query("iterations", worker="prefill-0")
+    assert stored == TraceDataset(data).query("iterations", worker="prefill-0")
+    assert list(stored["items"][0]["fields"].items()) == list(row["fields"].items())  # Log order survives storage.
 
 
 def test_nvtx_selection_preserves_shared_annotations_and_detokenize_threshold(artifacts):

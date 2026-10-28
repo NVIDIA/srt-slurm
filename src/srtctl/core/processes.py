@@ -374,6 +374,9 @@ class ProcessRegistry:
         self._failed_processes: list[str] = []
         # name -> the log line that failed a process whose step was still running
         self._failure_reasons: dict[str, str] = {}
+        # Name of the signal (SIGTERM, SIGINT) whose handler started the shutdown; None when
+        # the run ended on its own or on a process failure. Set by setup_signal_handlers().
+        self.received_signal: str | None = None
 
     def add_process(self, process: ManagedProcess) -> None:
         """Add a process to the registry.
@@ -568,6 +571,9 @@ def setup_signal_handlers(
 ) -> None:
     """Setup signal handlers for graceful shutdown.
 
+    The handler records the signal on ``registry.received_signal`` so the
+    cleanup path can tell a walltime or scancel shutdown from a process failure.
+
     Args:
         stop_event: Event to signal shutdown
         registry: ProcessRegistry to cleanup on signal
@@ -576,6 +582,7 @@ def setup_signal_handlers(
     def signal_handler(signum, frame):
         sig_name = signal.Signals(signum).name
         logger.warning("Received signal %s, initiating cleanup...", sig_name)
+        registry.received_signal = sig_name
         stop_event.set()
         registry.cleanup()
         sys.exit(1)

@@ -12,7 +12,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5200
+    DYN_VLLM_KV_EVENT_PORT: 3000
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
@@ -37,7 +37,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5201
+    DYN_VLLM_KV_EVENT_PORT: 3001
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
@@ -62,7 +62,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5202
+    DYN_VLLM_KV_EVENT_PORT: 3002
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
@@ -87,7 +87,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5203
+    DYN_VLLM_KV_EVENT_PORT: 3003
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
@@ -112,7 +112,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5204
+    DYN_VLLM_KV_EVENT_PORT: 3004
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
@@ -137,7 +137,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5205
+    DYN_VLLM_KV_EVENT_PORT: 3005
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
@@ -162,7 +162,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5206
+    DYN_VLLM_KV_EVENT_PORT: 3006
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
@@ -187,7 +187,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5207
+    DYN_VLLM_KV_EVENT_PORT: 3007
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
@@ -212,7 +212,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5208
+    DYN_VLLM_KV_EVENT_PORT: 3008
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
@@ -237,7 +237,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5209
+    DYN_VLLM_KV_EVENT_PORT: 3009
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
@@ -262,7 +262,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5210
+    DYN_VLLM_KV_EVENT_PORT: 3010
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
@@ -287,7 +287,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5211
+    DYN_VLLM_KV_EVENT_PORT: 3011
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
@@ -312,7 +312,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5212
+    DYN_VLLM_KV_EVENT_PORT: 3012
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
@@ -337,7 +337,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5213
+    DYN_VLLM_KV_EVENT_PORT: 3013
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
@@ -362,7 +362,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5214
+    DYN_VLLM_KV_EVENT_PORT: 3014
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
@@ -387,7 +387,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    DYN_VLLM_KV_EVENT_PORT: 5215
+    DYN_VLLM_KV_EVENT_PORT: 3015
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1

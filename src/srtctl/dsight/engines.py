@@ -10,9 +10,13 @@ support only some sources; recognizing an annotation does not assign ownership.
 
 from __future__ import annotations
 
+import ast
+import datetime as dt
+import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from typing import Any, TypeAlias
 
 
 @dataclass(frozen=True)
@@ -22,18 +26,27 @@ class EngineIdentity:
     disagg_id: str
 
 
+IterationFieldValue: TypeAlias = int | float | str | tuple[Any, ...] | None
+
+
 @dataclass(frozen=True)
 class EngineIteration:
-    """Recorded iteration fields; local_time has no timezone and second precision."""
+    """Recorded iteration fields; local_time has no timezone and second precision.
+
+    fields holds every recorded key in log order, so keys added or removed upstream
+    pass through without a parser change. The named attributes are the subset other
+    sources share; None means the line omitted the key or recorded N/A.
+    """
 
     iteration: int
     global_rank: int
     rank: int
-    batch_requests: int
-    kv_cache_util: float
-    host_step_ms: float
-    previous_device_step_ms: float
     local_time: str
+    batch_requests: int | None = None
+    kv_cache_util: float | None = None
+    host_step_ms: float | None = None
+    previous_device_step_ms: float | None = None
+    fields: tuple[tuple[str, IterationFieldValue], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -86,11 +99,84 @@ class EngineDialect:
 
 
 _TRT_MAP = re.compile(r"Engine ID map: request_id=(\S+) trtllm_client_id=(\S+) disagg_request_id=(\S+)")
-_TRT_ITERATION = re.compile(
-    r"iter = (\d+).*?global_rank = (\d+).*?rank = (\d+).*?num_scheduled_requests = (\d+).*?"
-    r"kv_cache_util = ([\d.]+).*?host_step_time = ([\d.eE+-]+)ms.*?"
-    r"prev_device_step_time = ([\d.eE+-]+)ms.*?timestamp = ([\d-]+ [\d:]+)"
-)
+# PyExecutor's iteration log (TensorRT-LLM v1.3.0rc29, _torch/pyexecutor/profiling.py)
+# joins `key = value` fields with ", ". A boundary is ", " before the next bare
+# `name = `; the states dict repr quotes its keys and lists hold bare numbers, so
+# neither can produce one.
+_TRT_ITERATION_START = re.compile(r"\biter = ")
+_TRT_FIELD_BOUNDARY = re.compile(r", (?=[A-Za-z_]\w* = )")
+_TRT_PAIR = re.compile(r"(\d+)/(\d+)")
+
+
+def _trtllm_iteration_value(text: str) -> IterationFieldValue | dict[str, Any]:
+    """Convert by the value's shape, never by its key, so new keys need no change."""
+    if text == "N/A":
+        return None
+    number = text.removesuffix("ms")  # Every "ms" field is a duration in milliseconds.
+    for convert in (int, float):
+        try:
+            value = convert(number)
+        except ValueError:
+            continue
+        return value if math.isfinite(value) else text
+    if m := _TRT_PAIR.fullmatch(text):
+        return (int(m[1]), int(m[2]))
+    if text[:1] in "{[":
+        try:
+            literal = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            return text
+        if isinstance(literal, dict):
+            return literal
+        return tuple(literal) if isinstance(literal, list) else text
+    return text
+
+
+def parse_trtllm_iteration(line: str) -> EngineIteration | None:
+    """Decode every `key = value` field. Nested dicts flatten to `parent.child`."""
+    if not (start := _TRT_ITERATION_START.search(line)):
+        return None
+    fields: dict[str, IterationFieldValue] = {}
+    for item in _TRT_FIELD_BOUNDARY.split(line[start.start() :].rstrip()):
+        key, _, text = item.partition(" = ")
+        value = _trtllm_iteration_value(text)
+        if isinstance(value, dict):
+            for child, nested in value.items():
+                fields[f"{key}.{child}"] = tuple(nested) if isinstance(nested, list) else nested
+        else:
+            fields[key] = value
+    iteration, global_rank, rank, stamp = (fields.get(k) for k in ("iter", "global_rank", "rank", "timestamp"))
+    if not (isinstance(iteration, int) and isinstance(global_rank, int) and isinstance(rank, int)):
+        return None
+    try:
+        dt.datetime.strptime(str(stamp), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+    def numeric(key: str) -> Any:
+        value = fields.get(key)
+        return value if isinstance(value, int | float) else None
+
+    return EngineIteration(
+        iteration=iteration,
+        global_rank=global_rank,
+        rank=rank,
+        local_time=str(stamp),
+        batch_requests=numeric("num_scheduled_requests"),
+        kv_cache_util=numeric("kv_cache_util"),
+        host_step_ms=numeric("host_step_time"),
+        previous_device_step_ms=numeric("prev_device_step_time"),
+        fields=tuple(fields.items()),
+    )
+
+
+def _trtllm(line: str) -> EngineLogRecord | None:
+    iteration = parse_trtllm_iteration(line) if "iter = " in line else None
+    identity = None
+    if m := _TRT_MAP.search(line):
+        identity = EngineIdentity(server_id=m[1], client_id=m[2], disagg_id=m[3])
+    return EngineLogRecord(iteration, identity) if iteration is not None or identity is not None else None
+
 
 _TOKEN_BATCH = re.compile(
     r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+)\s+ATTN TP RANK (\d+)\].*?(Prefill|Decode) batch\. (.+)"
@@ -130,25 +216,6 @@ def parse_tokenspeed_log(line: str) -> EngineLogRecord | None:
             total_pages=int(pages[3]) if pages else None,
         )
     )
-
-
-def _trtllm(line: str) -> EngineLogRecord | None:
-    iteration = None
-    if "iter =" in line and (m := _TRT_ITERATION.search(line)):
-        iteration = EngineIteration(
-            iteration=int(m[1]),
-            global_rank=int(m[2]),
-            rank=int(m[3]),
-            batch_requests=int(m[4]),
-            kv_cache_util=float(m[5]),
-            host_step_ms=float(m[6]),
-            previous_device_step_ms=float(m[7]),
-            local_time=m[8],
-        )
-    identity = None
-    if m := _TRT_MAP.search(line):
-        identity = EngineIdentity(server_id=m[1], client_id=m[2], disagg_id=m[3])
-    return EngineLogRecord(iteration, identity) if iteration is not None or identity is not None else None
 
 
 # Engine vocabulary lives here; source readers do not branch on engine names.

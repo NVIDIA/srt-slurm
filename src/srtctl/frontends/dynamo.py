@@ -12,13 +12,14 @@ import shlex
 import threading
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
+import requests
 import yaml
 
 from srtctl.backends.vllm import VLLMBackend
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
 from srtctl.core.observability_nsys import wrap_observability_nsys
-from srtctl.core.schema import build_otel_env
-from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
+from srtctl.core.schema import build_otel_env, container_creation_env
+from srtctl.core.slurm import start_srun_process
 from srtctl.frontends.base import logical_health_expectations, numactl_prefix, register_frontend
 from srtctl.frontends.dynamic_frontend import DynamicFrontend
 from srtctl.services.config import ServiceConfig
@@ -42,6 +43,8 @@ logger = logging.getLogger(__name__)
 
 ROUTER_POLICY_CONFIG_FILENAME = "router_policy_config.yaml"
 ROUTER_POLICY_CONFIG_CONTAINER_PATH = f"/logs/{ROUTER_POLICY_CONFIG_FILENAME}"
+# Since ai-dynamo/dynamo#16454 (a789babbe3) /health is status-only unless asked for its instance list.
+HEALTH_INSTANCES_ENDPOINT = "/health?instances=true"
 
 
 def _vllm_mode_config(backend: VLLMBackend, mode: str) -> dict[str, Any]:
@@ -109,7 +112,11 @@ class DynamoFrontend(DynamicFrontend):
     worker_launch: ClassVar[Literal["dynamo", "direct"]] = "dynamo"
 
     def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:
-        """Every rank runs the Dynamo system status server (health, metrics) on its system port."""
+        """Every rank runs the Dynamo system status server (health, metrics) on its system port.
+
+        A Dynamo sidecar job does not ask this: only some ranks run a sidecar and the native
+        engine serves its own metrics, so the backend answers (``sidecar_worker_metrics_targets``).
+        """
         return process.sys_port if process.sys_port > 0 else None
 
     def worker_endpoint_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
@@ -172,8 +179,25 @@ class DynamoFrontend(DynamicFrontend):
         expected_prefill: int,
         expected_decode: int,
     ) -> WorkerHealthResult:
-        """Parse dynamo /health endpoint response."""
+        """Count the generate instances in a Dynamo /health instance listing (see ``probe_ready``)."""
         return check_dynamo_health(response_json, expected_prefill, expected_decode)
+
+    def probe_ready(
+        self, host: str, port: int, expected_prefill: int, expected_decode: int, config: Any
+    ) -> WorkerHealthResult:
+        """Count instances from ``/health``, asking ``/health?instances=true`` when it answers status-only.
+
+        Frontends before ai-dynamo/dynamo#16454 always list instances in ``/health`` and get the one
+        request they always got; newer ones answer ``{"status": "healthy", "stage": "ready"}`` there.
+        """
+        for endpoint in (self.health_endpoint, HEALTH_INSTANCES_ENDPOINT):
+            response = requests.get(f"http://{host}:{port}{endpoint}", timeout=5.0)
+            if response.status_code != 200:
+                return WorkerHealthResult(ready=False, message=f"{endpoint} returned HTTP {response.status_code}")
+            body = response.json()
+            if "instances" in body:
+                break
+        return self.parse_health(body, expected_prefill, expected_decode)
 
     def health_expectations(self, config: Any, processes: list["Process"] | None) -> tuple[int, int, str]:
         """Dynamo's /health counts registered generate instances.
@@ -269,12 +293,15 @@ class DynamoFrontend(DynamicFrontend):
                 nodelist=[node],
                 output=str(frontend_log),
                 container_image=str(runtime.container_image),
+                reuse_container=runtime.reuse_container,
+                container_prepare_timeout_seconds=runtime.container_prepare_timeout_seconds,
                 container_mounts=runtime.container_mounts,
                 env_to_set=env_to_set,
                 bash_preamble=bash_preamble,
                 # Frontend container runs the dynamo install (see _build_preamble), whose
                 # cold build needs root inside the container. Remap via enroot env var.
-                srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if config.dynamo.install else None,
+                srun_export_env=container_creation_env(config),
+                srun_options=runtime.srun_options,
                 # TODO(jthomson): I don't have the faintest clue of
                 # why this is needed in later versions of Dynamo, but it is.
                 mpi="pmix",

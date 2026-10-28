@@ -339,6 +339,8 @@ class StaticRouterFrontend(Frontend):
                 nodelist=[node],
                 output=str(router_log),
                 container_image=container_image,
+                reuse_container=runtime.reuse_container,
+                container_prepare_timeout_seconds=runtime.container_prepare_timeout_seconds,
                 container_mounts=runtime.container_mounts,
                 env_to_set=router_env or None,
                 bash_preamble=self.build_bash_preamble(config),

@@ -101,6 +101,49 @@ class TestAllocateEndpoints:
         for ep in endpoints:
             assert len(ep.nodes) == 2
             assert ep.total_gpus == 8
+            assert ep.gpu_indices == frozenset(range(4))
+
+    def test_multi_node_worker_leaves_gpus_idle_evenly(self):
+        """6 GPUs on 4-GPU nodes use 3+3, not 4+2 (nnodes needs an even split)."""
+        endpoints = allocate_endpoints(
+            num_prefill=2,
+            num_decode=1,
+            num_agg=0,
+            gpus_per_prefill=6,
+            gpus_per_decode=8,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("n0", "n1", "n2", "n3", "n4", "n5"),
+        )
+
+        prefill = [e for e in endpoints if e.mode == "prefill"]
+        decode = [e for e in endpoints if e.mode == "decode"]
+
+        assert [ep.nodes for ep in prefill] == [("n0", "n1"), ("n2", "n3")]
+        for ep in prefill:
+            assert ep.gpu_indices == frozenset({0, 1, 2})
+            assert ep.total_gpus == 6
+        assert decode[0].nodes == ("n4", "n5")
+        assert decode[0].gpu_indices == frozenset(range(4))
+        assert decode[0].total_gpus == 8
+
+        processes = endpoints_to_processes(prefill)
+        assert len(processes) == 4
+        assert all(p.gpu_indices == frozenset({0, 1, 2}) for p in processes)
+
+    def test_multi_node_worker_rejects_uneven_gpu_split(self):
+        """A GPU count that cannot split evenly across spanned nodes is rejected."""
+        with pytest.raises(ValueError, match="not an even split"):
+            allocate_endpoints(
+                num_prefill=1,
+                num_decode=0,
+                num_agg=0,
+                gpus_per_prefill=5,
+                gpus_per_decode=1,
+                gpus_per_agg=0,
+                gpus_per_node=4,
+                available_nodes=("n0", "n1"),
+            )
 
     def test_insufficient_gpus(self):
         """Test that we raise an error when there are insufficient GPUs."""
@@ -402,6 +445,30 @@ class TestEndpointsToProcesses:
         assert processes[0].kv_events_port != processes[1].kv_events_port
         assert processes[0].kv_events_port == KV_EVENTS_PORT_BASE
         assert processes[1].kv_events_port == KV_EVENTS_PORT_BASE + 1
+
+    def test_kv_events_block_per_publisher(self):
+        """A process with N KV-event publishers reserves N ports, so DP workers on one node do not overlap."""
+        endpoints = allocate_endpoints(
+            num_prefill=2,
+            num_decode=1,
+            num_agg=0,
+            gpus_per_prefill=2,
+            gpus_per_decode=2,
+            gpus_per_agg=8,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1"),
+        )
+
+        processes = endpoints_to_processes(
+            endpoints, base_sys_port=8081, kv_events_port_sizes={"prefill": 2, "decode": 2}
+        )
+
+        ports = {(p.endpoint_mode, p.endpoint_index): (p.node, p.kv_events_port) for p in processes}
+        assert ports == {
+            ("prefill", 0): ("node0", KV_EVENTS_PORT_BASE),
+            ("prefill", 1): ("node0", KV_EVENTS_PORT_BASE + 2),
+            ("decode", 0): ("node1", KV_EVENTS_PORT_BASE + 4),
+        }
 
     def test_nixl_port_allocation(self):
         """Test NIXL ports are allocated globally unique from the default."""
@@ -739,3 +806,180 @@ roles:
     runtime = SimpleNamespace(nodes=SimpleNamespace(het=False, worker=("A", "B", "C", "D")))
     assert config.total_nodes == 4
     assert _backend_gpus_by_node(config, runtime) == {"A": 4, "B": 4, "C": 4, "D": 4}
+
+
+class TestExplicitGpuIndices:
+    """``roles.<role>.gpu_indices`` places a partial-node worker on named GPUs."""
+
+    def test_agg_worker_takes_the_named_gpus(self) -> None:
+        endpoints = allocate_endpoints(
+            num_prefill=0,
+            num_decode=0,
+            num_agg=1,
+            gpus_per_prefill=0,
+            gpus_per_decode=0,
+            gpus_per_agg=2,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1"),
+            gpu_indices_by_mode={"agg": (frozenset({0, 2}),)},
+        )
+        assert [(e.nodes, e.gpu_indices) for e in endpoints] == [(("node0",), frozenset({0, 2}))]
+        processes = endpoints_to_processes(endpoints)
+        assert [p.cuda_visible_devices for p in processes] == ["0,2"]
+
+    def test_one_worker_per_node_even_when_packing_would_fit(self) -> None:
+        """Two 2-GPU workers normally share a 4-GPU node; with explicit GPUs each takes a node."""
+        endpoints = allocate_endpoints(
+            num_prefill=0,
+            num_decode=2,
+            num_agg=0,
+            gpus_per_prefill=0,
+            gpus_per_decode=2,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1"),
+            gpu_indices_by_mode={"decode": (frozenset({0, 2}),)},
+        )
+        assert [e.nodes for e in endpoints] == [("node0",), ("node1",)]
+        assert all(e.gpu_indices == frozenset({0, 2}) for e in endpoints)
+
+    def test_trtllm_packing_path_honors_the_set(self) -> None:
+        """The MPI packer (pack_multinode_workers) also yields to an explicit set."""
+        endpoints = allocate_endpoints(
+            num_prefill=1,
+            num_decode=1,
+            num_agg=0,
+            gpus_per_prefill=2,
+            gpus_per_decode=2,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1"),
+            pack_multinode_workers=True,
+            gpu_indices_by_mode={"decode": (frozenset({1, 3}),)},
+        )
+        prefill, decode = endpoints
+        assert prefill.gpu_indices == frozenset({0, 1})
+        assert decode.nodes == ("node1",)
+        assert decode.gpu_indices == frozenset({1, 3})
+
+    def test_unaffected_modes_keep_the_default_packing(self) -> None:
+        endpoints = allocate_endpoints(
+            num_prefill=2,
+            num_decode=0,
+            num_agg=0,
+            gpus_per_prefill=2,
+            gpus_per_decode=0,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0",),
+            gpu_indices_by_mode={"decode": (frozenset({0, 2}),)},
+        )
+        assert [e.gpu_indices for e in endpoints] == [frozenset({0, 1}), frozenset({2, 3})]
+
+    def test_het_allocation_passes_the_set_through(self) -> None:
+        endpoints = allocate_endpoints_het(
+            num_prefill=1,
+            gpus_per_prefill=2,
+            prefill_nodes=("p0",),
+            num_decode=1,
+            gpus_per_decode=2,
+            decode_nodes=("d0",),
+            gpus_per_node=4,
+            gpu_indices_by_mode={"prefill": (frozenset({0, 2}),), "decode": (frozenset({1, 3}),)},
+        )
+        assert [(e.mode, e.gpu_indices) for e in endpoints] == [
+            ("prefill", frozenset({0, 2})),
+            ("decode", frozenset({1, 3})),
+        ]
+
+    def test_set_size_must_match_the_worker(self) -> None:
+        with pytest.raises(ValueError, match="need 2 GPUs each"):
+            allocate_endpoints(
+                num_prefill=0,
+                num_decode=0,
+                num_agg=1,
+                gpus_per_prefill=0,
+                gpus_per_decode=0,
+                gpus_per_agg=2,
+                gpus_per_node=4,
+                available_nodes=("node0",),
+                gpu_indices_by_mode={"agg": (frozenset({0}),)},
+            )
+
+    def test_set_must_fit_the_node(self) -> None:
+        with pytest.raises(ValueError, match="do not fit a 4-GPU node"):
+            allocate_endpoints(
+                num_prefill=0,
+                num_decode=0,
+                num_agg=1,
+                gpus_per_prefill=0,
+                gpus_per_decode=0,
+                gpus_per_agg=2,
+                gpus_per_node=4,
+                available_nodes=("node0",),
+                gpu_indices_by_mode={"agg": (frozenset({0, 4}),)},
+            )
+
+    def test_two_slots_fill_a_node_then_move_on(self) -> None:
+        """Two per-node slots: workers 0 and 1 share node0, workers 2 and 3 share node1."""
+        endpoints = allocate_endpoints(
+            num_prefill=0,
+            num_decode=4,
+            num_agg=0,
+            gpus_per_prefill=0,
+            gpus_per_decode=2,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1"),
+            gpu_indices_by_mode={"decode": (frozenset({0, 2}), frozenset({1, 3}))},
+        )
+        assert [(e.nodes, e.gpu_indices) for e in endpoints] == [
+            (("node0",), frozenset({0, 2})),
+            (("node0",), frozenset({1, 3})),
+            (("node1",), frozenset({0, 2})),
+            (("node1",), frozenset({1, 3})),
+        ]
+        assert [p.cuda_visible_devices for p in endpoints_to_processes(endpoints)] == ["0,2", "1,3", "0,2", "1,3"]
+
+    def test_odd_worker_count_leaves_the_last_slot_free(self) -> None:
+        endpoints = allocate_endpoints(
+            num_prefill=0,
+            num_decode=3,
+            num_agg=0,
+            gpus_per_prefill=0,
+            gpus_per_decode=2,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1"),
+            gpu_indices_by_mode={"decode": (frozenset({0, 2}), frozenset({1, 3}))},
+        )
+        assert [e.nodes for e in endpoints] == [("node0",), ("node0",), ("node1",)]
+        assert endpoints[2].gpu_indices == frozenset({0, 2})
+
+    def test_slots_must_not_overlap(self) -> None:
+        with pytest.raises(ValueError, match="overlap on GPUs \\[2\\]"):
+            allocate_endpoints(
+                num_prefill=0,
+                num_decode=2,
+                num_agg=0,
+                gpus_per_prefill=0,
+                gpus_per_decode=2,
+                gpus_per_agg=0,
+                gpus_per_node=4,
+                available_nodes=("node0",),
+                gpu_indices_by_mode={"decode": (frozenset({0, 2}), frozenset({2, 3}))},
+            )
+
+    def test_not_enough_nodes_for_the_layout(self) -> None:
+        with pytest.raises(ValueError, match="needs 2 node\\(s\\) for 3 worker\\(s\\) at 2 per node"):
+            allocate_endpoints(
+                num_prefill=0,
+                num_decode=3,
+                num_agg=0,
+                gpus_per_prefill=0,
+                gpus_per_decode=2,
+                gpus_per_agg=0,
+                gpus_per_node=4,
+                available_nodes=("node0",),
+                gpu_indices_by_mode={"decode": (frozenset({0, 2}), frozenset({1, 3}))},
+            )

@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from srtctl.core.health import WorkerHealthResult
 from srtctl.core.schema import ObservabilityConfig
 from srtctl.frontends import (
     DynamoFrontend,
@@ -116,7 +117,7 @@ class TestFrontendRegistry:
             ("sglang", "/metrics", (8000, None, None, None), (8000, None, None, 8000), ["n0"], 7500),
             ("sglang-router", "/metrics", (6100, None, None, 6100), (6100, None, None, 6100), [], 7500),
             ("vllm-router", "/metrics", (6100, None, 6132, 6100), (6100, None, 6132, 6100), [], 7500),
-            ("trtllm_serve", "/prometheus/metrics", (None, None, 6132, 6100), (8000, None, None, 6100), [], 6100),
+            ("trtllm_serve", "/prometheus/metrics", (None, None, 6132, 6100), (8000, None, None, 6100), ["n0"], 6100),
         ],
     )
     def test_worker_port_contract(self, frontend_type, metrics_path, metrics, endpoint, direct_nodes, ready):
@@ -283,6 +284,66 @@ class TestFrontendProperties:
         """DynamoFrontend uses /health endpoint."""
         frontend = DynamoFrontend()
         assert frontend.health_endpoint == "/health"
+
+    @staticmethod
+    def _probe_dynamo(bodies: dict[str, tuple[int, dict]]) -> tuple[list[str], WorkerHealthResult]:
+        """Probe a fake Dynamo frontend for 1P + 1D; ``bodies`` maps each path to its status and JSON body."""
+        requested: list[str] = []
+
+        def get(url: str, timeout: float) -> SimpleNamespace:
+            path = url.removeprefix("http://node0:8000")
+            requested.append(path)
+            status, body = bodies[path]
+            return SimpleNamespace(status_code=status, json=lambda: body)
+
+        with patch("srtctl.frontends.dynamo.requests.get", side_effect=get):
+            result = DynamoFrontend().probe_ready("node0", 8000, 1, 1, None)
+        return requested, result
+
+    _DYNAMO_INSTANCES = [
+        {"component": "prefill", "endpoint": "generate"},
+        {"component": "tensorrt_llm", "endpoint": "generate"},
+    ]
+
+    def test_dynamo_probe_reads_instances_from_listing_health(self):
+        """A frontend that lists instances in /health (before ai-dynamo/dynamo#16454) gets one request."""
+        requested, result = self._probe_dynamo({"/health": (200, {"instances": self._DYNAMO_INSTANCES})})
+        assert requested == ["/health"]
+        assert result.ready
+
+    def test_dynamo_probe_asks_for_instances_when_health_is_status_only(self):
+        """A status-only /health (ai-dynamo/dynamo#16454) falls back to /health?instances=true."""
+        requested, result = self._probe_dynamo(
+            {
+                "/health": (200, {"status": "healthy", "stage": "ready"}),
+                "/health?instances=true": (
+                    200,
+                    {"status": "healthy", "stage": "ready", "instances": self._DYNAMO_INSTANCES},
+                ),
+            }
+        )
+        assert requested == ["/health", "/health?instances=true"]
+        assert result.ready
+        assert result.prefill_ready == 1 and result.decode_ready == 1
+
+    def test_dynamo_probe_counts_partial_registration_from_fallback(self):
+        """The fallback listing is counted like /health: a missing decode keeps the job waiting."""
+        requested, result = self._probe_dynamo(
+            {
+                "/health": (200, {"status": "healthy", "stage": "ready"}),
+                "/health?instances=true": (200, {"instances": self._DYNAMO_INSTANCES[:1]}),
+            }
+        )
+        assert requested == ["/health", "/health?instances=true"]
+        assert not result.ready
+        assert "Have 1 prefills and 0 decodes" in result.message
+
+    def test_dynamo_probe_not_ready_without_fallback_on_http_error(self):
+        """A non-200 /health is not ready and skips the instance listing."""
+        requested, result = self._probe_dynamo({"/health": (503, {"status": "unhealthy"})})
+        assert requested == ["/health"]
+        assert not result.ready
+        assert "/health returned HTTP 503" in result.message
 
     def test_sglang_health_endpoint(self):
         """SGLangFrontend uses /workers endpoint."""
@@ -492,6 +553,8 @@ def test_sglang_router_starts_only_after_workers_are_healthy(tmp_path, ready):
         network_interface="fabric0",
         log_dir=tmp_path,
         container_image="image.sqsh",
+        reuse_container=False,
+        container_prepare_timeout_seconds=1800.0,
         container_mounts={},
         environment={},
         srun_options={"mem": "0"},
@@ -912,11 +975,14 @@ class TestNumaBind:
             infra_node_ip="10.0.0.9",
             head_node_ip="10.0.0.8",
             container_image=Path("/container.sqsh"),
+            reuse_container=False,
+            container_prepare_timeout_seconds=1800.0,
+            srun_options={},
             container_mounts={},
             environment={},
         )
         config = SimpleNamespace(
-            frontend=SimpleNamespace(args=None, env=None, worker_selection=None, numa_bind=True),
+            frontend=SimpleNamespace(type="dynamo", args=None, env=None, worker_selection=None, numa_bind=True),
             observability=ObservabilityConfig(),
             services=[],
             dynamo=SimpleNamespace(
@@ -949,11 +1015,14 @@ def test_dynamo_frontend_is_a_named_step_with_a_drain_timeout():
         infra_node_ip="10.0.0.9",
         head_node_ip="10.0.0.8",
         container_image=Path("/container.sqsh"),
+        reuse_container=False,
+        container_prepare_timeout_seconds=1800.0,
+        srun_options={},
         container_mounts={},
         environment={},
     )
     config = SimpleNamespace(
-        frontend=SimpleNamespace(args=None, env=None),
+        frontend=SimpleNamespace(type="dynamo", args=None, env=None),
         observability=ObservabilityConfig(),
         services=[],
         dynamo=SimpleNamespace(install=False, get_install_commands=lambda: "", request_plane="tcp", event_plane=None),
@@ -977,6 +1046,9 @@ def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zm
         infra_node_ip="10.0.0.9",
         head_node_ip="10.0.0.8",
         container_image=Path("/container.sqsh"),
+        reuse_container=False,
+        container_prepare_timeout_seconds=1800.0,
+        srun_options={},
         container_mounts={},
         environment={},
     )
@@ -1038,6 +1110,9 @@ def test_dynamo_frontend_materializes_inline_worker_selection(tmp_path):
         head_node_ip="10.0.0.8",
         nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
         container_image=Path("/container.sqsh"),
+        reuse_container=False,
+        container_prepare_timeout_seconds=1800.0,
+        srun_options={},
         container_mounts={tmp_path: Path("/logs")},
         environment={},
     )

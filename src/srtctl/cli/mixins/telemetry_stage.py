@@ -29,7 +29,13 @@ from srtctl.core.processes import ManagedProcess, ProcessRegistry, list_step_ids
 from srtctl.core.schema import TelemetryExporterConfig
 from srtctl.core.slurm import start_srun_process
 from srtctl.core.status import log_stream_interval, tachometer_outbox
-from srtctl.core.telemetry import TACHOMETER_STORAGE_PARENT, ServiceMetricsTarget, generate_tachometer_config
+from srtctl.core.telemetry import (
+    TACHOMETER_STORAGE_PARENT,
+    ServiceMetricsTarget,
+    WorkerMetricsTarget,
+    generate_tachometer_config,
+    sidecar_worker_metrics_targets,
+)
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
@@ -151,6 +157,8 @@ class TelemetryStageMixin:
                 nodelist=nodes,
                 output=str(chunk_log),
                 container_image=None if host_native else exporter_config.container_image,
+                reuse_container=self.runtime.reuse_container,
+                container_prepare_timeout_seconds=self.runtime.container_prepare_timeout_seconds,
                 container_mounts=None if host_native else self.runtime.container_mounts,
                 srun_options=self.runtime.srun_options,
                 het_group=het_group,
@@ -659,6 +667,29 @@ class TelemetryStageMixin:
         frontend = get_frontend(self.config.frontend.type)
         return {mode: frontend.worker_metrics_path(self.config.backend, mode) for mode in ("prefill", "decode", "agg")}
 
+    def _worker_metrics_targets(self) -> list[WorkerMetricsTarget] | None:
+        """A Dynamo sidecar job's worker targets (runtime and native engine); None lets the frontend answer per rank."""
+        from srtctl.frontends import FRONTEND_NONE, get_frontend
+
+        if not self.config.dynamo.sidecar or self.config.frontend.type == FRONTEND_NONE:
+            return None
+        frontend = get_frontend(self.config.frontend.type)
+        return sidecar_worker_metrics_targets(self.backend_processes, self.config.backend, frontend)
+
+    def tachometer_config_text(self) -> str:
+        """The Tachometer scraper config this job writes to ``tachometer_config.toml``."""
+        return generate_tachometer_config(
+            processes=self.backend_processes,
+            frontend_topology=self._compute_frontend_topology(),
+            runtime=self.runtime,
+            tachometer=self.config.observability.tachometer,
+            frontend_type=self.config.frontend.type,
+            frontend_metrics_port=self._frontend_metrics_port(),
+            worker_metrics_paths=self._worker_metrics_paths(),
+            worker_targets=self._worker_metrics_targets(),
+            service_targets=[*self._service_metrics_targets(), *self._power_exporter_targets()],
+        )
+
     def _service_metrics_targets(self) -> list[ServiceMetricsTarget]:
         """One tachometer target per node for every service that serves metrics.
 
@@ -732,20 +763,8 @@ class TelemetryStageMixin:
         logger.info("Starting Tachometer")
 
         power_telemetry = self.config.telemetry
-        topology = self._compute_frontend_topology()
         config_path = self.runtime.log_dir / "tachometer_config.toml"
-        config_path.write_text(
-            generate_tachometer_config(
-                processes=self.backend_processes,
-                frontend_topology=topology,
-                runtime=self.runtime,
-                tachometer=tachometer,
-                frontend_type=self.config.frontend.type,
-                frontend_metrics_port=self._frontend_metrics_port(),
-                worker_metrics_paths=self._worker_metrics_paths(),
-                service_targets=[*self._service_metrics_targets(), *self._power_exporter_targets()],
-            )
-        )
+        config_path.write_text(self.tachometer_config_text())
 
         tachometer_dir = self.runtime.log_dir / tachometer.storage_subdir
         # Create only the PARENT of the storage path: tachometer-scraper aborts if the

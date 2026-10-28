@@ -35,6 +35,9 @@ JOB_ID = "4242"
 # Recipes that are not a single runnable job: overrides and sweeps expand into several.
 NOT_A_JOB = {"examples/features/override.yaml", "examples/features/sweep.yaml"}
 
+# Environment required to exercise an example's documented launch mode.
+EXAMPLE_ENV = {"examples/trtllm/trtllm-serve-disagg-eval-only.yaml": {"EVAL_ONLY": "true"}}
+
 # Values generated fresh on every run, replaced by a stable placeholder.
 _RANDOM_VALUES = (
     re.compile(r"moe_shared_[0-9a-f]{32}"),
@@ -53,6 +56,9 @@ _RECORDED_KEYS = (
     "output",
     "container_image",
     "container_mounts",
+    "reuse_container",
+    "container_prepare_nodes",
+    "container_prepare_timeout_seconds",
     "env_to_pass_through",
     "env_to_set",
     "env_to_unset",
@@ -75,6 +81,18 @@ def example_recipes() -> list[Path]:
 def snapshot_path(recipe: Path) -> Path:
     rel = recipe.relative_to(EXAMPLES_DIR).with_suffix("")
     return SNAPSHOT_DIR / (rel.as_posix().replace("/", "__") + ".txt")
+
+
+@contextmanager
+def _example_environment(recipe: Path, passthrough_env: list[str]) -> Iterator[None]:
+    """Keep eval workflow inputs out of snapshots unless the example selects them."""
+    from srtctl.cli.do_sweep import POST_EVAL_PASSTHROUGH_ENV
+
+    eval_inputs = {*POST_EVAL_PASSTHROUGH_ENV, *passthrough_env, "EVAL_CONC"}
+    environment = {key: value for key, value in os.environ.items() if key not in eval_inputs}
+    environment.update(EXAMPLE_ENV.get(recipe.relative_to(REPO_ROOT).as_posix(), {}))
+    with patch.dict(os.environ, environment, clear=True):
+        yield
 
 
 @contextmanager
@@ -123,6 +141,10 @@ def _render_call(call: dict[str, Any]) -> str:
     lines = [f"## {call.get('step_name') or '<unnamed>'}"]
     for key in _RECORDED_KEYS:
         value = call.get(key)
+        if key == "reuse_container" and not value:
+            continue
+        if key == "container_prepare_timeout_seconds" and not call.get("reuse_container"):
+            continue
         if value is None or value == [] or value == {} or value == ():
             continue
         lines.append(f"{key}:{_render_value(value)}")
@@ -167,15 +189,19 @@ def render_launch_plan(recipe: Path) -> str:
                     "srtctl.core.power.session.PowerTelemetrySession.start_and_wait_for_readiness", return_value=True
                 ),
             ):
-                nodes = load_config(recipe).total_nodes
-                options = MockOptions(
-                    child_duration_s=0.0,
-                    phase_pause_s=0.0,
-                    nodelist=tuple(f"node-{i:02d}" for i in range(1, nodes + 3)),
-                    on_srun=calls.append,
-                    end_manual_hold=True,
-                )
-                exit_code = run_mock_sweep(config_path=recipe, output_dir=output_dir, job_id=JOB_ID, options=options)
+                config = load_config(recipe)
+                with _example_environment(recipe, config.post_eval.passthrough_env):
+                    nodes = config.total_nodes
+                    options = MockOptions(
+                        child_duration_s=0.0,
+                        phase_pause_s=0.0,
+                        nodelist=tuple(f"node-{i:02d}" for i in range(1, nodes + 3)),
+                        on_srun=calls.append,
+                        end_manual_hold=True,
+                    )
+                    exit_code = run_mock_sweep(
+                        config_path=recipe, output_dir=output_dir, job_id=JOB_ID, options=options
+                    )
         finally:
             os.chdir(prior_cwd)
         body = "\n\n".join(_render_call(c) for c in calls)

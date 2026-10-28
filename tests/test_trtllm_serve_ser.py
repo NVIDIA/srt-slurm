@@ -5,7 +5,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -120,3 +120,43 @@ def test_aggregate_frontend_uses_worker_directly():
     worker = SimpleNamespace(endpoint_mode="agg", is_leader=True)
 
     assert frontend.start_frontends(topology, MagicMock(), config, MagicMock(), [worker]) == []
+
+
+@patch("srtctl.frontends.trtllm_serve.start_srun_process")
+@patch("srtctl.frontends.trtllm_serve.wait_for_health", return_value=True)
+@patch("srtctl.frontends.trtllm_serve.get_hostname_ip", side_effect=lambda node: f"10.0.0.{node[-1]}")
+def test_disaggregated_orchestrator_inherits_runtime_srun_options(_ip, _health, mock_srun, tmp_path: Path):
+    """The disaggregated orchestrator gets the same runtime srun options as workers and
+    services, so a shared pyxis container-name also covers the frontend node."""
+    mock_srun.return_value = MagicMock()
+    frontend = TRTLLMServeFrontend()
+    topology = SimpleNamespace(uses_nginx=False, frontend_nodes=["node0"], frontend_port=8000, public_port=8000)
+    config = SimpleNamespace(
+        backend=SimpleNamespace(type="trtllm"),
+        topology=SimpleNamespace(is_disaggregated=True),
+        frontend=SimpleNamespace(
+            ctx_router=None, gen_router=None, server_config_extra=None, args=None, env=None, numa_bind=False
+        ),
+        health_check=SimpleNamespace(max_attempts=1, interval_seconds=0),
+    )
+    runtime = SimpleNamespace(
+        log_dir=tmp_path,
+        container_image="/container.sqsh",
+        reuse_container=False,
+        container_prepare_timeout_seconds=1800.0,
+        container_mounts={},
+        srun_options={"container-name": "shared-job-container", "mem": "0"},
+        nodes=SimpleNamespace(het_group_for=lambda node: None),
+    )
+    workers = [
+        SimpleNamespace(node="node1", endpoint_mode="prefill", http_port=6100, is_leader=True),
+        SimpleNamespace(node="node2", endpoint_mode="decode", http_port=6100, is_leader=True),
+    ]
+
+    processes = frontend.start_frontends(topology, runtime, config, MagicMock(), workers)
+
+    assert [p.name for p in processes] == ["trtllm_serve_orchestrator"]
+    kwargs = mock_srun.call_args.kwargs
+    assert kwargs["srun_options"] == runtime.srun_options
+    assert kwargs["nodelist"] == ["node0"]
+    assert kwargs["container_image"] == "/container.sqsh"

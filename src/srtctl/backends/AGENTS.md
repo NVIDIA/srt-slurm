@@ -20,6 +20,7 @@ Rules for `src/srtctl/backends/`. Every consumer asks a backend through `Backend
    - `get_served_model_name(default)` - Defaults to the supplied model name
    - `prometheus_metrics_path` - Defaults to `/metrics`; where the engine's own HTTP server serves Prometheus text (trtllm-serve overrides it with `/prometheus/metrics`)
    - `is_grpc_mode(mode)` - Defaults to `False`; override when the mode's workers serve gRPC (static routers advertise `grpc://` from it)
+   - `runs_dynamo_sidecar(process, endpoint_processes)` / `sidecar_engine_metrics_port(process, endpoint_processes)` - Default to `False` / `None`; in Dynamo sidecar mode, whether the process runs a sidecar (and so serves runtime metrics on its system port) and the allocated port its native engine serves Prometheus on. Answer them from the same helpers the sidecar command builder uses; `core/telemetry.py:sidecar_worker_metrics_targets` turns them into the Tachometer and AIPerf targets (`docs/sidecars.md#metrics`)
    - `nvtx_environment` - Defaults to `{}`; the worker environment the automatic nsys preset (`observability.nsys`) sets so the engine emits its own NVTX ranges and nsys can follow the processes that emit them
    - `fatal_log_patterns(mode)` - Defaults to `()`; override for launchers that survive engine failure
 4. Export from `backends/__init__.py`

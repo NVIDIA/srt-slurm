@@ -52,6 +52,30 @@ Fields: [RoleConfig](schema-reference.md#roleconfig). `args` takes any flag the 
 
 **GPUs per worker**: `gpus` is `(nodes * gpus_per_node) / workers` when omitted. Set it explicitly when a role should not fill its nodes, when several workers share a node, or whenever it makes the recipe self-describing. `resources.spread_workers: true` puts each partial-node worker on its own node instead of packing them.
 
+**Which GPUs a partial-node worker uses**: a partial-node worker takes the first `gpus` GPUs of its node (`0,1` for a 2-GPU worker), packed after any worker already on that node. `gpu_indices` names the physical GPUs instead, for layouts the packing cannot produce, such as one GPU per socket:
+
+```yaml
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 2
+    gpu_indices: [0, 2]   # one GPU on each socket of a 4-GPU node
+```
+
+The list has `gpus` distinct entries below `resources.gpus_per_node`, and the role then runs one worker per node, since the list is the node's layout. For several workers per node, give one list per worker slot; workers fill the slots in order and move to the next node when they are used up:
+
+```yaml
+roles:
+  decode:
+    nodes: 2
+    workers: 4
+    gpus: 2
+    gpu_indices: [[0, 2], [1, 3]]   # two TP2 workers per node, each on both sockets
+```
+
+The lists do not overlap, each has `gpus` entries, and `nodes` is `workers` divided by the number of slots, rounded up. Everything that reads a worker's GPUs follows the layout: the `CUDA_VISIBLE_DEVICES` mask srtctl exports, vLLM's `--device-ids`, the Mooncake per-GPU device map, and the GPU-local NUMA CPU and memory binding. A full-node worker has no use for it, and it cannot be combined with `nodes: colocate`.
+
 ### Colocating decode on the prefill nodes
 
 `decode.nodes: colocate` reserves no nodes for decode and places the decode workers on whatever GPUs the prefill workers leave free on the prefill nodes. `gpus` must be given on both roles (the per-node formula cannot derive a split), and loading fails if the split does not fit, using the engine's real packing, so an oversubscribed layout is caught by `srtctl dry-run` instead of by the job.

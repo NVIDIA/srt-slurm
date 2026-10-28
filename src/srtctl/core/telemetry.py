@@ -15,10 +15,12 @@ from srtctl.core.slurm import get_hostname_ip
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from srtctl.backends.base import Backend
     from srtctl.cli.mixins.frontend_stage import FrontendTopology
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import TachometerConfig
     from srtctl.core.topology import Process
+    from srtctl.frontends.base import Frontend
 
 
 # Tachometer owns its final storage directory and rejects a pre-existing leaf
@@ -50,6 +52,95 @@ class ServiceMetricsTarget:
 
 
 @dataclass(frozen=True)
+class WorkerMetricsTarget:
+    """One Prometheus endpoint a worker process serves, on ``process.node``.
+
+    ``engine`` marks the native engine behind a Dynamo sidecar, scraped beside
+    the sidecar's runtime endpoint; its scraper name carries an ``_engine``
+    suffix so the two never merge.
+    """
+
+    process: Process
+    port: int
+    path: str
+    engine: bool = False
+
+    @property
+    def endpoint_name(self) -> str:
+        process = self.process
+        name = f"backend_{process.endpoint_mode}{process.endpoint_index}_rank{process.node_rank}"
+        return f"{name}_engine" if self.engine else name
+
+
+def sidecar_worker_metrics_targets(
+    processes: Sequence[Process], backend: Backend, frontend: Frontend
+) -> list[WorkerMetricsTarget]:
+    """Every Prometheus endpoint of a Dynamo sidecar job's workers, in scrape order.
+
+    A process has up to two: the Dynamo runtime's metrics on its system port
+    (at ``frontend.worker_metrics_path``), only where it runs a sidecar
+    (``Backend.runs_dynamo_sidecar``), and the native engine's own endpoint at
+    ``backend.prometheus_metrics_path`` (``Backend.sidecar_engine_metrics_port``).
+    Dynamo's sidecars do not bridge engine metrics into the runtime endpoint
+    (ai-dynamo/dynamo 3e72af98f8a5, ``lib/sidecar``), so the engine is scraped
+    itself. Tachometer and the AIPerf server-metrics URLs both read this list.
+    """
+    groups = _endpoint_groups(processes)
+    targets: list[WorkerMetricsTarget] = []
+    for process in sorted(processes, key=lambda p: (p.endpoint_mode, p.endpoint_index, p.node_rank, p.node)):
+        endpoint_processes = groups[(process.endpoint_mode, process.endpoint_index)]
+        if runtime := _sidecar_runtime_target(process, endpoint_processes, backend, frontend):
+            targets.append(runtime)
+        if engine := _sidecar_engine_target(process, endpoint_processes, backend):
+            targets.append(engine)
+    return targets
+
+
+def sidecar_logical_worker_metrics_target(
+    process: Process, processes: Sequence[Process], backend: Backend, frontend: Frontend
+) -> WorkerMetricsTarget | None:
+    """The one metrics endpoint a Dynamo sidecar job advertises for a logical worker to custom benchmarks.
+
+    Custom benchmarks receive one URL per logical worker, aligned position by
+    position with ``SRT_*_ENDPOINTS`` (``docs/benchmarks.md``), so ``process``
+    is the worker's routable leader. That is the native engine's own endpoint
+    where it serves one (the leader's HTTP port for vLLM and SGLang), else the
+    sidecar's runtime endpoint (TRT-LLM's OpenEngine gRPC server serves none),
+    so a consumer that drains on the list always gets a live URL per worker.
+    """
+    endpoint_processes = _endpoint_groups(processes)[(process.endpoint_mode, process.endpoint_index)]
+    return _sidecar_engine_target(process, endpoint_processes, backend) or _sidecar_runtime_target(
+        process, endpoint_processes, backend, frontend
+    )
+
+
+def _endpoint_groups(processes: Sequence[Process]) -> dict[tuple[str, int], list[Process]]:
+    """Every process of each logical worker, keyed by (mode, index), as the command builder sees them."""
+    groups: dict[tuple[str, int], list[Process]] = {}
+    for process in processes:
+        groups.setdefault((process.endpoint_mode, process.endpoint_index), []).append(process)
+    return groups
+
+
+def _sidecar_runtime_target(
+    process: Process, endpoint_processes: list[Process], backend: Backend, frontend: Frontend
+) -> WorkerMetricsTarget | None:
+    path = frontend.worker_metrics_path(backend, process.endpoint_mode)
+    if path is None or process.sys_port <= 0 or not backend.runs_dynamo_sidecar(process, endpoint_processes):
+        return None
+    return WorkerMetricsTarget(process, process.sys_port, path)
+
+
+def _sidecar_engine_target(
+    process: Process, endpoint_processes: list[Process], backend: Backend
+) -> WorkerMetricsTarget | None:
+    port = backend.sidecar_engine_metrics_port(process, endpoint_processes)
+    if port is None:
+        return None
+    return WorkerMetricsTarget(process, port, backend.prometheus_metrics_path, engine=True)
+
+
+@dataclass(frozen=True)
 class TelemetryEndpoint:
     """One telemetry endpoint entry in the scraper config."""
 
@@ -70,6 +161,7 @@ def generate_tachometer_config(
     frontend_type: str = "dynamo",
     frontend_metrics_port: int | None = None,
     worker_metrics_paths: Mapping[str, str | None] | None = None,
+    worker_targets: Sequence[WorkerMetricsTarget] | None = None,
     service_targets: Sequence[ServiceMetricsTarget] = (),
 ) -> str:
     """Generate Tachometer TOML from the worker and frontend topology plus the services' metrics.
@@ -102,6 +194,11 @@ def generate_tachometer_config(
     of a multi-node worker serve nothing), and the gateway serves Prometheus on
     its own listener (``frontend_metrics_port``, ``--prometheus-port``), not on
     the routing port.
+
+    ``worker_targets``, when given, replaces the per-rank frontend answer: a
+    Dynamo sidecar job passes ``sidecar_worker_metrics_targets``, because which
+    process runs a sidecar and where its native engine serves Prometheus are the
+    engine's answers, not the frontend's.
     """
     from srtctl.frontends import FRONTEND_NONE, get_frontend
 
@@ -122,20 +219,26 @@ def generate_tachometer_config(
                 "worker_role": process.endpoint_mode,
             }
 
-    for process in sorted(processes, key=lambda p: (p.endpoint_mode, p.endpoint_index, p.node_rank, p.node)):
-        # Every rank that serves metrics is a target: follower metadata columns
-        # keep rows distinguishable, and rank coverage is exactly what the
-        # physical-process client list provides for vLLM DP. Which ranks serve
-        # (Dynamo: every rank on its system port; native servers: the leader or
-        # each routable pool on its HTTP port) is the frontend's call.
-        port = frontend.worker_metrics_port(process, runtime) if frontend is not None else None
-        worker_metrics_path = (
-            "/metrics" if worker_metrics_paths is None else worker_metrics_paths.get(process.endpoint_mode)
-        )
-        if port is None or worker_metrics_path is None:
-            continue
+    if worker_targets is None:
+        worker_targets = []
+        for process in sorted(processes, key=lambda p: (p.endpoint_mode, p.endpoint_index, p.node_rank, p.node)):
+            # Every rank that serves metrics is a target: follower metadata columns
+            # keep rows distinguishable, and rank coverage is exactly what the
+            # physical-process client list provides for vLLM DP. Which ranks serve
+            # (Dynamo: every rank on its system port; native servers: the leader or
+            # each routable pool on its HTTP port) is the frontend's call.
+            port = frontend.worker_metrics_port(process, runtime) if frontend is not None else None
+            worker_metrics_path = (
+                "/metrics" if worker_metrics_paths is None else worker_metrics_paths.get(process.endpoint_mode)
+            )
+            if port is None or worker_metrics_path is None:
+                continue
+            worker_targets.append(WorkerMetricsTarget(process, port, worker_metrics_path))
+
+    for target in worker_targets:
+        process = target.process
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
-        url = f"http://{url_host(node_ip)}:{port}{worker_metrics_path}"
+        url = f"http://{url_host(node_ip)}:{target.port}{target.path}"
         node_metadata = {
             "hostname": process.node,
             "worker_index": str(process.endpoint_index),
@@ -145,7 +248,7 @@ def generate_tachometer_config(
         node_metadata.update(tachometer.extra_metadata)
         endpoints.append(
             TelemetryEndpoint(
-                name=f"backend_{process.endpoint_mode}{process.endpoint_index}_rank{process.node_rank}",
+                name=target.endpoint_name,
                 url=url,
                 collect_interval_ms=tachometer.collect_interval_ms,
                 filter="backend",
@@ -154,9 +257,9 @@ def generate_tachometer_config(
         )
 
     # A services-only job has no frontend process, so nothing listens on the
-    # frontend port. A frontend whose worker is itself the endpoint (direct vLLM
-    # or SGLang) has no separate process either: the endpoint is the aggregate
-    # leader's node, which may differ from the orchestrator head in FrontendTopology.
+    # frontend port. A frontend whose worker is itself the endpoint (direct vLLM,
+    # SGLang or aggregate trtllm-serve) has no separate process either: the endpoint
+    # is the aggregate leader's node, which may differ from the configured frontend node.
     frontend_nodes: list[str] = []
     if frontend is not None:
         frontend_nodes = frontend.direct_endpoint_nodes(processes) or list(frontend_topology.frontend_nodes)

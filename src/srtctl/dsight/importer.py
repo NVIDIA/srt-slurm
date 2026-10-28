@@ -455,6 +455,8 @@ class Importer:
                         if it := record.iteration:
                             row = {
                                 **asdict(it),
+                                # JSON-native, so in-memory and SQLite queries return identical rows.
+                                "fields": {k: list(v) if isinstance(v, tuple) else v for k, v in it.fields},
                                 "kind": "iteration",
                                 "rank": it.global_rank,
                                 "local_rank": it.rank,

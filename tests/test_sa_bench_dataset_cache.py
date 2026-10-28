@@ -209,6 +209,23 @@ def test_changed_tokenizer_invalidates_cache(sa_bench, counting_builder, tmp_pat
     assert len(counting_builder) == 2
 
 
+def test_same_tokenizer_at_another_path_hits_the_cache(sa_bench, counting_builder, tmp_path):
+    """cache-inputs and a job mount the model at different container paths."""
+    cache_dir = str(tmp_path / "cache")
+    model_dirs = []
+    for name in ("sa-bench-model-cache", "srtctl-model-cache"):
+        model_dir = tmp_path / name
+        model_dir.mkdir()
+        (model_dir / "tokenizer.json").write_text('{"vocab": "v1"}')
+        model_dirs.append(model_dir)
+
+    _load(sa_bench, cache_dir, tokenizer_id=str(model_dirs[0]))
+    _load(sa_bench, cache_dir, tokenizer_id=str(model_dirs[1]))
+
+    assert len(counting_builder) == 1
+    assert len(list((tmp_path / "cache").glob("*.pkl"))) == 1
+
+
 def test_corrupt_cache_file_is_regenerated(sa_bench, counting_builder, tmp_path):
     """A truncated file must degrade to a rebuild, never crash the benchmark."""
     _load(sa_bench, str(tmp_path))

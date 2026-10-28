@@ -530,9 +530,19 @@ class TestCustomBenchmarkRunner:
         ):
             return stage._get_benchmark_env(CustomBenchmarkRunner())
 
-    @pytest.mark.parametrize("dp_key", ["dp-size", "dp_size", "data-parallel-size"])
-    def test_sglang_attention_dp_custom_metrics_scrape_followers_in_topology_order(self, dp_key):
-        env = self._custom_env({"prefill": {dp_key: 8}, "decode": {dp_key: 8}})
+    @pytest.mark.parametrize(
+        "dp_args",
+        [
+            {"dp-size": 8},
+            {"dp_size": 8},
+            {"data-parallel-size": 8},
+            {"dp-size": 8, "enable-dp-attention": True},
+            {"attn-dp-size": 8},
+            {"attention_data_parallel_size": 8},
+        ],
+    )
+    def test_sglang_attention_dp_custom_metrics_scrape_followers_in_topology_order(self, dp_args):
+        env = self._custom_env({"prefill": dp_args, "decode": dp_args})
 
         # Routing still targets logical leaders; only metrics include follower ranks.
         assert env["SRT_PREFILL_ENDPOINTS"] == "ip-node-p0:7500"
@@ -635,13 +645,17 @@ class TestCustomBenchmarkRunner:
         from srtctl.benchmarks.custom import CustomBenchmarkRunner
         from srtctl.core.topology import Process
 
+        # Sidecar topologies give SGLang followers an HTTP port for their health server's /metrics.
         processes = [
             Process("node-a", frozenset(range(4)), 7500, 6100, "prefill", 0, node_rank=0),
-            Process("node-b", frozenset(range(4)), 7501, 0, "prefill", 0, node_rank=1),
+            Process("node-b", frozenset(range(4)), 7501, 6100, "prefill", 0, node_rank=1),
             Process("node-c", frozenset(range(4)), 7502, 6100, "decode", 0, node_rank=0),
-            Process("node-d", frozenset(range(4)), 7503, 0, "decode", 0, node_rank=1),
+            Process("node-d", frozenset(range(4)), 7503, 6100, "decode", 0, node_rank=1),
         ]
-        stage = self._benchmark_stage("dynamo", processes, dynamo_sidecar=True)
+        tp8 = {"tensor-parallel-size": 8}
+        stage = self._benchmark_stage(
+            "dynamo", processes, dynamo_sidecar=True, engine_args={"prefill": tp8, "decode": tp8}
+        )
 
         with patch(
             "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
@@ -651,6 +665,8 @@ class TestCustomBenchmarkRunner:
 
         assert env["SRT_PREFILL_ENDPOINTS"] == "ip-node-a:6100"
         assert env["SRT_DECODE_ENDPOINTS"] == "ip-node-c:6100"
+        # One URL per logical leader, aligned with SRT_*_ENDPOINTS: the native SGLang endpoint.
+        # Followers serve /metrics too under sidecars, but custom runners list leaders only.
         assert env["AIPERF_SERVER_METRICS_URLS"] == ("http://ip-node-a:6100/metrics,http://ip-node-c:6100/metrics")
 
     def test_aggregated_worker_endpoint_uses_http_port_without_dynamo(self):
@@ -1009,14 +1025,23 @@ class TestCustomBenchmarkRunner:
     def test_sidecar_metric_urls_ignore_standalone_publishing_option(
         self, benchmark_type, publish_metrics, publish_events_and_metrics
     ):
-        """The standalone dynamo.trtllm flag does not change existing sidecar URLs."""
+        """The standalone dynamo.trtllm flag does not change sidecar URLs.
+
+        Built-in runners advertise the rank-zero sidecar's runtime endpoint only with the
+        legacy combined flag. Custom runners always get one live URL per logical worker for
+        drain detection: TRT-LLM's OpenEngine gRPC server serves no Prometheus endpoint of
+        its own, so that is the sidecar's runtime endpoint.
+        """
         from unittest.mock import patch
 
         from srtctl.benchmarks.custom import CustomBenchmarkRunner
         from srtctl.benchmarks.trace_replay import TraceReplayRunner
         from srtctl.core.topology import Process
 
-        processes = [Process("node-a", frozenset(range(4)), 7500, 6100, "agg", 0, node_rank=0)]
+        processes = [
+            Process("node-a", frozenset(range(4)), 7500, 6100, "agg", 0, node_rank=0),
+            Process("node-b", frozenset(range(4)), 7501, 0, "agg", 0, node_rank=1),
+        ]
         stage = self._benchmark_stage(
             "dynamo",
             processes,
@@ -1034,9 +1059,7 @@ class TestCustomBenchmarkRunner:
         ):
             env = stage._get_benchmark_env(runner)
 
-        if benchmark_type == "custom":
-            assert env["AIPERF_SERVER_METRICS_URLS"] == "http://ip-node-a:6100/metrics"
-        elif publish_events_and_metrics:
+        if benchmark_type == "custom" or publish_events_and_metrics:
             assert env["AIPERF_SERVER_METRICS_URLS"] == "http://ip-node-a:7500/metrics"
         else:
             assert "AIPERF_SERVER_METRICS_URLS" not in env
@@ -2097,6 +2120,121 @@ class TestRunPostEval:
                 with patch("srtctl.cli.do_sweep.start_srun_process", return_value=mock_proc):
                     result = orch._run_post_eval(stop)
         assert result == 0
+
+    @staticmethod
+    def _run_eval_with_endpoint_probes(orch, *, eval_only):
+        import os
+        import threading
+        from unittest.mock import MagicMock, patch
+
+        proc = MagicMock()
+        proc.poll.return_value = 0
+        proc.returncode = 0
+        with (
+            patch.dict(
+                os.environ,
+                {"EVAL_ONLY": str(eval_only).lower(), "RUN_EVAL": str(not eval_only).lower()},
+                clear=False,
+            ),
+            patch("srtctl.cli.mixins.benchmark_stage.wait_for_model", return_value=True) as model_ready,
+            patch("srtctl.cli.do_sweep.wait_for_port", return_value=True) as port_ready,
+            patch("srtctl.cli.do_sweep.start_srun_process", return_value=proc) as launch,
+        ):
+            assert orch._run_post_eval(threading.Event()) == 0
+        return model_ready, port_ready, launch.call_args.kwargs
+
+    @pytest.mark.parametrize(
+        ("placement", "expected_node"), [("head", "node0"), ("first_decode", "node1"), ("last_decode", "node2")]
+    )
+    @pytest.mark.parametrize("eval_only", [True, False], ids=["eval-only", "post-benchmark"])
+    @pytest.mark.parametrize("custom_command", [False, True], ids=["lm-eval", "custom-command"])
+    def test_eval_runs_on_the_frontend_it_probes(self, placement, expected_node, eval_only, custom_command):
+        """Local eval URLs reach the same placed frontend as the readiness probe."""
+        from dataclasses import replace
+
+        from srtctl.core.schema import PostEvalConfig
+
+        orch = self._make_orchestrator()
+        orch.config = replace(
+            orch.config,
+            frontend=replace(
+                orch.config.frontend,
+                enable_multiple_frontends=False,
+                placement=PlacementConfig(node=placement),
+            ),
+            post_eval=PostEvalConfig(command=["bash", "/eval.sh", "{endpoint}"])
+            if custom_command
+            else PostEvalConfig(),
+        )
+        topology = orch._compute_frontend_topology()
+        assert topology.frontend_nodes == [expected_node]
+        assert topology.nginx_node is None
+
+        model_ready, port_ready, launch = self._run_eval_with_endpoint_probes(orch, eval_only=eval_only)
+
+        if eval_only:
+            model_ready.assert_called_once()
+            assert model_ready.call_args.kwargs["host"] == expected_node
+            assert model_ready.call_args.kwargs["port"] == topology.public_port
+            port_ready.assert_not_called()
+        else:
+            port_ready.assert_called_once_with(expected_node, topology.public_port, timeout=30)
+            model_ready.assert_not_called()
+        assert launch["nodelist"] == [expected_node]
+        assert launch["step_name"] == "eval"
+        assert launch["command"][2] == f"http://localhost:{topology.public_port}"
+        assert launch["command"][1] == ("/eval.sh" if custom_command else "/srtctl-benchmarks/lm-eval/bench.sh")
+
+    def test_eval_uses_the_frontend_heterogeneous_component(self):
+        """A frontend on the decode side launches eval in the decode Slurm component."""
+        from dataclasses import replace
+
+        orch = self._make_orchestrator()
+        orch.config = replace(
+            orch.config,
+            frontend=replace(
+                orch.config.frontend,
+                enable_multiple_frontends=False,
+                placement=PlacementConfig(node="first_decode"),
+            ),
+        )
+        orch.runtime = replace(
+            orch.runtime,
+            nodes=replace(
+                orch.runtime.nodes,
+                het=True,
+                prefill_group=("node0",),
+                decode_group=("node1", "node2"),
+            ),
+        )
+
+        model_ready, _, launch = self._run_eval_with_endpoint_probes(orch, eval_only=True)
+
+        assert model_ready.call_args.kwargs["host"] == "node1"
+        assert launch["nodelist"] == ["node1"]
+        assert launch["het_group"] == 1
+
+    def test_eval_runs_on_the_direct_worker_public_endpoint(self):
+        """Direct serving uses the aggregate worker's node even when the job head differs."""
+        from dataclasses import replace
+
+        from srtctl.backends import VLLMBackend
+        from srtctl.core.schema import FrontendConfig, RoleConfig
+
+        orch = self._make_orchestrator()
+        orch.config = replace(
+            orch.config,
+            engine=VLLMBackend(),
+            roles={"agg": RoleConfig(nodes=1, workers=1, gpus=8)},
+            frontend=FrontendConfig(type="vllm", enable_multiple_frontends=False),
+        )
+        orch.runtime = replace(orch.runtime, nodes=replace(orch.runtime.nodes, worker=("node1",)))
+
+        model_ready, _, launch = self._run_eval_with_endpoint_probes(orch, eval_only=True)
+
+        assert model_ready.call_args.kwargs["host"] == "node1"
+        assert launch["nodelist"] == ["node1"]
+        assert launch["command"][2] == "http://localhost:8000"
 
     def test_env_var_passthrough(self):
         """Eval env vars are passed through to srun."""

@@ -40,7 +40,7 @@ observability:
 
 The capture window aligns with the load, the same window the benchmark client's own `AIPERF_SERVER_METRICS_URLS` polling covers: on benchmark runs the scraper starts once the server passes the health gate (bring-up produces only dead-endpoint noise while workers load) and is stopped **gracefully** when the client exits, with a configurable grace period for compacting `final.parquet`. Runs without a discrete load window (serve-only, `manual`, eval-only) capture the whole serve session as before. Signal handlers and the critical-process monitor still use the process registry's existing teardown budget; the benchmark shutdown grace does not override those paths.
 
-Tachometer scrapes all configured worker, frontend, DCGM, and node-exporter endpoints, independently of the benchmark client's `AIPERF_SERVER_METRICS_URLS` polling. This keeps the raw capture complete even when the client also collects metrics.
+Tachometer scrapes all configured worker, frontend, DCGM, and node-exporter endpoints, independently of the benchmark client's `AIPERF_SERVER_METRICS_URLS` polling. This keeps the raw capture complete even when the client also collects metrics. In a Dynamo sidecar job a worker process can have two targets, the sidecar's runtime metrics (`backend_{mode}{index}_rank{rank}`) and the native engine's own (`..._engine`); see [Native sidecars](sidecars.md#metrics).
 
 The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape_metrics`, `scrape_interval_seconds`, or `scrape_output` fails validation at submit time.
 

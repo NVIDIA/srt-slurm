@@ -745,6 +745,7 @@ class VLLMBackend(Backend):
         gpus_per_node: int,
         available_nodes: Sequence[str],
         spread_workers: bool = False,
+        gpu_indices_by_mode: Mapping[WorkerMode, Sequence[frozenset[int]]] | None = None,
     ) -> list[Endpoint]:
         """Allocate endpoints to nodes."""
         from srtctl.core.topology import allocate_endpoints
@@ -759,6 +760,7 @@ class VLLMBackend(Backend):
             gpus_per_node=gpus_per_node,
             available_nodes=available_nodes,
             spread_workers=spread_workers,
+            gpu_indices_by_mode=gpu_indices_by_mode,
             allow_prefill_decode_colocation=self.should_colocate_prefill_decode(
                 num_prefill=num_prefill,
                 num_decode=num_decode,
@@ -771,9 +773,11 @@ class VLLMBackend(Backend):
         )
 
     def is_dp_mode(self, mode: WorkerMode) -> bool:
-        """Check if this mode uses Data Parallel + Expert Parallel pattern.
+        """Check if this mode uses Data Parallel + Expert Parallel launch.
 
-        DP+EP mode is detected when data-parallel-size is set in the mode's config.
+        ``data-parallel-size: 1`` is still passed to vLLM, but launch is the
+        standard TP/PP ``--nnodes`` / ``--node-rank`` path. A PP stage that
+        spans nodes cannot be one DP rank's local GPU group.
         ``dp_launch_mode`` controls whether a process owns one rank or all local ranks.
         """
         dp_size = self._get_dp_size(mode)
@@ -1544,6 +1548,33 @@ class VLLMBackend(Backend):
 
         return cmd
 
+    def _sidecar_multi_node_replica(self, process: Process, endpoint_processes: list[Process]) -> bool:
+        """Whether this process belongs to one TP/PP replica spanning the endpoint's nodes."""
+        mode = process.endpoint_mode
+        is_multi_node = len({candidate.node for candidate in endpoint_processes}) > 1
+        return is_multi_node and (
+            not self.is_dp_mode(mode) or self._get_model_parallel_size(mode) > len(process.gpu_indices)
+        )
+
+    def runs_dynamo_sidecar(self, process: Process, endpoint_processes: list[Process]) -> bool:
+        """Every frontend node runs a sidecar; the headless followers of a cross-node replica run none."""
+        endpoint_nodes = list(dict.fromkeys(candidate.node for candidate in endpoint_processes))
+        return not (
+            self._sidecar_multi_node_replica(process, endpoint_processes) and endpoint_nodes.index(process.node) > 0
+        )
+
+    def sidecar_engine_metrics_port(self, process: Process, endpoint_processes: list[Process]) -> int | None:
+        """The Rust frontend's HTTP port, which serves ``vllm:*`` Prometheus metrics beside gRPC.
+
+        ``vllm-rs`` always runs its HTTP server alongside the gRPC server and mounts
+        ``/metrics`` there, labelled per DP engine (vllm-project/vllm b272cff368,
+        ``rust/src/server/src/lib.rs``, ``routes/metrics.rs``). Headless followers
+        run no frontend and serve nothing.
+        """
+        if not self.runs_dynamo_sidecar(process, endpoint_processes) or process.http_port <= 0:
+            return None
+        return process.http_port
+
     def _build_sidecar_command(
         self,
         *,
@@ -1562,9 +1593,7 @@ class VLLMBackend(Backend):
         is_dp_mode = self.is_dp_mode(mode)
         endpoint_nodes = list(dict.fromkeys(candidate.node for candidate in endpoint_processes))
         is_multi_node = len(endpoint_nodes) > 1
-        multi_node_replica = is_multi_node and (
-            not is_dp_mode or self._get_model_parallel_size(mode) > len(process.gpu_indices)
-        )
+        multi_node_replica = self._sidecar_multi_node_replica(process, endpoint_processes)
         if multi_node_replica and is_dp_mode:
             raise ValueError(
                 "vLLM sidecar mode supports one cross-node TP/PP replica per endpoint; "
@@ -1576,7 +1605,7 @@ class VLLMBackend(Backend):
             if len(gpu_counts) != 1 or total_gpus != self._get_model_parallel_size(mode):
                 raise ValueError("vLLM sidecar TP*PP*PCP must match the evenly distributed endpoint GPU allocation")
         node_rank = endpoint_nodes.index(process.node)
-        headless = multi_node_replica and node_rank > 0
+        headless = not self.runs_dynamo_sidecar(process, endpoint_processes)
         hybrid_lb = is_dp_mode and is_multi_node and not multi_node_replica
         if hybrid_lb or multi_node_replica:
             normalized = {key.replace("_", "-"): value for key, value in config.items()}
@@ -1618,6 +1647,9 @@ class VLLMBackend(Backend):
             "data_parallel_hybrid_lb",
             "data-parallel-rank",
             "data_parallel_rank",
+            # srtctl owns the listener Tachometer, AIPerf and the sidecar reach.
+            "host",
+            "port",
         ):
             config.pop(key, None)
 
@@ -1651,12 +1683,21 @@ class VLLMBackend(Backend):
             command.append("vllm-rs")
         command.extend(["serve", model_arg, "--served-model-name", served_model_name])
         if not headless:
+            http_port = self.sidecar_engine_metrics_port(process, endpoint_processes)
+            if http_port is None:
+                raise ValueError(
+                    f"vLLM sidecar {mode} worker {process.endpoint_index} on {process.node} has no allocated "
+                    "HTTP port; the topology gives every frontend node one"
+                )
+            # The Rust frontend's HTTP server runs beside its gRPC server and serves /metrics;
+            # it binds every interface so Tachometer can scrape it from another node. gRPC follows
+            # the HTTP host (vllm-project/vllm b272cff368, rust/src/cmd/src/cli.rs to_frontend_config).
             command.extend(
                 [
                     "--host",
-                    "127.0.0.1",
+                    "0.0.0.0",
                     "--port",
-                    str(process.http_port or grpc_port + 1),
+                    str(http_port),
                     "--grpc-port",
                     str(grpc_port),
                 ]

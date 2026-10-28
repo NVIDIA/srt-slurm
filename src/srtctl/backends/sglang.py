@@ -37,6 +37,7 @@ from srtctl.ports import (
     DIST_INIT_PORTS,
     DYN_SYSTEM_PORT_BASE,
     GRPC_HTTP_PORTS,
+    HTTP_PORTS,
     LMCACHE_SERVER_PORT,
     NCCL_PORTS,
 )
@@ -176,10 +177,14 @@ class SGLangBackend(Backend):
         config = self.get_config_for_mode(mode)
         return config.get("grpc-mode", False)
 
-    def data_parallel_size(self, mode: WorkerMode) -> int:
-        """``dp-size`` (upstream alias ``data-parallel-size``) for a worker mode; 1 when unset."""
-        config = {key.replace("_", "-"): value for key, value in self.get_config_for_mode(mode).items()}
-        return int(config.get("dp-size") or config.get("data-parallel-size") or 1)
+    def num_dp_ranks(self, mode: WorkerMode) -> int:
+        """DP ranks (one scheduler and KV cache each) a worker of ``mode`` runs: replicas x attention-DP width.
+
+        Mirrors upstream's ``num_dp_ranks`` (``dp_size * attn_dp_size``), so it is the same for
+        ``attn-dp-size N`` and the deprecated ``dp-size N`` plus ``enable-dp-attention``.
+        """
+        replicas, attn_dp = _dp_layout(self.get_config_for_mode(mode))
+        return replicas * attn_dp
 
     def get_served_model_name(self, default: str) -> str:
         """Get served model name from the roles' engine args, or return default."""
@@ -205,6 +210,7 @@ class SGLangBackend(Backend):
         gpus_per_node: int,
         available_nodes: Sequence[str],
         spread_workers: bool = False,
+        gpu_indices_by_mode: Mapping[WorkerMode, Sequence[frozenset[int]]] | None = None,
     ) -> list["Endpoint"]:
         """Allocate endpoints to nodes."""
         from srtctl.core.topology import allocate_endpoints
@@ -219,6 +225,7 @@ class SGLangBackend(Backend):
             gpus_per_node=gpus_per_node,
             available_nodes=available_nodes,
             spread_workers=spread_workers,
+            gpu_indices_by_mode=gpu_indices_by_mode,
         )
 
     def endpoints_to_processes(
@@ -232,17 +239,19 @@ class SGLangBackend(Backend):
         """Convert endpoints to processes, each with its NCCL rendezvous port and its endpoint's dist-init port.
 
         A gRPC-mode leader also gets its HTTP sidecar port, which carries /metrics and the profiler routes.
+        Under Dynamo sidecars a follower gets an HTTP port too: SGLang runs a health server with
+        ``/metrics`` for the node's schedulers on every node rank >= 1, bound to ``--port``
+        (sgl-project/sglang 759111879457, ``entrypoints/engine.py`` and
+        ``utils/common.py:launch_dummy_health_check_server``); without one it binds port 0.
         """
         from srtctl.core.topology import endpoints_to_processes, port_allocator_for
 
         allocator = port_allocator_for(port_allocator, base_sys_port)
-        # SGLang offsets the publisher port by global DP rank. Reserve every
-        # rank's slot so co-located workers cannot overlap a follower's range.
-        kv_events_port_sizes = {
-            endpoint.mode: _parallel_size(self.get_config_for_mode(endpoint.mode), "data", "dp")
-            for endpoint in endpoints
-            if dynamo_sidecar and self.get_kv_events_config_for_mode(endpoint.mode)
-        }
+        # SGLang binds each publisher at the configured port plus its global DP
+        # rank (select_kv_publisher_dp_rank), so every process reserves one slot
+        # per DP rank of its worker, as vLLM reserves one per local DP rank.
+        # Otherwise a co-located worker's base lands on this one's rank 1.
+        kv_events_port_sizes = {endpoint.mode: self.num_dp_ranks(endpoint.mode) for endpoint in endpoints}
         processes = endpoints_to_processes(
             endpoints,
             port_allocator=allocator,
@@ -259,6 +268,11 @@ class SGLangBackend(Backend):
         return [
             replace(
                 process,
+                http_port=(
+                    allocator.next(HTTP_PORTS, process.node)
+                    if dynamo_sidecar and not process.is_leader
+                    else process.http_port
+                ),
                 nccl_port=allocator.next(NCCL_PORTS),
                 dist_init_port=dist_init_ports[(process.endpoint_mode, process.endpoint_index)],
                 grpc_http_port=(
@@ -379,9 +393,7 @@ class SGLangBackend(Backend):
         # serves its own metrics on the system port regardless, but only merges the
         # engine's sglang:* series (KV usage, running requests, scheduler stages) into
         # that endpoint when SGLang was started with this flag.
-        mode_config = self.get_config_for_mode(mode)
-        if not any(key in mode_config for key in ("enable-metrics", "enable_metrics")):
-            cmd.append("--enable-metrics")
+        cmd.extend(_enable_metrics_args(self.get_config_for_mode(mode)))
 
         # Add disaggregation mode for prefill/decode workers (both dynamo and sglang frontend)
         if mode != "agg":
@@ -459,6 +471,9 @@ class SGLangBackend(Backend):
             "disaggregation_mode",
             "disaggregation-bootstrap-port",
             "disaggregation_bootstrap_port",
+            # srtctl owns the listener Tachometer, AIPerf and the sidecar reach.
+            "host",
+            "port",
         ):
             config.pop(key, None)
 
@@ -467,6 +482,11 @@ class SGLangBackend(Backend):
         is_leader = node_rank == 0
         leader_ip = get_hostname_ip(endpoint_nodes[0], runtime.network_interface)
         grpc_port = sidecar_grpc_port(process)
+        if process.http_port <= 0:
+            raise ValueError(
+                f"SGLang sidecar {mode} worker {process.endpoint_index} on {process.node} has no allocated "
+                "HTTP port; the topology was built without dynamo_sidecar=True"
+            )
 
         served_model_name = self.get_served_model_name(runtime.model_path.name)
         model_arg = runtime.worker_model_arg
@@ -482,18 +502,19 @@ class SGLangBackend(Backend):
                 served_model_name,
                 "--host",
                 "0.0.0.0",
+                # Leaders serve the full HTTP server beside native gRPC; followers serve a health
+                # server. Both carry /metrics with --enable-metrics (see sidecar_engine_metrics_port).
                 "--port",
                 str(process.http_port),
             ]
         )
+        engine.extend(_enable_metrics_args(config))
 
-        # Regular DP launches independent TP groups on this node. Let SGLang
+        # DP replicas are independent TP groups on this node. Let SGLang
         # allocate their NCCL ports: an explicit port is reused by every group
         # and causes the second DP rank to fail with EADDRINUSE.
-        regular_dp = _parallel_size(config, "data", "dp") > 1 and not (
-            config.get("enable-dp-attention") or config.get("enable_dp_attention")
-        )
-        if not regular_dp:
+        replicas, _ = _dp_layout(config)
+        if replicas == 1:
             engine.extend(["--nccl-port", str(_nccl_port(process))])
 
         if mode != "agg":
@@ -512,8 +533,8 @@ class SGLangBackend(Backend):
                 ]
             )
         kv_cfg = self.get_kv_events_config_for_mode(mode)
-        relay_kv_events = self.needs_telemetry_sidecar(process, endpoint_processes)
-        if is_leader or relay_kv_events:
+        runs_sidecar = self.runs_dynamo_sidecar(process, endpoint_processes)
+        if runs_sidecar:
             engine.extend(["--grpc-port", str(grpc_port)])
 
         # The SGLang sidecar discovers the publisher; SGLang still needs this
@@ -534,7 +555,7 @@ class SGLangBackend(Backend):
                 process.endpoint_index,
             )
         engine.extend(_config_to_cli_args(config))
-        if not is_leader and not relay_kv_events:
+        if not runs_sidecar:
             return engine
 
         sidecar = (
@@ -556,6 +577,26 @@ class SGLangBackend(Backend):
             startup_timeout=sidecar_config.sidecar_startup_timeout,
         )
 
+    def runs_dynamo_sidecar(self, process: "Process", endpoint_processes: list["Process"]) -> bool:
+        """The endpoint leader runs the serving sidecar; a follower runs one only to relay its KV events."""
+        nodes = list(dict.fromkeys(candidate.node for candidate in endpoint_processes))
+        return nodes.index(process.node) == 0 or self.needs_telemetry_sidecar(process, endpoint_processes)
+
+    def sidecar_engine_metrics_port(self, process: "Process", endpoint_processes: list["Process"]) -> int | None:
+        """Every node's ``--port`` serves ``/metrics`` unless the role turned ``enable-metrics`` off.
+
+        The leader runs the full HTTP server beside native gRPC
+        (sgl-project/sglang 759111879457, ``entrypoints/http_server.py``), with the
+        tokenizer's request histograms (TTFT, ITL, end-to-end latency) and its node's
+        scheduler series; a follower (node rank >= 1) runs a health server whose
+        ``/metrics`` carries the scheduler series of the DP ranks on that node
+        (``utils/common.py:launch_dummy_health_check_server``). Both mount the route
+        only with ``--enable-metrics``, which srtctl passes unless the role sets it.
+        """
+        if not _metrics_enabled(self.get_config_for_mode(process.endpoint_mode)) or process.http_port <= 0:
+            return None
+        return process.http_port
+
     def needs_telemetry_sidecar(self, process: "Process", endpoint_processes: list["Process"]) -> bool:
         """Whether a sidecar-enabled endpoint needs a KV relay on this follower."""
         nodes = list(dict.fromkeys(candidate.node for candidate in endpoint_processes))
@@ -568,6 +609,20 @@ class SGLangBackend(Backend):
             and process.kv_events_port is not None
             and _node_has_kv_publisher(self.get_config_for_mode(process.endpoint_mode), len(nodes), node_rank)
         )
+
+
+_ENABLE_METRICS_KEYS = ("enable-metrics", "enable_metrics")
+
+
+def _enable_metrics_args(config: Mapping[str, Any]) -> list[str]:
+    """``--enable-metrics`` unless the role's args set it (either way, ``_config_to_cli_args`` renders theirs)."""
+    return [] if any(key in config for key in _ENABLE_METRICS_KEYS) else ["--enable-metrics"]
+
+
+def _metrics_enabled(config: Mapping[str, Any]) -> bool:
+    """Whether the engine command carries ``--enable-metrics``: srtctl's default, or what the role's args render."""
+    role_args = {key: config[key] for key in _ENABLE_METRICS_KEYS if key in config}
+    return bool(_enable_metrics_args(config)) or "--enable-metrics" in _config_to_cli_args(role_args)
 
 
 def _parallel_size(config: dict[str, Any], long_name: str, short_name: str) -> int:
@@ -583,6 +638,23 @@ def _parallel_size(config: dict[str, Any], long_name: str, short_name: str) -> i
     return value
 
 
+def _dp_layout(config: dict[str, Any]) -> tuple[int, int]:
+    """SGLang's ``(replicas, attention-DP width)`` for a role's engine args.
+
+    ``attn-dp-size`` (alias ``attention-data-parallel-size``) sets the attention-DP
+    width and leaves ``dp-size`` counting replicas. The deprecated ``dp-size N`` plus
+    ``enable-dp-attention``, the only spelling SGLang builds before that split accept,
+    resolves to the same layout as ``attn-dp-size N``:
+    https://github.com/sgl-project/sglang/pull/41818 (a9c97c9f6973c03e778d1fe1e63a6b9f58a55012)
+    """
+    dp = _parallel_size(config, "data", "dp")
+    attn_dp = _parallel_size(config, "attention-data", "attn-dp")
+    deprecated = any(key.replace("_", "-") == "enable-dp-attention" and value for key, value in config.items())
+    if deprecated and attn_dp == 1:
+        return 1, dp
+    return dp, attn_dp
+
+
 def _node_has_kv_publisher(config: dict[str, Any], nnodes: int, node_rank: int) -> bool:
     """Select the nodes owning PP=0, attention CP=0/TP=0 scheduler ranks.
 
@@ -590,18 +662,18 @@ def _node_has_kv_publisher(config: dict[str, Any], nnodes: int, node_rank: int) 
     rank of each group publishes. TP-only and later PP-stage followers must
     stay engine-only because the telemetry sidecar requires a local source.
     """
-    if not (config.get("enable-dp-attention") or config.get("enable_dp_attention")):
+    _, attn_dp = _dp_layout(config)
+    if attn_dp == 1:
         return node_rank == 0
     tp = _parallel_size(config, "tensor", "tp")
-    dp = _parallel_size(config, "data", "dp")
     pp = _parallel_size(config, "pipeline", "pp")
     nodes_per_pp = max(nnodes // pp, 1)
     if node_rank >= nodes_per_pp:
         return False
-    if tp % nodes_per_pp or tp % dp:
-        raise ValueError("SGLang attention DP requires TP divisible by DP and nodes per PP stage")
+    if tp % nodes_per_pp or tp % attn_dp:
+        raise ValueError("SGLang attention DP requires TP divisible by attention-DP size and nodes per PP stage")
     local_tp = tp // nodes_per_pp
-    return any(node_rank * local_tp <= rank < (node_rank + 1) * local_tp for rank in range(0, tp, tp // dp))
+    return any(node_rank * local_tp <= rank < (node_rank + 1) * local_tp for rank in range(0, tp, tp // attn_dp))
 
 
 def _config_to_cli_args(config: dict[str, Any]) -> list[str]:

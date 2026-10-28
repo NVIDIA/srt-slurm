@@ -244,8 +244,13 @@ class Backend(ABC):
         gpus_per_node: int,
         available_nodes: Sequence[str],
         spread_workers: bool = False,
+        gpu_indices_by_mode: Mapping[WorkerMode, Sequence[frozenset[int]]] | None = None,
     ) -> list["Endpoint"]:
-        """Allocate logical endpoints based on resource requirements."""
+        """Allocate logical endpoints based on resource requirements.
+
+        ``gpu_indices_by_mode`` carries ``roles.<role>.gpu_indices``: the physical
+        GPU set of each worker slot on a node of that mode.
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -352,3 +357,24 @@ class Backend(ABC):
         to ``False``; override for an engine with a gRPC server.
         """
         return False
+
+    def runs_dynamo_sidecar(self, process: "Process", endpoint_processes: list["Process"]) -> bool:
+        """In Dynamo sidecar mode (``dynamo.sidecar``), whether this process launches a Dynamo sidecar.
+
+        A sidecar starts the Dynamo runtime's system status server on
+        ``DYN_SYSTEM_PORT`` (``Process.sys_port``), which serves the runtime's
+        ``/metrics``; a process that runs only the native engine binds nothing
+        there. ``endpoint_processes`` are every process of the same logical
+        worker, as the command builder sees them. Defaults to ``False``: an
+        engine without sidecar support runs none.
+        """
+        return False
+
+    def sidecar_engine_metrics_port(self, process: "Process", endpoint_processes: list["Process"]) -> int | None:
+        """In Dynamo sidecar mode, the allocated port the native engine serves Prometheus on.
+
+        The engine serves it at ``prometheus_metrics_path`` on this process's
+        node. ``None`` when the process's engine serves no Prometheus endpoint
+        (the default, and every engine without sidecar support).
+        """
+        return None

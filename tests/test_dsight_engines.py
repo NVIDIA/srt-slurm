@@ -9,13 +9,15 @@ import json
 import shutil
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from test_dsight import CLIENT, ORIGIN, SERVER, write_run
+from test_dsight import CLIENT, ORIGIN, SERVER, trtllm_iteration_line, write_run
 
 from srtctl.dsight.build import build_dashboard
+from srtctl.dsight.engines import _trtllm_iteration_value, parse_engine_log, parse_trtllm_iteration
 from srtctl.dsight.importer import Importer
 from srtctl.dsight.query import TraceDataset
 
@@ -348,3 +350,438 @@ def test_snapshot_precision_agrees_with_source_window(tmp_path, fraction):
     assert data["meta"]["duration"] == pytest.approx(resolution)
     assert all(r["start"] == 0 and r["end"] == pytest.approx(resolution) for r in data["iterations"])
     assert data["meta"]["origin_ns"] == str(ORIGIN + 2_000_000_000 + int(fraction.ljust(9, "0")))
+
+
+def test_trtllm_iteration_keeps_every_recorded_field_in_order():
+    it = parse_trtllm_iteration(trtllm_iteration_line(12588, 3, "2026-09-17 10:58:33"))
+    assert it is not None
+    assert (it.iteration, it.global_rank, it.rank, it.local_time) == (12588, 3, 0, "2026-09-17 10:58:33")
+    assert (it.batch_requests, it.kv_cache_util, it.host_step_ms, it.previous_device_step_ms) == (18, 0.25, 0.001, 25.0)
+    fields = dict(it.fields)
+    assert list(fields)[:4] == ["iter", "global_rank", "rank", "num_scheduled_requests"]
+    assert fields["currank_total_requests"] == (32, 64)
+    assert fields["states.cached_kv_tokens"] == 512
+    assert fields["num_unscheduled"] == 2
+    assert "states" not in fields  # The dict flattens; its parent key is not repeated.
+    record = parse_engine_log(trtllm_iteration_line(1, 0, "2026-09-17 10:58:33"))
+    assert record is not None and record.backend == "trtllm" and record.iteration is not None
+
+
+def test_trtllm_iteration_passes_unknown_fields_through_by_value_shape():
+    line = trtllm_iteration_line(7, 0, "2026-09-17 10:58:33").replace(
+        "num_active = 20",
+        "future_ratio = 0.5, future_ms = 3ms, future_pair = 1/2, future_tag = warm, "
+        "future_list = [1, 2], num_active = 20",
+    )
+    line = line.replace("'cached_kv_tokens': 512}", "'cached_kv_tokens': 512, 'cached_kv_tokens_per_req': [7, 0, 9]}")
+    fields = dict(parse_trtllm_iteration(line).fields)
+    assert fields["future_ratio"] == 0.5
+    assert fields["future_ms"] == 3.0
+    assert fields["future_pair"] == (1, 2)
+    assert fields["future_tag"] == "warm"
+    assert fields["future_list"] == (1, 2)
+    assert fields["states.cached_kv_tokens_per_req"] == (7, 0, 9)
+    assert fields["num_active"] == 20
+
+
+def test_trtllm_iteration_tolerates_removed_and_unavailable_fields():
+    line = (
+        "iter = 1, global_rank = 0, rank = 0, kv_cache_util = N/A, prev_device_step_time = N/A, "
+        "timestamp = 2026-09-17 10:58:33"
+    )
+    it = parse_trtllm_iteration(line)
+    assert it is not None
+    assert it.kv_cache_util is it.previous_device_step_ms is it.batch_requests is it.host_step_ms is None
+    assert dict(it.fields)["prev_device_step_time"] is None
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Engine ID map only",
+        "for iter = 3 the loop retried",  # No ranks or timestamp: not the iteration log.
+        "iter = 1, global_rank = 0, rank = 0, timestamp = soon",
+        "iter = x, global_rank = 0, rank = 0, timestamp = 2026-09-17 10:58:33",
+        "iter = 1, global_rank = 0, timestamp = 2026-09-17 10:58:33",
+        "iter = 1, rank = 0, timestamp = 2026-09-17 10:58:33",
+        "iter = 1, global_rank = 0, rank = 0",
+        "iter = 1, global_rank = 0, rank = N/A, timestamp = 2026-09-17 10:58:33",
+        "iter = 1.5, global_rank = 0, rank = 0, timestamp = 2026-09-17 10:58:33",
+        "iter = 1, global_rank = 0, rank = 0, timestamp = 2026-09-17 10:58:33 late",
+        "iter = 1, global_rank = 0, rank = 0, host_step_time = nanms, timestamp = 2026-09-17 10:58:33",
+    ],
+)
+def test_trtllm_iteration_requires_identity_and_time(line):
+    it = parse_trtllm_iteration(line)
+    if "nanms" in line:
+        assert it is not None and dict(it.fields)["host_step_time"] == "nanms"  # Never a non-finite number.
+    else:
+        assert it is None
+
+
+def trtllm_emitted_line(
+    executor: SimpleNamespace,
+    *,
+    kv_util_str: str,
+    host_step_time: float,
+    prev_device_step_time_str: str,
+    formatted_timestamp: str,
+    num_fetched: int,
+) -> str:
+    """The iteration log exactly as TensorRT-LLM emits it, so the format contract is checked against the source.
+
+    The message is the f-string from tensorrt_llm/_torch/pyexecutor/profiling.py:764-781
+    (TensorRT-LLM 7695494b) copied verbatim; the prefix is Logger.log in tensorrt_llm/logger.py
+    (`[TRT-LLM] [I] [<module>][RANK <n>]`) behind the stdlib handler's timestamp.
+    """
+    message = (
+        f"iter = {executor.iter_counter}, "
+        f"global_rank = {executor.global_rank}, "
+        f"rank = {executor.dist.rank}, "
+        f"num_scheduled_requests = {executor.num_scheduled_requests}, "
+        f"adp_dummy_ctx_tokens = {executor._iter_adp_dummy_ctx_tokens}, "
+        f"adp_dummy_gen_tokens = {executor._iter_adp_dummy_gen_tokens}, "
+        f"kv_cache_util = {kv_util_str}, "
+        f"currank_total_requests = {executor.num_fetch_requests_cur_rank}/"
+        f"{executor.num_fetch_requests}, "
+        f"host_step_time = {host_step_time}ms, "
+        f"prev_device_step_time = {prev_device_step_time_str}, "
+        f"timestamp = {formatted_timestamp}, "
+        f"states = {executor.model_engine.iter_states}, "
+        f"num_active = {len(executor.active_requests)}, "
+        f"num_fetched = {num_fetched}, "
+        f"num_dummy = {executor.num_dummy_requests}, "
+        f"num_unscheduled = {executor.num_unscheduled_requests}"
+    )
+    return f"[10/19/2026-16:53:36] [TRT-LLM] [I] [_torch][RANK {executor.global_rank}] {message}"
+
+
+def trtllm_executor(iter_states: dict, *, iteration: int = 1, global_rank: int = 0) -> SimpleNamespace:
+    return SimpleNamespace(
+        iter_counter=iteration,
+        global_rank=global_rank,
+        dist=SimpleNamespace(rank=global_rank % 4),
+        num_scheduled_requests=3,
+        _iter_adp_dummy_ctx_tokens=0,
+        _iter_adp_dummy_gen_tokens=1,
+        num_fetch_requests_cur_rank=0,
+        num_fetch_requests=3,
+        model_engine=SimpleNamespace(iter_states=iter_states),
+        active_requests=[object()] * 3,
+        num_dummy_requests=0,
+        num_unscheduled_requests=0,
+    )
+
+
+# Every shape each emitted value can take: the first iteration has no previous device
+# time, a missing KV manager prints N/A, iter_states starts empty (model_engine.py:581),
+# float reprs may use exponents, and log_cached_kv_tokens_per_req adds a list
+# (decoder/inputs.py:496-499).
+@pytest.mark.parametrize(
+    ("states", "kv_util_str", "host_step_time", "prev_device", "expected_tail"),
+    [
+        ({}, "N/A", 77.96812057495117, None, []),
+        (
+            {"num_ctx_requests": 3, "num_ctx_tokens": 8192, "num_generation_tokens": 0, "cached_kv_tokens": 0},
+            f"{1.0 - 3 / 64:.3f}",
+            5e-05,
+            12.345678901234567,
+            [
+                ("states.num_ctx_requests", 3),
+                ("states.num_ctx_tokens", 8192),
+                ("states.num_generation_tokens", 0),
+                ("states.cached_kv_tokens", 0),
+            ],
+        ),
+        (
+            {
+                "num_ctx_requests": 1,
+                "num_ctx_tokens": 17,
+                "num_generation_tokens": 2,
+                "cached_kv_tokens": 4224,
+                "cached_kv_tokens_per_req": [0, 4096, 128],
+                "cached_kv_tokens_cuda_graph_padding": 0,
+            },
+            "0.000",
+            1.0,
+            0.25,
+            [
+                ("states.num_ctx_requests", 1),
+                ("states.num_ctx_tokens", 17),
+                ("states.num_generation_tokens", 2),
+                ("states.cached_kv_tokens", 4224),
+                ("states.cached_kv_tokens_per_req", (0, 4096, 128)),
+                ("states.cached_kv_tokens_cuda_graph_padding", 0),
+            ],
+        ),
+    ],
+)
+def test_trtllm_iteration_decodes_the_emitted_format_in_order(
+    states, kv_util_str, host_step_time, prev_device, expected_tail
+):
+    prev_str = "N/A" if prev_device is None else f"{prev_device}ms"
+    line = trtllm_emitted_line(
+        trtllm_executor(states, iteration=12588, global_rank=6),
+        kv_util_str=kv_util_str,
+        host_step_time=host_step_time,
+        prev_device_step_time_str=prev_str,
+        formatted_timestamp="2026-10-19 16:53:36",
+        num_fetched=2,
+    )
+    record = parse_engine_log(line)
+    assert record is not None and record.backend == "trtllm" and record.identity is None
+    it = record.iteration
+    kv_util = None if kv_util_str == "N/A" else float(kv_util_str)
+    # Float reprs round-trip exactly, so the parsed durations equal the emitted floats.
+    assert (it.iteration, it.global_rank, it.rank, it.local_time) == (12588, 6, 2, "2026-10-19 16:53:36")
+    assert (it.batch_requests, it.kv_cache_util, it.host_step_ms, it.previous_device_step_ms) == (
+        3,
+        kv_util,
+        host_step_time,
+        prev_device,
+    )
+    assert list(it.fields) == [
+        ("iter", 12588),
+        ("global_rank", 6),
+        ("rank", 2),
+        ("num_scheduled_requests", 3),
+        ("adp_dummy_ctx_tokens", 0),
+        ("adp_dummy_gen_tokens", 1),
+        ("kv_cache_util", kv_util),
+        ("currank_total_requests", (0, 3)),
+        ("host_step_time", host_step_time),
+        ("prev_device_step_time", prev_device),
+        ("timestamp", "2026-10-19 16:53:36"),
+        *expected_tail,
+        ("num_active", 3),
+        ("num_fetched", 2),
+        ("num_dummy", 0),
+        ("num_unscheduled", 0),
+    ]
+    assert all(type(v) is float for k, v in it.fields if k.endswith("_time") and v is not None)
+
+
+def test_trtllm_iteration_parses_the_recorded_cluster_line():
+    line = (
+        "[10/19/2026-16:53:36] [TRT-LLM] [I] [_torch] [RANK 0] iter = 1, global_rank = 0, rank = 0, "
+        "num_scheduled_requests = 3, adp_dummy_ctx_tokens = 0, adp_dummy_gen_tokens = 0, kv_cache_util = 0.952, "
+        "currank_total_requests = 0/3, host_step_time = 77.96812057495117ms, prev_device_step_time = N/A, "
+        "timestamp = 2026-10-19 16:53:36, states = {'num_ctx_requests': 3, 'num_ctx_tokens': 8192, "
+        "'num_generation_tokens': 0, 'cached_kv_tokens': 0}, num_active = 3, num_fetched = 0, num_dummy = 0, "
+        "num_unscheduled = 0\n"
+    )
+    it = parse_trtllm_iteration(line)
+    assert it is not None
+    assert (it.batch_requests, it.kv_cache_util, it.host_step_ms, it.previous_device_step_ms) == (
+        3,
+        0.952,
+        77.96812057495117,
+        None,
+    )
+    assert len(it.fields) == 19 and dict(it.fields)["states.num_ctx_tokens"] == 8192
+    assert dict(it.fields)["num_unscheduled"] == 0  # The trailing newline is not part of the value.
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("N/A", None),
+        ("0", 0),
+        ("-3", -3),
+        ("0.952", 0.952),
+        ("77.96812057495117ms", 77.96812057495117),
+        ("1e-05ms", 1e-05),
+        ("2.5E+1ms", 25.0),
+        # Non-finite numbers stay text: JSON storage rejects NaN and Infinity.
+        ("nan", "nan"),
+        ("nanms", "nanms"),
+        ("inf", "inf"),
+        ("-infms", "-infms"),
+        ("0/3", (0, 3)),
+        ("1/2/3", "1/2/3"),
+        ("-1/2", "-1/2"),
+        ("[1, 2]", (1, 2)),
+        ("[]", ()),
+        ("{'a': 1, 'b': [2]}", {"a": 1, "b": [2]}),
+        ("{}", {}),
+        ("{1, 2}", "{1, 2}"),  # A set is not a recorded shape.
+        ("{'a': 1", "{'a': 1"),  # Malformed literals stay text instead of raising.
+        ("[1, 2", "[1, 2"),
+        ("[tensor(1)]", "[tensor(1)]"),
+        ("(1, 2)", "(1, 2)"),
+        ("warm", "warm"),
+        ("warm ms", "warm ms"),
+        ("", ""),
+    ],
+)
+def test_trtllm_iteration_value_converts_by_shape(text, expected):
+    value = _trtllm_iteration_value(text)
+    assert value == expected and type(value) is type(expected)
+
+
+def test_trtllm_iteration_boundaries_ignore_commas_inside_values():
+    line = (
+        "iter = 1, global_rank = 0, rank = 0, timestamp = 2026-09-17 10:58:33, "
+        "states = {'note': 'a, b', 'tags': ['x, y', 'z'], 'per_req': [1, 2, 3]}, num_active = 3"
+    )
+    assert list(parse_trtllm_iteration(line).fields)[4:] == [
+        ("states.note", "a, b"),
+        ("states.tags", ("x, y", "z")),
+        ("states.per_req", (1, 2, 3)),
+        ("num_active", 3),
+    ]
+
+
+def test_trtllm_iteration_empty_states_records_no_keys_and_keeps_later_fields():
+    line = "iter = 0, global_rank = 0, rank = 0, timestamp = 2026-09-17 10:58:33, states = {}, num_active = 0"
+    fields = dict(parse_trtllm_iteration(line).fields)
+    assert not any(k == "states" or k.startswith("states.") for k in fields)
+    assert fields["num_active"] == 0
+
+
+def test_trtllm_iteration_malformed_states_stays_text():
+    line = "iter = 1, global_rank = 0, rank = 0, timestamp = 2026-09-17 10:58:33, states = {'a': tensor(1)}"
+    assert dict(parse_trtllm_iteration(line).fields)["states"] == "{'a': tensor(1)}"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="The last field's value runs to end of line, so text written after the iteration log "
+    "(here an Engine ID map interleaved on the same line) turns num_unscheduled into a string.",
+)
+def test_trtllm_iteration_followed_by_identity_keeps_last_field_numeric():
+    """Text after the last field is not a value; the field keeps its shape or the line is rejected."""
+    line = (
+        trtllm_iteration_line(42, 4, "2026-09-17 10:58:34")
+        + f" Engine ID map: request_id={SERVER} trtllm_client_id=8 disagg_request_id=101"
+    )
+    record = parse_engine_log(line)
+    assert record is not None and record.identity is not None and record.iteration is not None
+    assert dict(record.iteration.fields)["num_unscheduled"] == 2
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="'<n>ms' is documented as a float duration, but an integral value such as '3ms' becomes int. "
+    "TensorRT-LLM always prints a float repr today, so this is unreachable from profiling.py.",
+)
+def test_trtllm_iteration_integral_milliseconds_are_floats():
+    assert type(_trtllm_iteration_value("3ms")) is float
+
+
+# The format contract: content may change freely (keys added, removed, reordered, any value
+# shape), but the grammar `key = value` joined by ", " may not. A line whose grammar drifts is
+# rejected rather than decoded into values that silently absorb their neighbours.
+REQUIRED = [("iter", "1", 1), ("global_rank", "0", 0), ("rank", "0", 0), ("timestamp", "2026-09-17 10:58:33", None)]
+
+
+def iteration_fields(pairs: list[tuple[str, str, object]]) -> str:
+    return "[TRT-LLM] [I] [_torch][RANK 0] " + ", ".join(f"{key} = {text}" for key, text, _ in pairs)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        pytest.param([], id="only-required-keys"),
+        pytest.param([("num_active", "3", 3), ("num_unscheduled", "0", 0)], id="keys-kept"),
+        pytest.param([("num_unscheduled", "0", 0), ("num_active", "3", 3)], id="keys-reordered"),
+        pytest.param(
+            [("new_ratio", "0.5", 0.5), ("new_ms", "1.5ms", 1.5), ("new_pair", "4/8", (4, 8))], id="new-numbers"
+        ),
+        pytest.param(
+            [("new_na", "N/A", None), ("new_tag", "warm", "warm"), ("new_list", "[3, 1]", (3, 1))], id="new-shapes"
+        ),
+        pytest.param(
+            [
+                ("states", "{'cached_kv_tokens': 0, 'new_state': [1, 2], 'new_flag': True}", None),
+                ("num_active", "3", 3),
+            ],
+            id="new-nested-keys",
+        ),
+    ],
+)
+@pytest.mark.parametrize("required_last", [False, True], ids=["required-first", "required-after-iter"])
+def test_trtllm_iteration_tolerates_content_changes(extra, required_last):
+    """Adding, removing or reordering fields after `iter` never needs a parser change."""
+    pairs = [*REQUIRED, *extra] if not required_last else [REQUIRED[0], *extra, *REQUIRED[1:]]
+    it = parse_trtllm_iteration(iteration_fields(pairs))
+    assert it is not None
+    fields = dict(it.fields)
+    expected_states = {"states.cached_kv_tokens": 0, "states.new_state": (1, 2), "states.new_flag": True}
+    for key, text, value in pairs:
+        if key == "states":
+            assert {k: v for k, v in fields.items() if k.startswith("states.")} == expected_states
+        else:
+            assert fields[key] == (text if key == "timestamp" else value)
+    assert [k for k in fields if not k.startswith("states.")] == [k for k, _, _ in pairs if k != "states"]
+
+
+GOOD = "iter = 1, global_rank = 0, rank = 0, timestamp = 2026-09-17 10:58:33, num_active = 3, num_fetched = 0"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(GOOD.replace(" = ", ": "), id="colon-pairs"),
+        pytest.param(GOOD.replace(" = ", "="), id="unspaced-pairs"),
+        pytest.param(GOOD.replace(", ", "; "), id="semicolon-separator"),
+        pytest.param(GOOD.replace(", ", " | "), id="pipe-separator"),
+        pytest.param(GOOD.replace(", ", "\t"), id="tab-separator"),
+        pytest.param(GOOD.replace("2026-09-17 10:58:33", "2026-09-17T10:58:33"), id="iso-timestamp"),
+        pytest.param(GOOD.replace("2026-09-17 10:58:33", "09/17/2026-10:58:33"), id="logger-timestamp"),
+        pytest.param(GOOD.replace("2026-09-17 10:58:33", "2026-09-17 10:58:33.123"), id="fractional-timestamp"),
+        pytest.param(GOOD.replace("iter = 1, ", "iteration = 1, "), id="iter-renamed"),
+        pytest.param(GOOD.replace("global_rank = 0, ", ""), id="global-rank-removed"),
+        pytest.param(GOOD.replace("rank = 0, timestamp", "timestamp"), id="rank-removed"),
+        pytest.param(GOOD.replace("timestamp = 2026-09-17 10:58:33, ", ""), id="timestamp-removed"),
+        pytest.param(GOOD.replace("num_active = 3", "num_active: 3"), id="colon-field-after-timestamp"),
+    ],
+)
+def test_trtllm_iteration_rejects_format_changes(line):
+    """A changed grammar, timestamp format or missing identity key rejects the whole line."""
+    assert parse_trtllm_iteration(line) is None
+    assert parse_engine_log(line) is None
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Partial format drift is accepted: a segment that is not `identifier = value` is not split "
+    "off, so it is glued onto the previous field's value as a string (e.g. num_active = "
+    "'3, num_fetched: 0') instead of rejecting the line.",
+)
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(GOOD.replace("num_fetched = 0", "num_fetched: 0") + ", num_dummy = 0", id="one-colon-field"),
+        pytest.param(GOOD.replace("num_fetched = 0", "num_fetched=0"), id="one-unspaced-field"),
+        pytest.param(GOOD.replace(", num_fetched", "; num_fetched"), id="one-semicolon-separator"),
+        pytest.param(GOOD.replace(", num_fetched", " | num_fetched"), id="one-pipe-separator"),
+        pytest.param(GOOD.replace("num_fetched = 0", "num-fetched = 0"), id="non-identifier-key"),
+        pytest.param(GOOD + ", ", id="trailing-separator"),
+        pytest.param(GOOD + ", num_dummy = ", id="empty-last-value"),
+    ],
+)
+def test_trtllm_iteration_rejects_partial_format_drift(line):
+    """One drifted field or separator rejects the line instead of corrupting a neighbour."""
+    assert parse_trtllm_iteration(line) is None
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Fields start at the first `iter = `, so a key reordered ahead of iter is silently dropped "
+    "(or, for a required key, rejects a valid line).",
+)
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param("step = 9, " + GOOD, id="new-key-before-iter"),
+        pytest.param(
+            GOOD.replace("iter = 1, global_rank = 0, rank = 0", "rank = 0, iter = 1, global_rank = 0"), id="rank-first"
+        ),
+    ],
+)
+def test_trtllm_iteration_tolerates_keys_reordered_before_iter(line):
+    """Reordering is a content change, including moving a key ahead of iter."""
+    it = parse_trtllm_iteration("[TRT-LLM] [I] [_torch][RANK 0] " + line)
+    assert it is not None
+    assert {k for k, _ in it.fields} >= {k for k, _ in (seg.split(" = ") for seg in line.split(", "))}

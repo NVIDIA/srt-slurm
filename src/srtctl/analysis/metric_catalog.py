@@ -155,6 +155,17 @@ _TITLES = {
     "dynamo_component_errors_total": "Worker errors",
     "dynamo_component_cancellation_total": "Worker cancellations",
     "dynamo_component_request_duration_seconds": "Worker request lifetime",
+    "dynamo_component_request_bytes_total": "Worker request bytes received",
+    "dynamo_component_response_bytes_total": "Worker response bytes sent",
+    "dynamo_component_uptime_seconds": "Worker runtime uptime",
+    "dynamo_component_model_load_time_seconds": "Engine start time",
+    "dynamo_component_cleanup_time_seconds": "Engine cleanup time",
+    "dynamo_component_drain_time_seconds": "Engine drain time",
+    "dynamo_component_kv_publisher_engines_dropped_events_total": "KV events dropped by the engine",
+    "dynamo_component_kv_publisher_zmq_events_total": "KV relay events",
+    "dynamo_component_kv_publisher_zmq_filtered_events_total": "KV relay filtered events",
+    "dynamo_component_kv_publisher_zmq_conversion_issues_total": "KV relay conversion drops",
+    "dynamo_component_kv_publisher_zmq_suspicious_events_total": "KV relay suspicious events",
     "dynamo_engine_request": "Requests admitted to the worker",
     "dynamo_request_queue": "Worker admission queue",
     "dynamo_work_handler_pool_active_tasks": "Active handler tasks",
@@ -312,6 +323,74 @@ _ENGINE_REQUEST_METRICS = frozenset(
     }
 )
 
+# Engine metric-name prefixes and display names. A prefixed family is an engine
+# measurement at a worker, whatever its scrape endpoint is called.
+_ENGINE_PREFIXES = {"trtllm_": "TRT-LLM", "vllm:": "vLLM", "sglang:": "SGLang"}
+
+# Native vLLM and SGLang families: (group, unit, title). The same concept shares a
+# group, unit and title with the TRT-LLM rows, so running/queued requests, KV usage
+# and request latencies line up across engines. Counter keys are the rendered
+# ``_total`` sample names. Sources: vLLM b272cff368 rust/src/metrics/src/{scheduler,
+# request}.rs; SGLang 7591118794 python/sglang/srt/observability/metrics_collector.py.
+_ENGINE_FAMILIES: dict[str, tuple[str, str, str]] = {
+    "vllm:num_requests_running": ("Engine scheduling", "requests", "Engine active requests"),
+    "vllm:num_requests_waiting": ("Engine scheduling", "requests", "Engine queued requests"),
+    "vllm:num_requests_waiting_by_reason": ("Engine scheduling", "requests", "Engine queued requests by reason"),
+    "vllm:num_preemptions_total": ("Engine scheduling", "preemptions", "Engine preemptions"),
+    "vllm:iteration_tokens_total": ("Engine iterations", "tokens", "Tokens per engine output batch"),
+    "vllm:kv_cache_usage_perc": ("Engine KV cache", "ratio", "Engine KV cache used fraction"),
+    "vllm:prefix_cache_queries_total": ("Engine KV cache", "tokens", "Prefix cache queried tokens"),
+    "vllm:prefix_cache_hits_total": ("Engine KV cache", "tokens", "Prefix cache hit tokens"),
+    "vllm:external_prefix_cache_queries_total": ("Engine KV cache", "tokens", "External prefix cache queried tokens"),
+    "vllm:external_prefix_cache_hits_total": ("Engine KV cache", "tokens", "External prefix cache hit tokens"),
+    "vllm:prompt_tokens_cached_by_source_total": ("Engine KV cache", "tokens", "Cached prompt tokens by source"),
+    "vllm:spec_decode_num_drafts_total": ("Engine speculative decoding", "drafts", "Speculative drafts"),
+    "vllm:spec_decode_num_draft_tokens_total": ("Engine speculative decoding", "tokens", "Draft tokens"),
+    "vllm:spec_decode_num_accepted_tokens_total": ("Engine speculative decoding", "tokens", "Accepted draft tokens"),
+    "vllm:request_success_total": ("Engine requests and latency", "requests", "Engine finished requests"),
+    "vllm:prompt_tokens_total": ("Engine requests and latency", "tokens", "Prompt tokens processed"),
+    "vllm:generation_tokens_total": ("Engine requests and latency", "tokens", "Output tokens generated"),
+    "vllm:time_to_first_token_seconds": ("Engine requests and latency", "s", "Engine request time to first token"),
+    "vllm:inter_token_latency_seconds": ("Engine requests and latency", "s", "Engine inter-token latency"),
+    "vllm:e2e_request_latency_seconds": ("Engine requests and latency", "s", "Engine request lifetime"),
+    "vllm:request_queue_time_seconds": ("Engine requests and latency", "s", "Engine request queue time"),
+    "vllm:request_prefill_time_seconds": ("Engine requests and latency", "s", "Engine request prefill time"),
+    "vllm:request_decode_time_seconds": ("Engine requests and latency", "s", "Engine request decode time"),
+    "vllm:request_inference_time_seconds": ("Engine requests and latency", "s", "Engine request inference time"),
+    "vllm:request_time_per_output_token_seconds": (
+        "Engine requests and latency",
+        "s",
+        "Per-request average time per output token",
+    ),
+    "sglang:num_running_reqs": ("Engine scheduling", "requests", "Engine active requests"),
+    "sglang:num_queue_reqs": ("Engine scheduling", "requests", "Engine queued requests"),
+    "sglang:num_grammar_queue_reqs": ("Engine scheduling", "requests", "Engine grammar queue"),
+    "sglang:gen_throughput": ("Engine iterations", "tokens/s", "Engine generation throughput"),
+    "sglang:token_usage": ("Engine KV cache", "ratio", "Engine KV cache used fraction"),
+    "sglang:num_used_tokens": ("Engine KV cache", "tokens", "Engine KV cache used tokens"),
+    "sglang:max_total_num_tokens": ("Engine KV cache", "tokens", "Engine KV cache token capacity"),
+    "sglang:cache_hit_rate": ("Engine KV cache", "ratio", "Engine KV cache hit ratio"),
+    "sglang:cached_tokens_total": ("Engine KV cache", "tokens", "Cached prompt tokens by source"),
+    "sglang:num_prefill_bootstrap_queue_reqs": ("Engine KV transfer", "requests", "Prefill bootstrap queue"),
+    "sglang:num_prefill_inflight_queue_reqs": ("Engine KV transfer", "requests", "Prefill in-flight transfer queue"),
+    "sglang:num_decode_prealloc_queue_reqs": ("Engine KV transfer", "requests", "Decode preallocation queue"),
+    "sglang:num_decode_transfer_queue_reqs": ("Engine KV transfer", "requests", "Decode transfer queue"),
+    "sglang:kv_transfer_speed_gb_s": ("Engine KV transfer", "GB/s", "KV transfer speed"),
+    "sglang:kv_transfer_latency_ms": ("Engine KV transfer", "ms", "KV transfer latency"),
+    "sglang:num_requests_total": ("Engine requests and latency", "requests", "Engine finished requests"),
+    "sglang:prompt_tokens_total": ("Engine requests and latency", "tokens", "Prompt tokens processed"),
+    "sglang:generation_tokens_total": ("Engine requests and latency", "tokens", "Output tokens generated"),
+    "sglang:queue_time_seconds": ("Engine requests and latency", "s", "Engine request queue time"),
+    "sglang:time_to_first_token_seconds": ("Engine requests and latency", "s", "Engine request time to first token"),
+    "sglang:inter_token_latency_seconds": ("Engine requests and latency", "s", "Engine inter-token latency"),
+    "sglang:e2e_request_latency_seconds": ("Engine requests and latency", "s", "Engine request lifetime"),
+    "sglang:request_time_per_output_token_seconds": (
+        "Engine requests and latency",
+        "s",
+        "Per-request average time per output token",
+    ),
+}
+
 
 def _native_http_name(name: str) -> tuple[str, str] | None:
     role = ""
@@ -362,6 +441,10 @@ def _placement(name: str, endpoints: Sequence[str]) -> tuple[str, str]:
         if "num_" in name or "batch_size" in name:
             return "Workers", "Engine scheduling"
         return "Workers", "Engine iterations"
+    if family := _ENGINE_FAMILIES.get(name):
+        return "Workers", family[0]
+    if name.startswith(tuple(_ENGINE_PREFIXES)):
+        return "Workers", "Other captured metrics"
     if native := _native_http_name(name):
         role, _ = native
         if name.endswith("_created"):
@@ -411,9 +494,11 @@ def _placement(name: str, endpoints: Sequence[str]) -> tuple[str, str]:
         return "Workers", "Admission and queues"
     if name in {"dynamo_engine_request", "dynamo_request_queue", "dynamo_rejection_request_total"}:
         return "Workers", "Admission and queues"
+    if name.startswith("dynamo_component_kv_publisher_"):
+        return "Workers", "Engine KV events"
     if name.startswith("dynamo_component_"):
         component = "Frontend" if endpoints and all(e.startswith("frontend") for e in endpoints) else "Workers"
-        if "load_time" in name or "uptime" in name:
+        if any(s in name for s in ("load_time", "uptime", "cleanup_time", "drain_time")):
             return component, "Component lifecycle"
         if "bytes" in name:
             return component, "First response and transport"
@@ -461,6 +546,10 @@ def _unit(name: str) -> str:
         if any(word in base for word in ("exceptions", "errors")):
             return "errors"
         return "requests"
+    if family := _ENGINE_FAMILIES.get(name):
+        return family[1]
+    if name.startswith("dynamo_component_kv_publisher_"):
+        return "events"
     if name.startswith("trtllm_"):
         if name.endswith("_config_info"):
             return "info"
@@ -563,12 +652,15 @@ def describe_metric(name: str, endpoints: Sequence[str] = ()) -> dict[str, Any]:
     component, group = _placement(n, endpoints)
     quality = ""
     description = "Captured values retain their endpoint, inline labels, and capture metadata."
-    if n.startswith("trtllm_"):
+    engine = next((label for prefix, label in _ENGINE_PREFIXES.items() if n.startswith(prefix)), None)
+    if engine:
         description = (
-            "TRT-LLM engine measurements at the captured endpoint. Preserve worker role, process and rank labels; "
+            f"{engine} engine measurements at the captured endpoint. Preserve worker role, process and rank labels; "
             "engine observations are not frontend/client measurements."
         )
-        if group in {"Engine scheduling", "Engine iterations", "Engine memory", "Engine KV cache"}:
+        if group in {"Engine scheduling", "Engine iterations", "Engine memory", "Engine KV cache"} and not is_counter(
+            n
+        ):
             description += " Scraped gauges report the latest published engine statistics, not every iteration."
         if n in _ENGINE_REQUEST_METRICS:
             description += " Request statistics and token counts are recorded when a request finishes."
@@ -602,11 +694,17 @@ def describe_metric(name: str, endpoints: Sequence[str] = ()) -> dict[str, Any]:
         quality = "Latest published iteration latency gauge. Its scrape distribution is not an all-iteration latency histogram."
     elif n == "trtllm_total_context_tokens":
         quality = "Context tokens in the reported iteration; not a cumulative token counter or tokens-per-second rate."
-    elif n == "trtllm_time_per_output_token_seconds":
+    elif n in {
+        "trtllm_time_per_output_token_seconds",
+        "vllm:request_time_per_output_token_seconds",
+        "sglang:request_time_per_output_token_seconds",
+    }:
         quality = (
             "Distribution of per-request average decode time per output token; not individual inter-token latency."
         )
-    elif n == "trtllm_kv_cache_hit_rate":
+    elif n == "vllm:kv_cache_usage_perc":
+        quality = "Fraction from 0 to 1 despite the _perc suffix; 1 means the KV cache is full."
+    elif n in {"trtllm_kv_cache_hit_rate", "sglang:cache_hit_rate"}:
         quality = "Engine-reported cache reuse ratio; not the router's predicted KV overlap."
     elif n in {"trtllm_spec_decode_acceptance_length", "trtllm_spec_decode_draft_overhead"}:
         quality = (
@@ -684,7 +782,7 @@ def describe_metric(name: str, endpoints: Sequence[str] = ()) -> dict[str, Any]:
         "trtllm_prompt_tokens_total": "Prompt tokens in finished requests",
         "trtllm_generation_tokens_total": "Output tokens in finished requests",
     }
-    title = _TITLES.get(n) or engine_titles.get(n)
+    title = _TITLES.get(n) or engine_titles.get(n) or (_ENGINE_FAMILIES[n][2] if n in _ENGINE_FAMILIES else None)
     if title is None and (native := _native_http_name(n)):
         role, base = native
         labels = {
@@ -712,7 +810,7 @@ def describe_metric(name: str, endpoints: Sequence[str] = ()) -> dict[str, Any]:
             "dynamo_frontend_",
             "dynamo_component_",
             "dynamo_",
-            "trtllm_",
+            *_ENGINE_PREFIXES,
             "namedprocess_namegroup_",
             "FI_DEV_",
         ):

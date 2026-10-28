@@ -17,6 +17,7 @@ import functools
 import json
 import logging
 import os
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -25,6 +26,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from srtctl.backends.base import WorkerMode
 from srtctl.backends.vllm import VLLMBackend
 from srtctl.cli.mixins import (
     BenchmarkStageMixin,
@@ -44,8 +46,8 @@ from srtctl.core.processes import (
 )
 from srtctl.core.resource_snapshot import record_resource_snapshot
 from srtctl.core.runtime import RuntimeContext
-from srtctl.core.schema import SrtConfig
-from srtctl.core.slurm import get_slurm_job_id, start_srun_process
+from srtctl.core.schema import SrtConfig, container_creation_env
+from srtctl.core.slurm import get_slurm_job_id, resolve_container_name, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, LogStreamer, StatusReporter, tachometer_outbox
 from srtctl.core.supervisor import WORKER_RESTARTS_FILENAME
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
@@ -57,6 +59,33 @@ from srtctl.ports import (
 from srtctl.services.implicit import uses_discovery_plane
 
 logger = logging.getLogger(__name__)
+
+# Workflow metadata forwarded into the post-benchmark or eval-only process.
+POST_EVAL_PASSTHROUGH_ENV = (
+    "RUN_EVAL",
+    "EVAL_ONLY",
+    "IS_MULTINODE",
+    "FRAMEWORK",
+    "PRECISION",
+    "MODEL_PREFIX",
+    "RUNNER_TYPE",
+    "RESULT_FILENAME",
+    "SPEC_DECODING",
+    "ISL",
+    "OSL",
+    "MODEL",
+    "MODEL_PATH",
+    "MAX_MODEL_LEN",
+    "EVAL_MAX_MODEL_LEN",
+    "PREFILL_TP",
+    "PREFILL_EP",
+    "PREFILL_DP_ATTN",
+    "PREFILL_NUM_WORKERS",
+    "DECODE_TP",
+    "DECODE_EP",
+    "DECODE_DP_ATTN",
+    "DECODE_NUM_WORKERS",
+)
 
 
 @dataclass
@@ -108,6 +137,7 @@ class SweepOrchestrator(
                 decode_nodes=self.runtime.nodes.decode_group,
                 gpus_per_node=r.gpus_per_node,
                 pack_multinode_workers=self.backend.type == "trtllm",
+                gpu_indices_by_mode=r.gpu_indices_by_mode,
             )
         return self.config.allocate_worker_endpoints(self.runtime.nodes.worker)
 
@@ -162,39 +192,45 @@ class SweepOrchestrator(
                     written.add(filename)
 
     def _print_connection_info(self) -> None:
-        """Print srun commands for connecting to nodes."""
-        container_args = f"--container-image={self.runtime.container_image}"
-        mounts_str = ",".join(f"{src}:{dst}" for src, dst in self.runtime.container_mounts.items())
-        if mounts_str:
-            container_args += f" --container-mounts={mounts_str}"
-
+        """Print connections using the same image, role options and root mode as launches."""
         logger.info("")
         logger.info("=" * 60)
         logger.info("Connection Commands")
         logger.info("=" * 60)
         if self.config.frontend.type != "none":
             logger.info("Frontend URL: http://%s:%d", self._public_api_node(), FRONTEND_PUBLIC_PORT)
-        logger.info("")
-        logger.info("To connect to head node (%s):", self.runtime.nodes.head)
-        logger.info(
-            "  srun %s --jobid %s -w %s --overlap --pty bash",
-            container_args,
-            self.runtime.job_id,
-            self.runtime.nodes.head,
-        )
 
-        # Print worker node connection commands
-        for node in self.runtime.nodes.compute:
-            if node != self.runtime.nodes.head:
-                logger.info("")
-                logger.info("To connect to worker node (%s):", node)
-                logger.info(
-                    "  srun %s --jobid %s -w %s --overlap --pty bash",
-                    container_args,
-                    self.runtime.job_id,
-                    node,
-                )
-
+        targets: list[tuple[str, WorkerMode | None]] = [(self.runtime.nodes.head, None)]
+        targets.extend((process.node, process.endpoint_mode) for process in self.backend_processes)
+        seen: set[tuple[str, str, str | None]] = set()
+        for node, mode in targets:
+            image = self._worker_container_image(mode) if mode else str(self.runtime.container_image)
+            options = self._worker_srun_options(mode) if mode else self.runtime.srun_options
+            resolved = resolve_container_name(
+                image,
+                reuse_container=self.runtime.reuse_container,
+                srun_options=options,
+                srun_export_env=container_creation_env(self.config),
+                job_id=str(self.runtime.job_id),
+            )
+            key = (node, image, resolved.name)
+            if key in seen:
+                continue
+            seen.add(key)
+            args = [f"--container-image={image}"]
+            if resolved.name:
+                args.append(f"--container-name={resolved.name}")
+            if self.runtime.container_mounts:
+                mounts = ",".join(f"{src}:{dst}" for src, dst in self.runtime.container_mounts.items())
+                args.append(f"--container-mounts={mounts}")
+            logger.info("")
+            logger.info("To connect to %s (%s):", f"{mode} worker" if mode else "head node", node)
+            logger.info(
+                "  srun %s --jobid %s -w %s --overlap --pty bash",
+                shlex.join(args),
+                self.runtime.job_id,
+                node,
+            )
         logger.info("=" * 60)
         logger.info("")
 
@@ -526,6 +562,8 @@ class SweepOrchestrator(
                 output=str(log),
                 container_image=str(self.runtime.container_image),
                 container_mounts=self.runtime.container_mounts,
+                reuse_container=self.runtime.reuse_container,
+                container_prepare_timeout_seconds=self.runtime.container_prepare_timeout_seconds,
                 het_group=self.runtime.nodes.het_group_for(node),
             )
             procs.append((node, proc, log))
@@ -631,6 +669,8 @@ class SweepOrchestrator(
                 output=str(download_log),
                 container_image=str(self.runtime.container_image),
                 container_mounts=self.runtime.container_mounts,
+                reuse_container=self.runtime.reuse_container,
+                container_prepare_timeout_seconds=self.runtime.container_prepare_timeout_seconds,
                 env_to_set=hf_env,
                 use_bash_wrapper=False,  # command is already bash -c
                 het_group=self.runtime.nodes.het_group_for(download_node),
@@ -664,6 +704,10 @@ class SweepOrchestrator(
         """Run lm-eval after the main benchmark completes (or directly in eval-only mode)."""
         from srtctl.benchmarks import get_runner
 
+        # The eval harness uses a local HTTP endpoint, so run it beside the
+        # resolved public endpoint (router, nginx or direct worker).
+        eval_node = self._public_api_node()
+
         # In eval-only mode the benchmark health check was skipped, so do the
         # full model-ready wait here.  In post-benchmark mode a quick port
         # check is sufficient since the server already served traffic.
@@ -673,7 +717,7 @@ class SweepOrchestrator(
                 logger.error("Server did not become healthy for eval")
                 return 1
         else:
-            if not wait_for_port(self._public_api_node(), FRONTEND_PUBLIC_PORT, timeout=30):
+            if not wait_for_port(eval_node, FRONTEND_PUBLIC_PORT, timeout=30):
                 logger.error("Server health check failed before eval - skipping")
                 return 1
 
@@ -696,6 +740,7 @@ class SweepOrchestrator(
                 return 1
             cmd = runner.build_command(self.config, self.runtime)
 
+        logger.info("Eval node: %s", eval_node)
         logger.info("Eval command: %s", " ".join(cmd))
         logger.info("Eval log: %s", eval_log)
 
@@ -705,29 +750,7 @@ class SweepOrchestrator(
         env_to_set = {}
         for var in [
             *self.config.post_eval.passthrough_env,
-            "RUN_EVAL",
-            "EVAL_ONLY",
-            "IS_MULTINODE",
-            "FRAMEWORK",
-            "PRECISION",
-            "MODEL_PREFIX",
-            "RUNNER_TYPE",
-            "RESULT_FILENAME",
-            "SPEC_DECODING",
-            "ISL",
-            "OSL",
-            "MODEL",
-            "MODEL_PATH",
-            "MAX_MODEL_LEN",
-            "EVAL_MAX_MODEL_LEN",
-            "PREFILL_TP",
-            "PREFILL_EP",
-            "PREFILL_DP_ATTN",
-            "PREFILL_NUM_WORKERS",
-            "DECODE_TP",
-            "DECODE_EP",
-            "DECODE_DP_ATTN",
-            "DECODE_NUM_WORKERS",
+            *POST_EVAL_PASSTHROUGH_ENV,
         ]:
             val = os.environ.get(var)
             if val:
@@ -753,13 +776,16 @@ class SweepOrchestrator(
 
         proc = start_srun_process(
             command=cmd,
-            nodelist=[self.runtime.nodes.head],
+            step_name="eval",
+            nodelist=[eval_node],
             output=str(eval_log),
             container_image=str(self.runtime.container_image),
             container_mounts=self.runtime.container_mounts,
+            reuse_container=self.runtime.reuse_container,
+            container_prepare_timeout_seconds=self.runtime.container_prepare_timeout_seconds,
             env_to_set=env_to_set,
             srun_options=self.runtime.srun_options,
-            het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
+            het_group=self.runtime.nodes.het_group_for(eval_node),
         )
 
         while proc.poll() is None:
@@ -948,7 +974,7 @@ class SweepOrchestrator(
             # Post-process first: generate rollup, upload logs to S3, eagerly
             # push logs_url to the status API. Runs before report_completed so
             # the final PUT can reassert the artifact pointer.
-            self.run_postprocess(exit_code, reporter=reporter)
+            self.run_postprocess(exit_code, reporter=reporter, received_signal=registry.received_signal)
             if log_streamer is not None:
                 log_streamer.stop()
             reporter.report_completed(

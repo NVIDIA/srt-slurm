@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from srtctl.backends.sglang import SGLangBackend
+from srtctl.core.config import resolve_config_with_defaults
 from srtctl.core.schema import SrtConfig
 from srtctl.core.topology import NodePortAllocator, Process
 from srtctl.ports import (
@@ -173,3 +175,51 @@ def test_example_topologies_bind_no_port_twice(recipe: Path):
         if p.is_leader and p.dist_init_port is not None and p.engine_id == 0
     )
     assert all(count == 1 for count in dist_init_by_leader.values()), f"{recipe}: dist_init_port repeats on a node"
+
+
+@pytest.mark.parametrize(
+    "dp_args",
+    [
+        {"attn-dp-size": 2},
+        {"attention_data_parallel_size": 2},
+        # Deprecated spelling (sgl-project/sglang#41818) that older SGLang builds accept.
+        {"dp-size": 2, "enable-dp-attention": True},
+        # DP replicas publish per replica rank instead.
+        {"tensor-parallel-size": 1, "dp-size": 2},
+    ],
+)
+@pytest.mark.parametrize("sidecar", [False, True])
+def test_sglang_dp_workers_sharing_a_node_get_disjoint_kv_events_blocks(dp_args: dict, sidecar: bool):
+    """SGLang binds kv_events_port + DP rank, so 2-rank workers on one node need 2-port blocks.
+
+    Two attention-DP prefill workers packed on one node used to get 5200 and 5201; worker 0's DP1
+    publisher then bound 5201 too and failed with "Address already in use".
+    """
+    args = {"tensor-parallel-size": 2, **dp_args}
+    data = {
+        "schema": 2,
+        "engine": "sglang",
+        "name": "sglang-dp-kv-events",
+        "model": {"path": "hf:Qwen/Qwen3-0.6B", "container": "lmsysorg/sglang:latest", "precision": "bf16"},
+        "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
+        "dynamo": {"sidecar": sidecar},
+        "roles": {
+            "prefill": {"nodes": 1, "workers": 2, "gpus": 2, "kv_events": True, "args": args},
+            "decode": {"nodes": 1, "workers": 1, "gpus": 2, "kv_events": True, "args": args},
+        },
+    }
+    config = SrtConfig.Schema().load(resolve_config_with_defaults(data, None))
+    processes = _example_processes(config)
+    prefill_nodes = {p.node for p in processes if p.endpoint_mode == "prefill"}
+    assert len(prefill_nodes) == 1, "both prefill workers should share a node for this test"
+
+    bound: Counter[tuple[str, int]] = Counter()
+    for process in processes:
+        backend = config.backend_for_role(process.endpoint_mode)
+        assert isinstance(backend, SGLangBackend)
+        ranks = backend.num_dp_ranks(process.endpoint_mode)
+        assert ranks == 2
+        for rank in range(ranks):
+            bound[(process.node, process.kv_events_port + rank)] += 1
+    duplicates = {key: count for key, count in bound.items() if count > 1}
+    assert not duplicates, f"KV-event ports bound twice on one node: {duplicates}"

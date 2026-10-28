@@ -19,7 +19,12 @@ from srtctl.core.power.contract import CONTAINER_LOG_DIR
 from srtctl.ports import FRONTEND_PUBLIC_PORT
 
 from .config import get_srtslurm_setting
-from .slurm import get_hostname_ip, get_slurm_het_nodelists, get_slurm_nodelist
+from .slurm import (
+    DEFAULT_CONTAINER_PREPARE_TIMEOUT_SECONDS,
+    get_hostname_ip,
+    get_slurm_het_nodelists,
+    get_slurm_nodelist,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -404,6 +409,11 @@ class RuntimeContext:
     # Container mounts: host_path -> container_path
     container_mounts: dict[Path, Path] = field(default_factory=dict)
 
+    # Opt-in reuse of a job-scoped named Pyxis container for each image/remap mode.
+    reuse_container: bool = False
+    # Resolved health-check budget, shared by container preparation and lock waiting.
+    container_prepare_timeout_seconds: float = DEFAULT_CONTAINER_PREPARE_TIMEOUT_SECONDS
+
     # Additional srun options
     srun_options: dict[str, str] = field(default_factory=dict)
 
@@ -421,6 +431,8 @@ class RuntimeContext:
     request_plane: str = "tcp"
     # Full Dynamo configuration for native sidecar launch settings.
     dynamo: "DynamoConfig | None" = None
+    # srtslurm.yaml release_nodes_before_postprocess: shrink the job to the batch host before post-processing.
+    release_nodes_before_postprocess: bool = False
 
     @property
     def container_log_dir(self) -> Path:
@@ -578,6 +590,10 @@ class RuntimeContext:
         environment.update(config.environment)
 
         visible_devices_env = get_srtslurm_setting("visible_devices_env", "CUDA_VISIBLE_DEVICES")
+        container_prepare_timeout_seconds = float(
+            config.health_check.max_attempts * config.health_check.interval_seconds
+        )
+        release_nodes_before_postprocess = bool(get_srtslurm_setting("release_nodes_before_postprocess", False))
         temp_context = cls(
             job_id=job_id,
             run_name=run_name,
@@ -592,6 +608,8 @@ class RuntimeContext:
             network_interface=network_interface,
             visible_devices_env=visible_devices_env,
             container_mounts={},
+            reuse_container=config.reuse_container,
+            container_prepare_timeout_seconds=container_prepare_timeout_seconds,
             srun_options=dict(config.srun_options),
             environment=environment,
             is_hf_model=is_hf_model,
@@ -599,6 +617,7 @@ class RuntimeContext:
             container_model_path=container_model_path,
             request_plane=config.dynamo.request_plane,
             dynamo=config.dynamo,
+            release_nodes_before_postprocess=release_nodes_before_postprocess,
         )
 
         # Expand FormattablePath mounts
@@ -621,6 +640,8 @@ class RuntimeContext:
             network_interface=network_interface,
             visible_devices_env=visible_devices_env,
             container_mounts=container_mounts,
+            reuse_container=config.reuse_container,
+            container_prepare_timeout_seconds=container_prepare_timeout_seconds,
             srun_options=dict(config.srun_options),
             environment=environment,
             is_hf_model=is_hf_model,
@@ -630,6 +651,7 @@ class RuntimeContext:
             container_model_path=container_model_path,
             request_plane=config.dynamo.request_plane,
             dynamo=config.dynamo,
+            release_nodes_before_postprocess=release_nodes_before_postprocess,
         )
 
     @property

@@ -1,0 +1,33 @@
+# examples/features/reuse-container.yaml
+# exit_code: 0
+# srun calls: 2
+
+## service_first
+nodelist: node-01
+output: <output>/logs/service_first.out
+container_image: python:3.12-slim
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+reuse_container: True
+container_prepare_timeout_seconds: 1800.0
+use_bash_wrapper: True
+command: |
+    python3 -c 'from pathlib import Path; import time; Path('"'"'/logs/first.ready'"'"').write_text('"'"'ready\n'"'"'); time.sleep(3600)'
+
+## service_second
+nodelist: node-01
+output: <output>/logs/service_second.out
+container_image: python:3.12-slim
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+reuse_container: True
+container_prepare_timeout_seconds: 1800.0
+use_bash_wrapper: True
+command: |
+    python3 -c 'from pathlib import Path; import time; Path('"'"'/logs/second.ready'"'"').write_text('"'"'ready\n'"'"'); time.sleep(3600)'

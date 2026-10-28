@@ -163,7 +163,10 @@ for alignment. The catalog includes every captured family, including families
 with no samples in the client trace interval. Presentation categories reuse the
 Tachometer taxonomy: **Frontend, Router, Workers, GPU, Host**, with subgroups
 such as engine scheduling, KV cache, and host memory. Unknown families remain
-selectable with their raw names and stored values.
+selectable with their raw names and stored values. A worker with a Dynamo sidecar
+can have a sidecar endpoint and a native engine endpoint; both belong to the same
+worker. See [worker metrics with Dynamo sidecars](dsight-data-flow.md#worker-metrics-with-dynamo-sidecars)
+for per-engine coverage, including TRT-LLM's missing engine endpoint.
 
 Worker logs can also supply metrics without Tachometer. The shared
 `LogMetricGenerator` interface normalizes these into the same series/catalog used
@@ -352,7 +355,8 @@ return total, offset, limit, range and items. Limits are at most 1,000; metric
 `summary`, `requests`, `request`, `lifecycle`, `metrics`, `profiles`, `nsys`,
 `cpu`, `iterations`, `server_spans`, `sources`. Rank filters follow the recorded
 `rank_kind`: TRT-LLM global rank (with local rank retained separately), TokenSpeed
-attention TP rank, or the Nsight report's recorded distributed rank. Prefer
+attention TP rank, the data-parallel rank of a worker's vLLM (`engine` label) or
+SGLang (`dp_rank` label) metrics, or the Nsight report's recorded distributed rank. Prefer
 `--profile` for captures that only identify a GPU set.
 
 Lifecycle queries return `available: false` and empty `stages`, `activities`,
