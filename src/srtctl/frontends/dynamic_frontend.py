@@ -15,10 +15,12 @@ itself the public endpoint.
 A router binary that can also take static URLs (vLLM Router's ZMQ discovery
 mode) is a mode of a static router, not a dynamic frontend.
 
-Dynamo is the only implementation today. A subclass sets ``type`` and
+Dynamo and Infera implement it. A subclass sets ``type`` and
 ``worker_launch``, registers with ``@register_frontend``, parses its own
 registration count in ``parse_health``, decides which rank serves which port,
-and launches the process in ``start_frontends``.
+and launches the process in ``start_frontends``. Infera's workers are direct
+(the engine's own server, started through ``direct_worker_launcher`` by a
+wrapper that registers it), so it overrides the Dynamo-shaped metrics path.
 """
 
 from __future__ import annotations

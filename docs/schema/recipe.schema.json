@@ -906,7 +906,7 @@
       "properties": {
         "type": {
           "type": "string",
-          "description": "Frontend type - \"dynamo\" (default); \"sglang-router\" (SGLang Model Gateway), \"vllm-router\", \"smg\" (Shepherd Model Gateway, any backend), \"llm-d\" (llm-d Endpoint Picker behind Envoy, vLLM), \"atomesh\", and \"tilert-router\" (static routers); \"sglang\", \"vllm\", and \"trtllm_serve\" (direct: the single aggregate worker binds the public port, no router process); \"none\" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). Pre-2.0 recipes spelled the router \"sglang\"; ``srtctl migrate`` rewrites that to \"sglang-router\".",
+          "description": "Frontend type - \"dynamo\" (default) and \"infera\" (Infera router, SGLang workers register in etcd); \"sglang-router\" (SGLang Model Gateway), \"vllm-router\", \"smg\" (Shepherd Model Gateway, any backend), \"llm-d\" (llm-d Endpoint Picker behind Envoy, vLLM), \"atomesh\", and \"tilert-router\" (static routers); \"sglang\", \"vllm\", and \"trtllm_serve\" (direct: the single aggregate worker binds the public port, no router process); \"none\" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). Pre-2.0 recipes spelled the router \"sglang\"; ``srtctl migrate`` rewrites that to \"sglang-router\".",
           "default": "dynamo"
         },
         "enable_multiple_frontends": {

@@ -2618,7 +2618,8 @@ class FrontendConfig:
     """Frontend/router configuration.
 
     Attributes:
-        type: Frontend type - "dynamo" (default); "sglang-router" (SGLang Model
+        type: Frontend type - "dynamo" (default) and "infera" (Infera router,
+            SGLang workers register in etcd); "sglang-router" (SGLang Model
             Gateway), "vllm-router", "smg" (Shepherd Model Gateway, any backend), "llm-d"
             (llm-d Endpoint Picker behind Envoy, vLLM), "atomesh", and
             "tilert-router" (static routers); "sglang", "vllm", and
