@@ -29,7 +29,7 @@
 //!   fallback covers hosts where sysfs is hidden from this process but a
 //!   privileged nv-hostengine is reachable.) It never selects `rapl`.
 //!
-//! Alongside either back-end, optional `cpu_power_nvml_watts` reports one
+//! Alongside the ACPI or DCGM back-end, optional `cpu_power_nvml_watts` reports one
 //! superchip module reading per Grace socket. Its background poller prevents
 //! NVML stalls from blocking CPU scrapes. See `nvml` for the meter's scope.
 //!
@@ -205,7 +205,6 @@ struct RaplZone {
     energy_path: PathBuf,
     /// The counter wraps to zero once it passes this value.
     max_energy_range_uj: u64,
-    socket: String,
     labels: String,
     /// The previous counter read, or None after a failed poll.
     last: Option<(u64, Instant)>,
@@ -583,7 +582,6 @@ fn open_rapl_zones(powercap_root: &Path, now: Instant) -> Result<Vec<RaplZone>> 
         zones.push(RaplZone {
             max_energy_range_uj: read_u64(&dir.join("max_energy_range_uj"))?,
             labels: format!("sensor=\"{id}\",type=\"package\",socket=\"{socket}\""),
-            socket,
             energy_path,
             last: Some((last_uj, now)),
         });
@@ -808,9 +806,12 @@ fn decide_acpi(
     }
 }
 
-fn init_metrics_state(args: &Args) -> Result<(MetricsState, BTreeSet<String>)> {
+/// Also returns the CPU sockets the NVML module poller matches GPUs against, or
+/// None when module power does not apply: the module meter is a Grace superchip
+/// reading, and on x86 a socket can span several NUMA nodes (Intel SNC, AMD NPS).
+fn init_metrics_state(args: &Args) -> Result<(MetricsState, Option<BTreeSet<String>>)> {
     if matches!(args.source, SourceMode::Rapl) {
-        return init_rapl(&args.powercap_root);
+        return Ok((init_rapl(&args.powercap_root)?, None));
     }
     let probe =
         |sensors: &[Sensor]| probe_acpi_live(sensors, ACPI_PROBE_RETRIES, ACPI_PROBE_RETRY_DELAY);
@@ -853,7 +854,7 @@ fn init_metrics_state(args: &Args) -> Result<(MetricsState, BTreeSet<String>)> {
             let cpu_sockets = reader.cpu_ids.iter().map(u32::to_string).collect();
             Ok((
                 MetricsState::Dcgm(Arc::new(Mutex::new(reader))),
-                cpu_sockets,
+                Some(cpu_sockets),
             ))
         }
         Err(e) => anyhow::bail!("DCGM unavailable: {e}"),
@@ -893,7 +894,7 @@ fn probe_acpi_live(sensors: &[Sensor], retries: u32, delay: Duration) -> Option<
     None
 }
 
-fn init_acpi_state(sensors: Vec<Sensor>) -> Result<(MetricsState, BTreeSet<String>)> {
+fn init_acpi_state(sensors: Vec<Sensor>) -> Result<(MetricsState, Option<BTreeSet<String>>)> {
     {
         let sensors: &'static [Sensor] = Vec::leak(sensors);
         tracing::info!(count = sensors.len(), "discovered ACPI sensors");
@@ -915,7 +916,7 @@ fn init_acpi_state(sensors: Vec<Sensor>) -> Result<(MetricsState, BTreeSet<Strin
             .filter(|s| s.kind != "other")
             .map(|s| s.socket.clone())
             .collect();
-        Ok((state, cpu_sockets))
+        Ok((state, Some(cpu_sockets)))
     }
 }
 
@@ -939,7 +940,7 @@ fn spawn_poller(
     Ok(MetricsState::Cached(cache))
 }
 
-fn init_rapl(powercap_root: &Path) -> Result<(MetricsState, BTreeSet<String>)> {
+fn init_rapl(powercap_root: &Path) -> Result<MetricsState> {
     let mut zones = open_rapl_zones(powercap_root, Instant::now())?;
     if zones.is_empty() {
         anyhow::bail!(
@@ -948,14 +949,12 @@ fn init_rapl(powercap_root: &Path) -> Result<(MetricsState, BTreeSet<String>)> {
         );
     }
     tracing::info!(count = zones.len(), "discovered RAPL package zones");
-    let cpu_sockets = zones.iter().map(|z| z.socket.clone()).collect();
     // The first scrape after `listening` must carry watts, which take two reads.
     std::thread::sleep(RAPL_PRIME_INTERVAL);
     let initial = build_metrics_rapl(&mut zones, Instant::now());
-    let state = spawn_poller("rapl-poller", initial, move || {
+    spawn_poller("rapl-poller", initial, move || {
         build_metrics_rapl(&mut zones, Instant::now())
-    })?;
-    Ok((state, cpu_sockets))
+    })
 }
 
 fn start_module_poller(cpu_sockets: BTreeSet<String>) -> Result<Arc<RwLock<ModuleState>>> {
@@ -1016,11 +1015,12 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let args = Args::parse();
-    let (base, cpu_sockets) = init_metrics_state(&args)?;
-    let metrics = Metrics {
-        base,
-        module: start_module_poller(cpu_sockets)?,
+    let (base, module_sockets) = init_metrics_state(&args)?;
+    let module = match module_sockets {
+        Some(cpu_sockets) => start_module_poller(cpu_sockets)?,
+        None => Arc::new(RwLock::new(ModuleState::Unavailable)),
     };
+    let metrics = Metrics { base, module };
 
     let addr = SocketAddr::new(args.bind, args.port);
     let listener = TcpListener::bind(addr)

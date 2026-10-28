@@ -207,7 +207,9 @@ metric family (`cpu_power_dcgm_watts`, `cpu_power_acpi_watts` or
 more than one, client-side parsing (`src/srtctl/core/power/cpu_parser.py`)
 prefers ACPI, since it carries more detail, then DCGM, then RAPL.
 
-In every mode the exporter also serves superchip module power from NVML:
+With `acpi` or `dcgm` the exporter also serves superchip module power from
+NVML. It does not with `rapl`: the meter is a Grace superchip reading, and on
+x86 one socket can span several NUMA nodes (Intel SNC, AMD NPS).
 
 ```
 cpu_power_nvml_watts{type="module",socket="0",gpus="0,1",source="nvml"} 498.720000
