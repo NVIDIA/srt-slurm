@@ -1,6 +1,6 @@
 # GLM-5.3 with Dynamo on Vera Rubin RapLab (wave 2)
 
-These 7 recipes are the RapLab form of the [wave 2 recipes](../vrnvl72-w2/README.md),
+These recipes are the RapLab form of the [wave 2 recipes](../vrnvl72-w2/README.md),
 which port the second GLM-5.2 BTK `e2e_pareto` frontier (pareto01-07) to
 srt-slurm. Topology, engine arguments, worker tuning, routing, concurrency and the
 AgentX workload are identical to wave 2; the differences are the RapLab settings
@@ -15,6 +15,7 @@ benchmark client, which share one node.
 | Recipe | Source | Prefill workers / GPUs each | Decode workers / GPUs each | Concurrency | Nodes |
 | --- | --- | --- | --- | --- | --- |
 | [TP16 c1](glm5.3-disagg-1p1d-tp4-tp16-c1.yaml) | pareto01 | 1 / 4 | 1 / 16 | 1 | 6 |
+| [TP16 c1 trtllm-serve](glm5.3-disagg-1p1d-tp4-tp16-c1-trtllm-serve.yaml) | pareto01 | 1 / 4 | 1 / 16 | 1 | 6 |
 | [TP4 c56](glm5.3-disagg-1p3d-tp4-tp4-c56.yaml) | pareto02 | 1 / 4 | 3 / 4 | 56 | 5 |
 | [TP8 c50](glm5.3-disagg-1p3d-tp4-tp8-c50.yaml) | pareto03 | 1 / 4 | 3 / 8 | 50 | 8 |
 | [TP8 c28](glm5.3-disagg-1p3d-tp4-tp8-c28.yaml) | pareto04 | 1 / 4 | 3 / 8 | 28 | 8 |
@@ -48,6 +49,19 @@ clients; the master starts in `infra` and stops last. Leave `MC_USE_NVLINK_IPC`
 unset for inference workers. See
 [EGM prerequisites and transport](../../../../docs/mooncake-kv-store.md#egm-host-memory-over-nvlink-tensorrt-llm)
 for build, HOST_NUMA, Fabric/IMEX and pinned-staging requirements.
+
+## Native trtllm-serve variant
+
+[TP16 c1 trtllm-serve](glm5.3-disagg-1p1d-tp4-tp16-c1-trtllm-serve.yaml) runs
+the TP16 c1 workers as native `trtllm-serve` servers behind
+`trtllm-serve disaggregated` (`frontend.type: trtllm_serve`), as BTK pareto01
+does, instead of Dynamo. Topology, worker env (minus `DYN_*`), engine arguments
+and the AgentX workload match the Dynamo recipe. The orchestrator follows BTK's
+`server_config`: `conversation` routers on both tiers, `gen_strip_message_history`,
+`gen_tokids_ctxbytes`, a 3600-second keep-alive, a 3600-second request timeout
+and a 45-minute start timeout. Workers pass `--tool_parser glm47` and set BTK's
+`num_postprocess_workers` (8 prefill, 4 decode), which native `trtllm-serve`
+honors. No Dynamo wheel is installed.
 
 ## RapLab differences
 
