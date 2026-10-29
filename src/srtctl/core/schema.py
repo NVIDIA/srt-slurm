@@ -3815,8 +3815,17 @@ class SrtConfig:
         exporter = telemetry.dcgm_exporter
         if exporter is None:
             raise ValidationError("telemetry.dcgm_exporter is required when telemetry is enabled")
+        # A recipe with a CPU leg inherits the cluster GPU exporter too, so a CPU-only
+        # recipe can reach the GPU-only checks below without naming a GPU exporter.
+        cpu_only_fix = ""
+        if telemetry.cpu_power_exporter is not None or telemetry.cpu_power.enabled:
+            cpu_only_fix = (
+                "; this check is for GPU power telemetry, which telemetry.dcgm_exporter enables (a recipe "
+                "that omits it inherits the cluster default_gpu_exporter). To collect CPU power only, set "
+                "telemetry.dcgm_exporter: null"
+            )
         if not exporter.container_image:
-            raise ValidationError("telemetry.dcgm_exporter.container_image must be non-empty")
+            raise ValidationError(f"telemetry.dcgm_exporter.container_image must be non-empty{cpu_only_fix}")
         if not 1 <= exporter.port <= 65535:
             raise ValidationError("telemetry.dcgm_exporter.port must be in 1..65535")
 
@@ -3841,19 +3850,21 @@ class SrtConfig:
         supported_benchmarks = {_BENCHMARK_TYPE_SA_BENCH, "agentic", "agentx", "custom", "manual"}
         if self.benchmark.type not in supported_benchmarks:
             supported = ", ".join(sorted(supported_benchmarks))
-            raise ValidationError(f"telemetry requires benchmark.type to be one of: {supported}")
+            raise ValidationError(f"telemetry requires benchmark.type to be one of: {supported}{cpu_only_fix}")
 
         # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
         if self.infra_dedicated_node:
             raise ValidationError(
                 "telemetry requires the discovery plane on the infra node (no etcd or nats service with "
                 "placement.node: dedicated), because a dedicated infra node moves nodes.head off the batch host "
-                "and power samples would no longer share the benchmark's clock"
+                f"and power samples would no longer share the benchmark's clock{cpu_only_fix}"
             )
 
         concurrencies = self.benchmark.get_concurrency_list()
         if not concurrencies or len(set(concurrencies)) != len(concurrencies) or any(c <= 0 for c in concurrencies):
-            raise ValidationError("telemetry requires a non-empty list of unique positive benchmark.concurrencies")
+            raise ValidationError(
+                f"telemetry requires a non-empty list of unique positive benchmark.concurrencies{cpu_only_fix}"
+            )
 
     def _frontend_profiling_control_is_leader_only(self) -> bool:
         """Whether the frontend's workers expose one profiler control server per logical endpoint."""

@@ -429,6 +429,27 @@ class TestClusterDefaultFlowsIntoPowerTelemetry:
         assert config.telemetry.dcgm_exporter is None
         assert config.telemetry.cpu_power_exporter.port == 9405
 
+    def test_a_cpu_only_recipe_failing_a_gpu_check_names_the_null_opt_out(self):
+        recipe = _recipe({"enabled": True, "cpu_power_exporter": {"port": 9405}})
+        recipe["benchmark"] = {"type": "trace-replay", "trace_file": "/trace.jsonl", "concurrencies": [8]}
+        cluster = {"default_gpu_exporter": AMD_CLUSTER_EXPORTER}
+        with pytest.raises(
+            ValidationError, match=r"benchmark\.type .*inherits the cluster default_gpu_exporter.*dcgm_exporter: null"
+        ):
+            SrtConfig.Schema().load(resolve_config_with_defaults(recipe, cluster))
+
+        recipe["telemetry"]["dcgm_exporter"] = None
+        config = SrtConfig.Schema().load(resolve_config_with_defaults(recipe, cluster))
+        assert config.telemetry.dcgm_exporter is None
+
+    def test_gpu_only_telemetry_errors_do_not_offer_the_cpu_only_fix(self):
+        recipe = _recipe({"enabled": True})
+        recipe["benchmark"] = {"type": "trace-replay", "trace_file": "/trace.jsonl", "concurrencies": [8]}
+        resolved = resolve_config_with_defaults(recipe, {"default_gpu_exporter": AMD_CLUSTER_EXPORTER})
+        with pytest.raises(ValidationError, match=r"benchmark\.type") as excinfo:
+            SrtConfig.Schema().load(resolved)
+        assert "dcgm_exporter: null" not in str(excinfo.value)
+
     def test_a_cluster_without_a_gpu_exporter_leaves_the_original_validation_error(self):
         resolved = resolve_config_with_defaults(_recipe({"enabled": True}), {"default_gpu_exporter": None})
         with pytest.raises(ValidationError, match="nothing to collect"):
