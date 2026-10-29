@@ -38,8 +38,9 @@ Rail kinds
 ``package``
     Not an ACPI rail: one x86 RAPL package domain per socket, from its energy
     counter. Treated like ``total`` for ``power_w`` purposes, but it is a
-    smaller boundary: on AMD EPYC it excludes DIMM power, which Grace's
-    ``total`` includes (LPDDR5X).
+    different boundary: Grace's ``total`` includes its LPDDR5X memory, while
+    the kernel defines no DRAM domain for AMD and whether AMD package power
+    covers any memory is undocumented.
 ``module``
     NVML superchip power for one socket, including Grace and its GPUs. It
     is a reference rail and never adds to ``total_power_w``. An ACPI

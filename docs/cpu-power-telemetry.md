@@ -168,15 +168,19 @@ The exporter binary itself picks its source from its own `--source` flag:
   because the counter is a power side channel. The exporter runs as the job's
   user, so that user needs read access. With passwordless sudo on the nodes, a
   `host_setup` block (or the cluster's `default_host_setup`) can grant it for
-  the job and restore root ownership afterwards:
+  the job and restore root ownership afterwards. Top-level zones are children
+  of the `intel-rapl` control type and subzones nest inside their parent zone
+  ([powercap_sys.c](https://github.com/torvalds/linux/blob/d135ab453a7400a34930bdda1ef4bdc8acfac80e/drivers/powercap/powercap_sys.c#L511-L517)),
+  so this glob matches only the top-level zones, which hold the package
+  counters the exporter reads, and skips subzones such as `core`:
 
   <!-- docs-yaml: skip -->
   ```yaml
   host_setup:
     commands:
-      - sudo -n chown "$(id -un)" /sys/class/powercap/intel-rapl:*/energy_uj
+      - sudo -n chown "$(id -un)" /sys/class/powercap/intel-rapl/intel-rapl:*/energy_uj
     teardown:
-      - sudo -n chown root /sys/class/powercap/intel-rapl:*/energy_uj
+      - sudo -n chown root /sys/class/powercap/intel-rapl/intel-rapl:*/energy_uj
   ```
 
   While the grant is in place, that user can read the side channel the
