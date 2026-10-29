@@ -1859,6 +1859,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rapl_mode_starts_without_module_power() {
+        let dir = TempDir::new().unwrap();
+        write_rapl_zone(dir.path(), "intel-rapl:0", "package-0", 0, RAPL_MAX_UJ);
+        let args = Args::parse_from([
+            "cpu-power-exporter",
+            "--source",
+            "rapl",
+            "--powercap-root",
+            dir.path().to_str().unwrap(),
+        ]);
+        let (_, module_sockets) = init_metrics_state(&args).unwrap();
+        assert!(module_sockets.is_none());
+    }
+
     async fn request(addr: SocketAddr, head: &str) -> String {
         let mut client = TcpStream::connect(addr).await.unwrap();
         // Split across writes: a correct reader waits for the header terminator.
