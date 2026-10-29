@@ -74,8 +74,16 @@ NODE_EXPORTER_VMSTAT_FIELDS = "^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*"
 # threadname, which no application-level metric can express.
 # ``-children=false``: a process is counted only by its own matcher, never
 # folded into its parent's group (engine ranks stay separate from the launcher).
+# ``-gather-smaps=false``: the upstream default reads /proc/<pid>/smaps_rollup for
+# every process on every scrape, and the kernel answers by walking the page tables
+# of the whole address space under the process's mmap_lock. Engine ranks that keep
+# KV-offload host pools resident (~175 GiB per rank on B300 Kimi-K3 Mooncake
+# recipes) made that 7-8 CPU-seconds per scrape and cost ~11% serving throughput.
+# Only PSS and swap-PSS are lost; RSS, VmSwap, CPU and threads come from
+# stat/status. A recipe that needs PSS appends ``-gather-smaps=true`` through the
+# process-exporter service ``args`` (they follow these flags; the last value wins).
 PROCESS_EXPORTER_CONFIG_NAME = "process-exporter.yml"
-PROCESS_EXPORTER_FLAGS = ("-threads=true", "-children=false", "-recheck=false")
+PROCESS_EXPORTER_FLAGS = ("-threads=true", "-children=false", "-recheck=false", "-gather-smaps=false")
 PROCESS_EXPORTER_CONTAINER_BINARY = "/bin/process-exporter"
 DEFAULT_PROCESS_EXPORTER_BINARY = "configs/process-exporter"
 
