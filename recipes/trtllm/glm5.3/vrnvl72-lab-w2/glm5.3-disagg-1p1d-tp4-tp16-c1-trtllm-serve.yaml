@@ -56,8 +56,8 @@ roles:
     workers: 1
     gpus: 4
     env:
-      FLASHINFER_CACHE_DIR: /home/rihuo/flashinfer-1016
-      FLASHINFER_WORKSPACE_BASE: /home/rihuo/flashinfer-1016
+      FLASHINFER_CACHE_DIR: /home/rihuo/flashinfer-1029
+      FLASHINFER_WORKSPACE_BASE: /home/rihuo/flashinfer-1029
       CUDA_DISABLE_IOMMU_ACS_P2P_CAPABILITY_CHECK: '1'
       HF_HUB_DISABLE_PROGRESS_BARS: '1'
       HF_HUB_OFFLINE: '1'
@@ -147,8 +147,8 @@ roles:
     workers: 1
     gpus: 16
     env:
-      FLASHINFER_CACHE_DIR: /home/rihuo/flashinfer-1016
-      FLASHINFER_WORKSPACE_BASE: /home/rihuo/flashinfer-1016
+      FLASHINFER_CACHE_DIR: /home/rihuo/flashinfer-1029
+      FLASHINFER_WORKSPACE_BASE: /home/rihuo/flashinfer-1029
       CUDA_DISABLE_IOMMU_ACS_P2P_CAPABILITY_CHECK: '1'
       HF_HUB_DISABLE_PROGRESS_BARS: '1'
       HF_HUB_OFFLINE: '1'
