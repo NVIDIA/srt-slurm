@@ -55,7 +55,8 @@ for build, HOST_NUMA, Fabric/IMEX and pinned-staging requirements.
 [TP16 c1 trtllm-serve](glm5.3-disagg-1p1d-tp4-tp16-c1-trtllm-serve.yaml) runs
 the TP16 c1 workers as native `trtllm-serve` servers behind
 `trtllm-serve disaggregated` (`frontend.type: trtllm_serve`), as BTK pareto01
-does, instead of Dynamo. Topology, worker env (minus `DYN_*`), engine arguments
+does, instead of Dynamo. Topology, worker env (minus `DYN_*` and
+`TRTLLM_SERVE_ENABLE_MSGSPEC`), engine arguments
 and the AgentX workload match the Dynamo recipe. The orchestrator follows BTK's
 `server_config`: `conversation` routers on both tiers, `gen_strip_message_history`,
 `gen_tokids_ctxbytes`, a 3600-second keep-alive, a 3600-second request timeout
