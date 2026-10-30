@@ -68,6 +68,7 @@ env_to_set:
     SGLANG_CUDA_COREDUMP_BEFORE_CRASH: 0
     SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
     SGLANG_RUST_BUILD_MODE: never
+    SGLANG_RUST_SERVER: 1
 bash_preamble: |
     ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
@@ -160,6 +161,7 @@ env_to_set:
     SGLANG_CUDA_COREDUMP_BEFORE_CRASH: 0
     SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
     SGLANG_RUST_BUILD_MODE: never
+    SGLANG_RUST_SERVER: 1
 bash_preamble: |
     ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>

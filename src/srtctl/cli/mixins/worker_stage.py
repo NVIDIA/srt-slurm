@@ -302,6 +302,9 @@ class WorkerStageMixin:
             # TODO: drop once the SGLang loader prefers a bundled extension over a rebuild
             #       (sglang.srt.utils.load_rust_extension, auto mode in source checkouts).
             environment.setdefault("SGLANG_RUST_BUILD_MODE", "never")
+            # The sidecar speaks sglang.api.v1, which only SGLang's Rust server serves; the
+            # Python server serves runtime.v1, so the sidecar would fail engine discovery.
+            environment.setdefault("SGLANG_RUST_SERVER", "1")
         if backend.type == "sglang":
             # SGLang treats its own exit after SIGTERM as a crash: it drains in a few
             # seconds, then tries py-spy (needs root) and waits 60s for CUDA

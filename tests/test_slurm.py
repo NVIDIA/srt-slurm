@@ -1046,6 +1046,8 @@ def test_sglang_sidecar_trusts_the_bundled_rust_extension(tmp_path: Path) -> Non
         mixin.start_worker(process, [process])
 
     assert mock_srun.call_args.kwargs["env_to_set"]["SGLANG_RUST_BUILD_MODE"] == "never"
+    # The sidecar speaks sglang.api.v1, which only SGLang's Rust server serves.
+    assert mock_srun.call_args.kwargs["env_to_set"]["SGLANG_RUST_SERVER"] == "1"
 
 
 def test_sglang_sidecar_rust_build_mode_respects_the_recipe(tmp_path: Path) -> None:
@@ -1073,6 +1075,7 @@ def test_sglang_sidecar_rust_build_mode_respects_the_recipe(tmp_path: Path) -> N
         mock_srun.return_value = MagicMock()
         mixin_off.start_worker(process_off, [process_off])
     assert "SGLANG_RUST_BUILD_MODE" not in mock_srun.call_args.kwargs["env_to_set"]
+    assert "SGLANG_RUST_SERVER" not in mock_srun.call_args.kwargs["env_to_set"]
 
 
 def test_vllm_sidecar_disables_plugins_by_default(tmp_path: Path) -> None:
