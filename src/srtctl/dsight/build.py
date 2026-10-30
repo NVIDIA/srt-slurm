@@ -16,7 +16,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
-from .importer import Importer
+from .importer import Importer, client_exports
 from .point_buffer import PointBuffers
 from .query import TraceDataset
 from .storage import FILENAME, dumps, write_store
@@ -96,6 +96,28 @@ def _validate_output(output: Path) -> Path:
         if extra:
             raise ValueError(f"Output contains files DSight did not generate: {sorted(extra)}; choose a new directory")
     return output
+
+
+def build_each_client(logs: Path, output: Path, **options: Any) -> dict[str, Any]:
+    """One report per client export (one per concurrency of a sweep), never a mixed report.
+
+    Each report is ``<output>/<export directory relative to logs>`` built with that export as
+    ``--client``. A ``warmup`` export (trace-replay and mooncake-router run a separate synthetic
+    warmup whose rows are still labelled profiling) is skipped; select it with ``--client``.
+    """
+    if options.pop("client", None):
+        raise ValueError("--each-client builds one report per export; do not combine it with --client")
+    root = logs / "logs" if (logs / "logs").is_dir() else logs
+    exports = [p for p in client_exports(root) if p.parent.name != "warmup"]
+    if not exports:
+        raise ValueError(f"No non-warmup client exports under {root}")
+    reports = []
+    for export in exports:
+        relative = export.parent.relative_to(root.resolve()) if export.is_relative_to(root.resolve()) else None
+        name = "__".join(relative.parts) if relative and relative.parts else export.stem
+        result = build_dashboard(logs, output / name, client=export, **options)
+        reports.append({"client": str(export), **result})
+    return {"output": str(output), "reports": reports}
 
 
 def build_dashboard(logs: Path, output: Path, *, single_file: bool = False, **options: Any) -> dict[str, Any]:

@@ -53,6 +53,19 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_ERROR_LINE = re.compile(r"Traceback|Error\b|ERROR|CRITICAL|error:")
+
+
+def _error_excerpt(log_file: Path, limit: int = 5, tail_bytes: int = 65536) -> list[str]:
+    """The last error-looking lines of a benchmark log, for the sweep log's failure summary."""
+    try:
+        with log_file.open("rb") as stream:
+            stream.seek(max(0, stream.seek(0, 2) - tail_bytes))
+            lines = stream.read().decode(errors="replace").splitlines()
+    except OSError:
+        return []
+    return [line.strip()[:300] for line in lines if _ERROR_LINE.search(line)][-limit:]
+
 
 def _get_health_expectations(
     config: "SrtConfig", backend_processes: list["Process"] | None = None
@@ -558,6 +571,11 @@ class BenchmarkStageMixin:
             if output_stream is not None:
                 output_stream.poll()
             exit_code = proc.returncode or 0
+            if exit_code:
+                # Name the client's own failure first; an open nsys window is its consequence.
+                logger.error("Benchmark client exited with code %d; its error is in %s", exit_code, log_file)
+                for line in _error_excerpt(log_file):
+                    logger.error("  %s", line)
             if (
                 getattr(self.config, "observability_nsys_enabled", False) is True
                 and self.config.observability.nsys.capture_window == "measured_workload"
@@ -568,7 +586,10 @@ class BenchmarkStageMixin:
                         self.config.observability.nsys.report_timeout_secs,
                     )
                 except (RuntimeError, TimeoutError, OSError) as exc:
-                    logger.error("Observability capture failed: %s", exc)
+                    if exit_code:
+                        logger.warning("Observability capture incomplete after the client failure: %s", exc)
+                    else:
+                        logger.error("Observability capture failed: %s", exc)
                     return exit_code or 1
             return exit_code
         finally:
@@ -921,7 +942,7 @@ class BenchmarkStageMixin:
             elif is_custom:
                 assert logical_endpoints is not None
                 env.update(self._get_aiperf_server_metrics_env(logical_workers_only=True))
-        if isinstance(runner, AIPerfBenchmarkRunner) and self.config.benchmark.aiperf_package:
-            env["AIPERF_PACKAGE"] = self.config.benchmark.aiperf_package
+        if isinstance(runner, AIPerfBenchmarkRunner):
+            env["AIPERF_PACKAGE"] = self.config.benchmark.aiperf_package or runner.default_aiperf_package
 
         return env

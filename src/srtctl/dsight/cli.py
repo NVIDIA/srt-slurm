@@ -23,6 +23,11 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     )
     build.add_argument("--client", type=Path, help="Select one AIPerf profile_export.jsonl or AgentPerf requests.jsonl")
     build.add_argument(
+        "--each-client",
+        action="store_true",
+        help="Build one report per client export (each concurrency of a sweep) under OUTPUT; skips warmup",
+    )
+    build.add_argument(
         "--metrics", type=Path, help="One raw Tachometer capture leaf or file (default: logs/tachometer/local)"
     )
     build.add_argument(
@@ -64,11 +69,11 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
 def run(args: argparse.Namespace) -> int:
     try:
         if args.dashboard_command == "build":
-            from .build import build_dashboard
+            from .build import build_dashboard, build_each_client
 
             if args.max_profile_events <= 0:
                 raise ValueError("--max-profile-events must be positive")
-            result = build_dashboard(
+            result = (build_each_client if args.each_client else build_dashboard)(
                 args.logs,
                 args.output,
                 client=args.client,

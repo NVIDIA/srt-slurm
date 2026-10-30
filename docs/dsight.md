@@ -101,7 +101,12 @@ open pages may need a reload after their directory is rebuilt.
 
 Pass a run directory containing `logs/`, or the log directory itself. Multiple
 client exports require `--client "<path_to_client_export>"`; DSight does not silently
-mix concurrency sweeps or duplicated exports.
+mix concurrency sweeps or duplicated exports. For a sweep (trace-replay and
+mooncake-router write one `artifacts/<run>/profile_export.jsonl` per concurrency),
+`--each-client` builds one report per export under `OUTPUT/<export directory>`
+(for example `OUTPUT/artifacts__Qwen3-0.6B_trace_c32_<timestamp>`). It skips the
+separate synthetic `artifacts/warmup` run, whose rows are labelled `profiling` too;
+select that with `--client` if you want it.
 
 Each source is optional. Views and controls appear only for usable observations:
 no OTel means no request breakdown; no matching NVTX/CPU samples means no Nsight

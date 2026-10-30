@@ -52,7 +52,7 @@ echo "=============================================="
 # Install aiperf if not present
 if ! command -v aiperf &> /dev/null; then
     echo "Installing aiperf..."
-    pip install aiperf
+    pip install "${AIPERF_PACKAGE:-aiperf}"
 fi
 
 # Download Mooncake trace dataset if not already present
