@@ -191,6 +191,16 @@ class Frontend(ABC):
         """
         return frozenset()
 
+    def direct_worker_launcher(self, backend: Any, process: "Process", runtime: "RuntimeContext") -> list[str] | None:
+        """Argv that starts ``backend``'s direct worker in place of its server module, or ``None``.
+
+        A launcher runs the engine's own OpenAI server on the allocated port and
+        registers it with this frontend's discovery plane (Infera's
+        ``infera.engine.sglang``). The backend appends the engine flags it
+        would pass to its own server module, unchanged.
+        """
+        return None
+
     def kv_events_subscriber(
         self, process: "Process", runtime: "RuntimeContext", model_name: str
     ) -> tuple[str, int, str] | None:
