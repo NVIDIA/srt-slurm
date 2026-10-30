@@ -1,13 +1,11 @@
 # Two disaggregated SGLang attention-DP workers across four physical nodes.
-# Each role is one TP2/DP2 worker spanning two one-GPU nodes. Prefill has a
-# serving leader sidecar and a telemetry-only follower relaying KV events.
-# Dynamo selects each sidecar's mode from its local engine metadata.
-# Decode keeps prefix caching disabled: its leader serves inference and its
-# follower runs only the engine. KV routing reuses cached prefill prefixes;
+# Each role is one TP2/DP2 worker spanning two one-GPU nodes; every node runs a
+# sidecar for its DP rank, and each prefill node advertises its own address.
+# Decode keeps prefix caching disabled. KV routing reuses cached prefill prefixes;
 # this example does not enable experimental decode prefix caching.
 #
-# Supply an image with compatible Dynamo/SGLang multinode sidecar support,
-# SGLang's prebuilt native gRPC extension, and the NIXL transfer backend.
+# Supply an image with a Dynamo SGLang sidecar that speaks sglang.api.v1,
+# SGLang's prebuilt Rust server, and the NIXL transfer backend.
 # Restart each distributed engine group and its sidecars together after failure;
 # independent sidecar restart/replay recovery is unsupported.
 

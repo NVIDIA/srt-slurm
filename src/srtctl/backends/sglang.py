@@ -40,6 +40,7 @@ from srtctl.ports import (
     HTTP_PORTS,
     LMCACHE_SERVER_PORT,
     NCCL_PORTS,
+    SIDECAR_GRPC_PORTS,
 )
 
 logger = logging.getLogger(__name__)
@@ -243,10 +244,11 @@ class SGLangBackend(Backend):
         """Convert endpoints to processes, each with its NCCL rendezvous port and its endpoint's dist-init port.
 
         A gRPC-mode leader also gets its HTTP sidecar port, which carries /metrics and the profiler routes.
-        Under Dynamo sidecars a follower gets an HTTP port too: SGLang runs a health server with
-        ``/metrics`` for the node's schedulers on every node rank >= 1, bound to ``--port``
-        (sgl-project/sglang 759111879457, ``entrypoints/engine.py`` and
-        ``utils/common.py:launch_dummy_health_check_server``); without one it binds port 0.
+        Under Dynamo sidecars every node gets an HTTP port: SGLang's Rust server binds ``--port + k``
+        and ``--grpc-port + k`` for the node's listener k, and a node without a listener runs a
+        health server with ``/metrics`` on ``--port`` (sgl-project/sglang d89a1b1ae3,
+        ``rust_server/server.py:_port_offset`` and ``entrypoints/engine.py``). A node with listeners
+        reserves one sidecar gRPC port per listener; the HTTP_PORTS stride already spaces its HTTP ports.
         """
         from srtctl.core.topology import endpoints_to_processes, port_allocator_for
 
@@ -259,9 +261,19 @@ class SGLangBackend(Backend):
         processes = endpoints_to_processes(
             endpoints,
             port_allocator=allocator,
-            sidecar_grpc=dynamo_sidecar,
             kv_events_port_sizes=kv_events_port_sizes,
+            # The Rust server serves a prefill's KV bootstrap registry on its HTTP port.
+            bootstrap_ports=not dynamo_sidecar,
         )
+        endpoint_node_counts = {(endpoint.mode, endpoint.index): len(endpoint.nodes) for endpoint in endpoints}
+
+        def grpc_port(process: "Process") -> int | None:
+            if not dynamo_sidecar:
+                return None
+            nnodes = endpoint_node_counts[(process.endpoint_mode, process.endpoint_index)]
+            listeners = self._rust_listeners_on_node(process.endpoint_mode, nnodes, process.node_rank)
+            return allocator.next(SIDECAR_GRPC_PORTS, size=listeners) if listeners else None
+
         # dist-init is bound by the endpoint's leader; every process of the
         # endpoint names the same port, allocated per leader node so two
         # endpoints led from one node do not collide.
@@ -284,6 +296,7 @@ class SGLangBackend(Backend):
                     if process.is_leader and self.is_grpc_mode(process.endpoint_mode)
                     else None
                 ),
+                sidecar_grpc_port=grpc_port(process),
             )
             for process in processes
         ]
@@ -483,9 +496,7 @@ class SGLangBackend(Backend):
 
         endpoint_nodes = list(dict.fromkeys(candidate.node for candidate in endpoint_processes))
         node_rank = endpoint_nodes.index(process.node)
-        is_leader = node_rank == 0
         leader_ip = get_hostname_ip(endpoint_nodes[0], runtime.network_interface)
-        grpc_port = sidecar_grpc_port(process)
         if process.http_port <= 0:
             raise ValueError(
                 f"SGLang sidecar {mode} worker {process.endpoint_index} on {process.node} has no allocated "
@@ -506,8 +517,9 @@ class SGLangBackend(Backend):
                 served_model_name,
                 "--host",
                 "0.0.0.0",
-                # Leaders serve the full HTTP server beside native gRPC; followers serve a health
-                # server. Both carry /metrics with --enable-metrics (see sidecar_engine_metrics_port).
+                # Rust listener k serves HTTP on --port + k beside native gRPC; a node without one
+                # serves a health server. Both carry /metrics with --enable-metrics (see
+                # sidecar_engine_metrics_port).
                 "--port",
                 str(process.http_port),
             ]
@@ -522,9 +534,9 @@ class SGLangBackend(Backend):
             engine.extend(["--nccl-port", str(_nccl_port(process))])
 
         if mode != "agg":
+            # No --disaggregation-bootstrap-port: each prefill listener serves the KV bootstrap
+            # registry on its own HTTP port, and SGLang rejects any other prefill bootstrap port.
             engine.extend(["--disaggregation-mode", mode, "--skip-server-warmup"])
-            if mode == "prefill" and process.bootstrap_port is not None:
-                engine.extend(["--disaggregation-bootstrap-port", str(process.bootstrap_port)])
         if len(endpoint_nodes) > 1:
             engine.extend(
                 [
@@ -539,6 +551,7 @@ class SGLangBackend(Backend):
         kv_cfg = self.get_kv_events_config_for_mode(mode)
         runs_sidecar = self.runs_dynamo_sidecar(process, endpoint_processes)
         if runs_sidecar:
+            grpc_port = sidecar_grpc_port(process)
             engine.extend(["--grpc-port", str(grpc_port)])
 
         # The SGLang sidecar discovers the publisher; SGLang still needs this
@@ -567,10 +580,11 @@ class SGLangBackend(Backend):
             if sidecar_config.sidecar_binary is not None
             else ["python3", "-m", "dynamo.sglang.sidecar"]
         )
+        # The node's first listener; the sidecar discovers the rest and serves them all.
         sidecar.extend(["--grpc-endpoint", f"127.0.0.1:{grpc_port}"])
-        # Dynamo selects serving or telemetry mode from the local engine metadata.
-        if is_leader and mode == "prefill":
-            sidecar.extend(["--bootstrap-host", leader_ip])
+        if mode == "prefill":
+            # Decode fetches KV from the node that holds it, so each prefill node advertises its own address.
+            sidecar.extend(["--bootstrap-host", get_hostname_ip(process.node, runtime.network_interface)])
         sidecar.extend(sidecar_config.sidecar_args)
 
         return build_sidecar_launch_command(
@@ -582,37 +596,27 @@ class SGLangBackend(Backend):
         )
 
     def runs_dynamo_sidecar(self, process: "Process", endpoint_processes: list["Process"]) -> bool:
-        """The endpoint leader runs the serving sidecar; a follower runs one only to relay its KV events."""
+        """One sidecar per node that hosts Rust listeners; it serves all of the node's DP ranks as one worker."""
         nodes = list(dict.fromkeys(candidate.node for candidate in endpoint_processes))
-        return nodes.index(process.node) == 0 or self.needs_telemetry_sidecar(process, endpoint_processes)
+        return self._rust_listeners_on_node(process.endpoint_mode, len(nodes), nodes.index(process.node)) > 0
+
+    def _rust_listeners_on_node(self, mode: WorkerMode, nnodes: int, node_rank: int) -> int:
+        """How many SGLang Rust listeners (one per DP rank) node ``node_rank`` of a ``mode`` worker hosts."""
+        return _node_listener_count(self.get_config_for_mode(mode), nnodes, node_rank)
 
     def sidecar_engine_metrics_port(self, process: "Process", endpoint_processes: list["Process"]) -> int | None:
         """Every node's ``--port`` serves ``/metrics`` unless the role turned ``enable-metrics`` off.
 
-        The leader runs the full HTTP server beside native gRPC
-        (sgl-project/sglang 759111879457, ``entrypoints/http_server.py``), with the
-        tokenizer's request histograms (TTFT, ITL, end-to-end latency) and its node's
-        scheduler series; a follower (node rank >= 1) runs a health server whose
-        ``/metrics`` carries the scheduler series of the DP ranks on that node
+        A node's first Rust listener serves the HTTP API beside native gRPC there
+        (sgl-project/sglang d89a1b1ae3, ``rust/sglang-server/src/api_server/http/metrics.rs``);
+        a node without listeners runs a health server whose ``/metrics`` carries the
+        scheduler series of the DP ranks on that node
         (``utils/common.py:launch_dummy_health_check_server``). Both mount the route
         only with ``--enable-metrics``, which srtctl passes unless the role sets it.
         """
         if not _metrics_enabled(self.get_config_for_mode(process.endpoint_mode)) or process.http_port <= 0:
             return None
         return process.http_port
-
-    def needs_telemetry_sidecar(self, process: "Process", endpoint_processes: list["Process"]) -> bool:
-        """Whether a sidecar-enabled endpoint needs a KV relay on this follower."""
-        nodes = list(dict.fromkeys(candidate.node for candidate in endpoint_processes))
-        node_rank = nodes.index(process.node)
-        kv_cfg = self.get_kv_events_config_for_mode(process.endpoint_mode)
-        return (
-            node_rank != 0
-            and kv_cfg is not None
-            and kv_cfg.get("publisher") == "zmq"
-            and process.kv_events_port is not None
-            and _node_has_kv_publisher(self.get_config_for_mode(process.endpoint_mode), len(nodes), node_rank)
-        )
 
 
 _ENABLE_METRICS_KEYS = ("enable-metrics", "enable_metrics")
@@ -659,25 +663,26 @@ def _dp_layout(config: dict[str, Any]) -> tuple[int, int]:
     return dp, attn_dp
 
 
-def _node_has_kv_publisher(config: dict[str, Any], nnodes: int, node_rank: int) -> bool:
-    """Select the nodes owning PP=0, attention CP=0/TP=0 scheduler ranks.
+def _node_listener_count(config: dict[str, Any], nnodes: int, node_rank: int) -> int:
+    """Count a node's PP=0, attention CP=0/TP=0 scheduler ranks: each hosts one Rust listener.
 
-    Attention DP partitions global TP into contiguous groups; only the first
-    rank of each group publishes. TP-only and later PP-stage followers must
-    stay engine-only because the telemetry sidecar requires a local source.
+    Attention DP partitions global TP into contiguous groups; the first rank of
+    each group listens (sgl-project/sglang d89a1b1ae3, ``entrypoints/engine.py:node_hosts_rust_server``).
+    Without attention DP, every replica's leader listens on node 0. TP-only and
+    later PP-stage followers host none and stay engine-only.
     """
-    _, attn_dp = _dp_layout(config)
+    replicas, attn_dp = _dp_layout(config)
     if attn_dp == 1:
-        return node_rank == 0
+        return replicas if node_rank == 0 else 0
     tp = _parallel_size(config, "tensor", "tp")
     pp = _parallel_size(config, "pipeline", "pp")
     nodes_per_pp = max(nnodes // pp, 1)
     if node_rank >= nodes_per_pp:
-        return False
+        return 0
     if tp % nodes_per_pp or tp % attn_dp:
         raise ValueError("SGLang attention DP requires TP divisible by attention-DP size and nodes per PP stage")
     local_tp = tp // nodes_per_pp
-    return any(node_rank * local_tp <= rank < (node_rank + 1) * local_tp for rank in range(0, tp, tp // attn_dp))
+    return sum(node_rank * local_tp <= rank < (node_rank + 1) * local_tp for rank in range(0, tp, tp // attn_dp))
 
 
 def _config_to_cli_args(config: dict[str, Any]) -> list[str]:
