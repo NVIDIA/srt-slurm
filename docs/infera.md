@@ -22,8 +22,10 @@ flowchart LR
 - `engine: sglang`. Configuration loading rejects other engines.
 - Infera installed in the worker and router containers. The stock SGLang image does not ship it;
   `setup_script: install-infera.sh` installs the release named by `INFERA_VERSION` from Infera's
-  GitHub release, without touching the image's packages. Use a release whose worker launcher
-  advertises the KV-events endpoint passed in `--kv-events-config` (amd-infera 0.3.2 or later).
+  GitHub release, without touching the image's packages. Use a release whose Linux x86_64 wheel
+  bundles `infera-router` (AMD-AGI/Infera#223) and whose worker launcher advertises the KV-events
+  endpoint passed in `--kv-events-config` (AMD-AGI/Infera#222); the script fails on a release
+  without the bundled router.
 
 ## What srtctl sets
 
