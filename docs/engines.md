@@ -341,6 +341,18 @@ srt-slurm owns the model path, HTTP port, tensor parallel size, and KV-transfer
 contract, so recipes cannot override those arguments. See the complete
 [ATOM/AToMesh recipe](https://github.com/NVIDIA/srt-slurm/blob/main/examples/atom/atomesh-disagg.yaml).
 
+ATOM runs a worker on `tp × pp × pcp` GPUs, so srtctl passes `-tp` as the role's
+`gpus` divided by `pipeline-parallel-size` and `prefill-context-parallel-size`.
+Each defaults to 1 when the role leaves it out or sets it to `null` or `false`.
+`decode-context-parallel-size` runs on the tensor parallel GPUs and leaves `-tp`
+unchanged; ATOM requires it to divide `-tp`. A split that does not divide `gpus`,
+or a role that spells one argument both with hyphens and with underscores, is
+rejected before the worker launches. A prefill role with `gpus: 4` and
+`pipeline-parallel-size: 4` therefore launches with `-tp 1 --pipeline-parallel-size 4`,
+as in the [pipeline-parallel prefill recipe](https://github.com/NVIDIA/srt-slurm/blob/main/examples/atom/atomesh-disagg-pp-prefill.yaml).
+These semantics hold from ATOM v0.1.6, the first release with pipeline and
+prefill-context parallelism.
+
 To run another KV connector next to the Mooncake one (for example ATOM's in-process
 LMCache CPU offload on prefill), list it under `extra-kv-connectors` in that role's
 args. srtctl keeps generating the Mooncake entry, with its handshake port, and wraps

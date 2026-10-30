@@ -201,6 +201,9 @@ def test_atom_rejects_recipe_overrides_of_managed_arguments(key: str) -> None:
         ({"pipeline_parallel_size": 2}, "2"),
         ({"pipeline-parallel-size": 2, "prefill-context-parallel-size": 2}, "1"),
         ({"decode-context-parallel-size": 4}, "4"),
+        ({"pipeline-parallel-size": None}, "4"),
+        ({"pipeline-parallel-size": False, "prefill-context-parallel-size": 2}, "2"),
+        ({"pipeline-parallel-size": None, "pipeline_parallel_size": 4}, "1"),
     ],
 )
 def test_atom_tensor_parallel_size_leaves_out_pipeline_and_prefill_context_stages(args: dict, tp: str) -> None:
@@ -219,6 +222,15 @@ def test_atom_rejects_pipeline_parallelism_that_does_not_divide_the_worker_gpus(
     process = Process("node0", frozenset(range(4)), 7500, 6100, "agg", 0)
 
     with pytest.raises(ValueError, match="does not divide"):
+        _build(backend, process)
+
+
+def test_atom_rejects_both_spellings_of_a_gpu_splitting_argument() -> None:
+    """ATOM reads the two spellings as one option, so srtctl would size -tp from a split ATOM never sees."""
+    backend = AtomBackend(roles={"agg": RoleConfig(args={"pipeline-parallel-size": 2, "pipeline_parallel_size": 2})})
+    process = Process("node0", frozenset(range(4)), 7500, 6100, "agg", 0)
+
+    with pytest.raises(ValueError, match="pipeline-parallel-size more than once"):
         _build(backend, process)
 
 

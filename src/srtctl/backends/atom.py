@@ -192,11 +192,21 @@ _GPU_SPLITTING_ARGS = ("pipeline-parallel-size", "prefill-context-parallel-size"
 
 
 def _tensor_parallel_size(gpu_count: int, config: Mapping[str, Any]) -> int:
-    """The worker's GPUs left for tensor parallelism after its pipeline and prefill-context stages."""
+    """The worker's GPUs left for tensor parallelism after its pipeline and prefill-context stages.
+
+    Reads the arguments ``_config_to_cli_args`` passes: ``null`` and ``false`` are omitted, so they leave ATOM's
+    default of 1.
+    """
     stages = 1
+    seen: set[str] = set()
     for key, value in config.items():
-        if _canonical_arg_key(key) in _GPU_SPLITTING_ARGS:
-            stages *= int(value)
+        name = _canonical_arg_key(key)
+        if name not in _GPU_SPLITTING_ARGS or value is None or value is False:
+            continue
+        if name in seen:
+            raise ValueError(f"ATOM config sets {name} more than once")
+        seen.add(name)
+        stages *= int(value)
     if stages < 1 or gpu_count % stages:
         raise ValueError(
             f"ATOM worker has {gpu_count} GPU(s), which its pipeline x prefill-context parallelism of {stages} "
