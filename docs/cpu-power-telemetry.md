@@ -1,7 +1,8 @@
 # CPU Power Telemetry
 
-Host-side CPU power collection for NVIDIA Grace nodes, run alongside GPU DCGM
-power telemetry as an independent, best-effort leg.
+Host-side CPU power collection for NVIDIA Grace nodes and, through RAPL, x86
+hosts such as AMD EPYC, run alongside GPU DCGM power telemetry as an
+independent, best-effort leg.
 
 ## Table of Contents
 
@@ -43,11 +44,14 @@ telemetry:
   enabled: true                # master switch; also gates GPU DCGM power telemetry
   cpu_power_exporter:
     port: 9405                 # default; exporter listen port / collector scrape port
-    source: auto                # "auto" | "acpi" | "dcgm", passed to the exporter binary
+    source: auto                # "auto" | "acpi" | "dcgm" | "rapl", passed to the exporter binary
 ```
 
-`telemetry.enabled: true` no longer requires `dcgm_exporter` — a recipe may
-configure `cpu_power_exporter` alone with no DCGM leg at all. The sampling
+`telemetry.enabled: true` does not require `dcgm_exporter`. A recipe that
+leaves the key unset inherits the cluster's `default_gpu_exporter` even when it
+adds this leg. To run `cpu_power_exporter` alone, with no DCGM leg, set
+`dcgm_exporter: null` in the recipe or `default_gpu_exporter: null` in
+`srtslurm.yaml`. The sampling
 cadence and timeouts (`collect_interval_ms`, `request_timeout_seconds`,
 `startup_timeout_seconds`, `collector_join_timeout_seconds`) are shared with
 the DCGM leg on `TelemetryConfig`; there is no separate CPU-specific set.
@@ -94,7 +98,7 @@ the source of truth).
 
 ## Collection Sources
 
-The exporter binary itself decides ACPI vs. DCGM per its own `--source` flag:
+The exporter binary itself picks its source from its own `--source` flag:
 
 - **`acpi`** — reads Linux ACPI `power_meter` hwmon sysfs channels. The driver
   name can be on the hwmon node or under `device/`: `acpi_power_meter` used
@@ -131,6 +135,70 @@ The exporter binary itself decides ACPI vs. DCGM per its own `--source` flag:
   label; the collector treats those samples as 1130.
   Source: NVIDIA/DCGM `modules/sysmon/DcgmSystemMonitor.cpp` (label → file
   map) and `modules/sysmon/DcgmModuleSysmon.cpp` (field id → getter).
+- **`rapl`** — reads the x86 RAPL package energy counters through Linux
+  powercap, for hosts with no ACPI power meter and no DCGM CPU entity, such as
+  the AMD EPYC hosts of MI300X, MI325X and MI355X nodes. The kernel serves AMD
+  families 17h, 19h and 1Ah under the same `intel-rapl` names
+  ([intel_rapl_msr.c](https://github.com/torvalds/linux/blob/d135ab453a7400a34930bdda1ef4bdc8acfac80e/drivers/powercap/intel_rapl_msr.c#L482-L484)). The exporter takes
+  every top-level zone `/sys/class/powercap/intel-rapl:<n>` whose `name` is
+  `package-<id>`, one per socket, with `socket` set to `<id>`; subzones
+  (`intel-rapl:<n>:<m>`, such as `core`) are skipped. Intel Cascade Lake-AP
+  (Xeon 9200) is unsupported: it is the only MSR platform with per-die zones
+  ([intel_rapl_common.c](https://github.com/torvalds/linux/blob/d135ab453a7400a34930bdda1ef4bdc8acfac80e/drivers/powercap/intel_rapl_common.c#L1719-L1729)), named
+  `package-<id>-die-<m>` ([intel_rapl_common.c](https://github.com/torvalds/linux/blob/d135ab453a7400a34930bdda1ef4bdc8acfac80e/drivers/powercap/intel_rapl_common.c#L1788-L1793)),
+  so the exporter finds no package zone and exits at startup.
+
+  Every second it reads each `energy_uj` counter and publishes the energy
+  since the previous read divided by the elapsed monotonic time, so each value
+  is the average power over that interval. The counter wraps to zero after
+  `max_energy_range_uj`; the exporter adds the range left before the wrap to
+  the delta. Before it starts listening it reads every counter twice, 200 ms
+  apart, so the first scrape already has a value. A failed read on any socket
+  skips that whole poll, since a scrape missing a socket would read as a lower
+  node total. The exporter logs a warning at the first failed poll, and the
+  next successful read only sets a new baseline: the counter is 32 bits
+  ([intel_rapl_common.c](https://github.com/torvalds/linux/blob/d135ab453a7400a34930bdda1ef4bdc8acfac80e/drivers/powercap/intel_rapl_common.c#L33-L36)) and can wrap within
+  minutes at full load, so a delta across a long gap could hide a second wrap.
+  The skipped polls stay a gap in `samples.csv`.
+
+  `energy_uj` is readable only by root by default
+  ([powercap_sys.c](https://github.com/torvalds/linux/blob/d135ab453a7400a34930bdda1ef4bdc8acfac80e/drivers/powercap/powercap_sys.c#L367-L371)), a restriction Linux added
+  for CVE-2020-8694
+  ([949dd010](https://github.com/torvalds/linux/commit/949dd0104c496fa7c14991a23c03c62e44637e71)),
+  because the counter is a power side channel. The exporter runs as the job's
+  user, so that user needs read access. With passwordless sudo on the nodes, a
+  `host_setup` block (or the cluster's `default_host_setup`) can grant it for
+  the job and restore root ownership afterwards. Top-level zones are children
+  of the `intel-rapl` control type and subzones nest inside their parent zone
+  ([powercap_sys.c](https://github.com/torvalds/linux/blob/d135ab453a7400a34930bdda1ef4bdc8acfac80e/drivers/powercap/powercap_sys.c#L511-L517)),
+  so this glob matches only the top-level zones, which hold the package
+  counters the exporter reads, and skips subzones such as `core`:
+
+  <!-- docs-yaml: skip -->
+  ```yaml
+  host_setup:
+    commands:
+      - sudo -n chown "$(id -un)" /sys/class/powercap/intel-rapl/intel-rapl:*/energy_uj
+    teardown:
+      - sudo -n chown root /sys/class/powercap/intel-rapl/intel-rapl:*/energy_uj
+  ```
+
+  While the grant is in place, that user can read the side channel the
+  CVE fix closed. Without access, `--source rapl` fails at startup with an
+  error that names the file; it also fails at startup when no package zone
+  exists. A checkout whose `make setup` installed an older binary keeps it,
+  and that binary rejects `--source rapl`: delete `bin/cpu-power-exporter`
+  and rerun `make setup`.
+
+  A package domain is the socket's package power, a different boundary from
+  Grace's `total` envelope, which includes its LPDDR5X memory. The kernel
+  defines only package and core counters for AMD, with no DRAM domain
+  ([intel_rapl_msr.c](https://github.com/torvalds/linux/blob/d135ab453a7400a34930bdda1ef4bdc8acfac80e/drivers/powercap/intel_rapl_msr.c#L119-L123)), and whether AMD
+  package power covers any memory is undocumented. RAPL readings therefore
+  carry their own rail kind, `package` (sensor `CPU<n>:packagePowerUsageW`),
+  and the energy report warns that a RAPL run is not comparable with
+  ACPI-mode runs. `power_w` is the socket's package power and
+  `total_power_w` sums the sockets.
 - **`auto`** (default) — walks a fixed ladder at startup, most informative
   source first, and each source must prove itself before it is used. Every
   step down is logged at WARN in the exporter's `.out` file with the reason:
@@ -163,15 +231,18 @@ The exporter binary itself decides ACPI vs. DCGM per its own `--source` flag:
   `--source acpi` and `--source dcgm` run only their own rungs (ACPI still
   requires the liveness probe to pass; DCGM still tries 1130+1132 then 1130)
   and exit non-zero instead of stepping down. The Python host collector
-  (`srtctl.core.cpu_power`) implements the same ladder.
+  (`srtctl.core.cpu_power`) implements the same ladder. `auto` never
+  selects `rapl`; it runs only when named.
 
 The exporter resolves this once at process startup and serves only one base
-metric family (`cpu_power_dcgm_watts` or `cpu_power_acpi_watts`) for its
-lifetime. Client-side parsing (`src/srtctl/core/power/cpu_parser.py`) prefers
-ACPI readings if a scrape body ever contained both, since ACPI carries more
-detail.
+metric family (`cpu_power_dcgm_watts`, `cpu_power_acpi_watts` or
+`cpu_power_rapl_watts`) for its lifetime. If a scrape body ever contained
+more than one, client-side parsing (`src/srtctl/core/power/cpu_parser.py`)
+prefers ACPI, since it carries more detail, then DCGM, then RAPL.
 
-In both modes the exporter also serves superchip module power from NVML:
+With `acpi` or `dcgm` the exporter also serves superchip module power from
+NVML. It does not with `rapl`: the meter is a Grace superchip reading, and on
+x86 one socket can span several NUMA nodes (Intel SNC, AMD NPS).
 
 ```
 cpu_power_nvml_watts{type="module",socket="0",gpus="0,1",source="nvml"} 498.720000

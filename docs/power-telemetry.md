@@ -79,9 +79,10 @@ telemetry:
 ```
 
 `dcgm-power` needs **only** `dcgm_exporter`. A recipe that sets
-`telemetry.enabled: true` with no `dcgm_exporter` and no CPU leg inherits the
-cluster's `default_gpu_exporter` block from `srtslurm.yaml`, so one recipe can
-measure power on clusters with different GPUs. An inherited `command` replaces the
+`telemetry.enabled: true` with no `dcgm_exporter` inherits the cluster's
+`default_gpu_exporter` block from `srtslurm.yaml`, so one recipe can measure
+power on clusters with different GPUs. A CPU power leg (`cpu_power_exporter` or
+`cpu_power`) runs alongside it and does not opt out. An inherited `command` replaces the
 built-in 100 ms DCGM command, so the exporter samples at whatever rate it sets. There is no `provider` key, and it does
 not require the top-level `container_image` or a `node_exporter`, because the
 collector runs inside srtctl. Config loading validates the block and rejects

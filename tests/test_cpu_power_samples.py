@@ -102,6 +102,21 @@ def test_reader_still_accepts_v2_files_without_module_w(tmp_path):
     assert [(r.schema_version, r.power_w, r.rails) for r in rows] == [(2, 94.29, {"cpu_rail": 49.023, "soc": 5.1})]
 
 
+def test_writer_round_trips_rapl_package_rows(tmp_path):
+    path = tmp_path / "cpu" / "samples.csv"
+    writer = CpuSampleWriter(path)
+    writer.append([_row(source="rapl", sensor="CPU1:packagePowerUsageW", socket_id=1, power_w=171.25)])
+    writer.close()
+
+    rows, reasons = read_cpu_samples(path)
+
+    assert reasons == ()
+    assert [(r.source, r.sensor, r.socket_id, r.power_w, r.rails) for r in rows] == [
+        ("rapl", "CPU1:packagePowerUsageW", 1, 171.25, {})
+    ]
+    assert rows[0].sample.primary.kind == "package"
+
+
 def test_reader_accepts_the_legacy_v1_long_layout(tmp_path):
     """Runs collected before v2 still load; each rail is its own row with empty rails."""
     path = tmp_path / "cpu" / "samples.csv"

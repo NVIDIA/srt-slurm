@@ -35,6 +35,12 @@ Rail kinds
     ``Grace Power Socket N`` envelope (1131 is only its cap). DCGM-mode
     ``power_w`` is therefore the CPU rail, roughly half the ACPI envelope,
     and is not comparable with ACPI-mode ``power_w``.
+``package``
+    Not an ACPI rail: one x86 RAPL package domain per socket, from its energy
+    counter. Treated like ``total`` for ``power_w`` purposes, but it is a
+    different boundary: Grace's ``total`` includes its LPDDR5X memory, while
+    the kernel defines no DRAM domain for AMD and whether AMD package power
+    covers any memory is undocumented.
 ``module``
     NVML superchip power for one socket, including Grace and its GPUs. It
     is a reference rail and never adds to ``total_power_w``. An ACPI
@@ -48,6 +54,7 @@ from typing import NamedTuple
 
 TOTAL_KIND = "total"
 DCGM_KIND = "dcgm"
+PACKAGE_KIND = "package"
 MODULE_KIND = "module"
 OTHER_KIND = "other"
 
@@ -99,6 +106,7 @@ SENSOR_SUFFIXES: dict[str, str] = {
     "dram": "dramPowerUsageW",
     MODULE_KIND: "modulePowerUsageW",
     DCGM_KIND: "cpuPowerUsageW",
+    PACKAGE_KIND: "packagePowerUsageW",
 }
 _KIND_BY_SUFFIX = {suffix: kind for kind, suffix in SENSOR_SUFFIXES.items()}
 
@@ -157,7 +165,7 @@ def classify_sensor(sensor: str) -> str:
 
 # Preference when a legacy long-format CSV holds several rails for one socket
 # and exactly one must feed the per-socket power series.
-LEGACY_RAIL_PREFERENCE: tuple[str, ...] = (TOTAL_KIND, DCGM_KIND, *REFERENCE_RAIL_KINDS, OTHER_KIND)
+LEGACY_RAIL_PREFERENCE: tuple[str, ...] = (TOTAL_KIND, DCGM_KIND, PACKAGE_KIND, *REFERENCE_RAIL_KINDS, OTHER_KIND)
 
 
 def legacy_rail_rank(sensor: str) -> int:

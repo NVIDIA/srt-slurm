@@ -68,6 +68,8 @@ benchmark:
 
 telemetry:
   enabled: true
+  # CPU leg only: null keeps a cluster default_gpu_exporter from adding a GPU leg.
+  dcgm_exporter: null
   cpu_power_exporter:
     # CPU power collection is always best-effort now (there is no `required`
     # flag any more). `source: "acpi"` is still set deliberately: the point

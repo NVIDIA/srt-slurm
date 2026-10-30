@@ -1017,6 +1017,23 @@ def test_dcgm_sourced_cpu_power_is_flagged_as_rail_only(tmp_path: Path) -> None:
     assert report.cpu_total_joules == pytest.approx(500.0)  # 50 W x 10 s
 
 
+def test_rapl_sourced_cpu_power_is_flagged_as_package_only(tmp_path: Path) -> None:
+    from srtctl.analysis.power_energy_report import RAPL_PACKAGE_WARNING, load_cpu_samples
+
+    path = tmp_path / "cpu" / "samples.csv"
+    _write_cpu_csv(
+        path,
+        [
+            (2, 100.0, "node-a", "rapl", "CPU0:packagePowerUsageW", 0, 150.0, 150.0),
+            (2, 110.0, "node-a", "rapl", "CPU0:packagePowerUsageW", 0, 150.0, 150.0),
+        ],
+    )
+
+    report = build_concurrency_report(_window(), load_cpu_samples(path), None)
+
+    assert RAPL_PACKAGE_WARNING in report.warnings
+
+
 def test_acpi_sourced_cpu_power_is_not_flagged(tmp_path: Path) -> None:
     from srtctl.analysis.power_energy_report import load_cpu_samples
 
@@ -1033,7 +1050,7 @@ def test_acpi_sourced_cpu_power_is_not_flagged(tmp_path: Path) -> None:
 
     report = build_concurrency_report(_window(), acpi, None)
 
-    assert not any("CPU rail only" in w for w in report.warnings)
+    assert not any("CPU rail only" in w or "RAPL" in w for w in report.warnings)
 
 
 def test_render_and_json_carry_timing_and_perf_per_watt() -> None:

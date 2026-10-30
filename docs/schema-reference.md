@@ -292,7 +292,7 @@ DCGM power telemetry for benchmark measurement windows.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `False` | Collect GPU power over each benchmark concurrency window. |
-| `dcgm_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` | GPU power exporter image, port, command, labels and metrics. When `enabled` with no exporter and no CPU leg, the cluster `default_gpu_exporter` is used. |
+| `dcgm_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` | GPU power exporter image, port, command, labels and metrics. When `enabled` and this key is unset, the cluster `default_gpu_exporter` is used, with or without a CPU leg. |
 | `collect_interval_ms` | int | `1000` | Milliseconds between collector cycles. Replaces the retired ``default_frequency``, which despite its name was a period in seconds (1000ms == the old 1.0 default). |
 | `storage_subdir` | str | `'power'` | Output directory below the run's log directory. |
 | `required` | bool | `False` | Fail the benchmark when publishable DCGM power artifacts cannot be produced. CPU power stays best-effort. |
@@ -489,7 +489,7 @@ Best-effort CPU power collection via the cpu-power-exporter binary.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `port` | int | `9405` | TCP port the per-node exporter listens on for ``/metrics``. |
-| `source` | one of `'auto'`, `'acpi'`, `'dcgm'` | `'auto'` | Power reading back-end passed through to the bundled Rust binary's own ``--source`` flag (``auto`` \| ``acpi`` \| ``dcgm``). ``auto`` tries ACPI first (the only source with the socket envelope) and falls back to DCGM when no ACPI power_meter hwmon sensors exist or no socket-total sensor reads positive on two probes; DCGM watches fields 1130+1132 and falls back to 1130 alone if this libdcgm refuses the pair, and is accepted only if some socket reads a positive 1130. DCGM mode reports field 1130 = the CPU rail (plus 1132 = SysIO), about half the ACPI envelope, and the energy report flags such runs as "CPU rail only". Has no effect when the Python stdlib fallback exporter is used instead of the binary -- that fallback is ACPI-only. |
+| `source` | one of `'auto'`, `'acpi'`, `'dcgm'`, `'rapl'` | `'auto'` | Power reading back-end passed through to the bundled Rust binary's own ``--source`` flag (``auto`` \| ``acpi`` \| ``dcgm`` \| ``rapl``). ``auto`` tries ACPI first (the only source with the socket envelope) and falls back to DCGM when no ACPI power_meter hwmon sensors exist or no socket-total sensor reads positive on two probes; DCGM watches fields 1130+1132 and falls back to 1130 alone if this libdcgm refuses the pair, and is accepted only if some socket reads a positive 1130. DCGM mode reports field 1130 = the CPU rail (plus 1132 = SysIO), about half the ACPI envelope, and the energy report flags such runs as "CPU rail only". ``rapl`` reads the x86 RAPL package energy counters (AMD EPYC, Intel Xeon), whose ``energy_uj`` files are root-only unless a cluster admin grants read access; ``auto`` never selects it. Has no effect when the Python stdlib fallback exporter is used instead of the binary -- that fallback is ACPI-only. |
 
 ### CpuPowerConfig
 

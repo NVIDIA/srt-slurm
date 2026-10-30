@@ -2018,6 +2018,9 @@ class CpuPowerConfig:
     Schema: ClassVar[type[Schema]] = Schema
 
 
+CpuPowerExporterSource = Literal["auto", "acpi", "dcgm", "rapl"]
+
+
 @dataclass(frozen=True)
 class CpuPowerExporterConfig:
     """Best-effort CPU power collection via the cpu-power-exporter binary.
@@ -2031,7 +2034,8 @@ class CpuPowerExporterConfig:
     Attributes:
         port: TCP port the per-node exporter listens on for ``/metrics``.
         source: Power reading back-end passed through to the bundled Rust
-            binary's own ``--source`` flag (``auto`` | ``acpi`` | ``dcgm``).
+            binary's own ``--source`` flag (``auto`` | ``acpi`` | ``dcgm`` |
+            ``rapl``).
             ``auto`` tries ACPI first (the only source with the socket
             envelope) and falls back to DCGM when no ACPI power_meter hwmon
             sensors exist or no socket-total sensor reads positive on two
@@ -2039,14 +2043,16 @@ class CpuPowerExporterConfig:
             if this libdcgm refuses the pair, and is accepted only if some
             socket reads a positive 1130. DCGM mode reports field 1130 = the
             CPU rail (plus 1132 = SysIO), about half the ACPI envelope, and
-            the energy report flags such runs as "CPU rail only". Has no
-            effect when the Python stdlib fallback exporter is used instead of
+            the energy report flags such runs as "CPU rail only". ``rapl``
+            reads the x86 RAPL package energy counters (AMD EPYC, Intel Xeon),
+            whose ``energy_uj`` files are root-only unless a cluster admin
+            grants read access; ``auto`` never selects it. Has no effect when the Python stdlib fallback exporter is used instead of
             the binary -- that fallback is ACPI-only.
     """
 
     # Port the exporter listens on and the head-node collector scrapes.
     port: int = 9405
-    source: Literal["auto", "acpi", "dcgm"] = "auto"
+    source: CpuPowerExporterSource = "auto"
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -2057,8 +2063,8 @@ class TelemetryConfig:
 
     # Collect GPU power over each benchmark concurrency window.
     enabled: bool = False
-    # GPU power exporter image, port, command, labels and metrics. When `enabled` with
-    # no exporter and no CPU leg, the cluster `default_gpu_exporter` is used.
+    # GPU power exporter image, port, command, labels and metrics. When `enabled` and this
+    # key is unset, the cluster `default_gpu_exporter` is used, with or without a CPU leg.
     dcgm_exporter: TelemetryExporterConfig | None = None
     # Milliseconds between collector cycles. Replaces the retired
     # ``default_frequency``, which despite its name was a period in seconds
@@ -3809,8 +3815,17 @@ class SrtConfig:
         exporter = telemetry.dcgm_exporter
         if exporter is None:
             raise ValidationError("telemetry.dcgm_exporter is required when telemetry is enabled")
+        # A recipe with a CPU leg inherits the cluster GPU exporter too, so a CPU-only
+        # recipe can reach the GPU-only checks below without naming a GPU exporter.
+        cpu_only_fix = ""
+        if telemetry.cpu_power_exporter is not None or telemetry.cpu_power.enabled:
+            cpu_only_fix = (
+                "; this check is for GPU power telemetry, which telemetry.dcgm_exporter enables (a recipe "
+                "that omits it inherits the cluster default_gpu_exporter). To collect CPU power only, set "
+                "telemetry.dcgm_exporter: null"
+            )
         if not exporter.container_image:
-            raise ValidationError("telemetry.dcgm_exporter.container_image must be non-empty")
+            raise ValidationError(f"telemetry.dcgm_exporter.container_image must be non-empty{cpu_only_fix}")
         if not 1 <= exporter.port <= 65535:
             raise ValidationError("telemetry.dcgm_exporter.port must be in 1..65535")
 
@@ -3835,19 +3850,21 @@ class SrtConfig:
         supported_benchmarks = {_BENCHMARK_TYPE_SA_BENCH, "agentic", "agentx", "custom", "manual"}
         if self.benchmark.type not in supported_benchmarks:
             supported = ", ".join(sorted(supported_benchmarks))
-            raise ValidationError(f"telemetry requires benchmark.type to be one of: {supported}")
+            raise ValidationError(f"telemetry requires benchmark.type to be one of: {supported}{cpu_only_fix}")
 
         # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
         if self.infra_dedicated_node:
             raise ValidationError(
                 "telemetry requires the discovery plane on the infra node (no etcd or nats service with "
                 "placement.node: dedicated), because a dedicated infra node moves nodes.head off the batch host "
-                "and power samples would no longer share the benchmark's clock"
+                f"and power samples would no longer share the benchmark's clock{cpu_only_fix}"
             )
 
         concurrencies = self.benchmark.get_concurrency_list()
         if not concurrencies or len(set(concurrencies)) != len(concurrencies) or any(c <= 0 for c in concurrencies):
-            raise ValidationError("telemetry requires a non-empty list of unique positive benchmark.concurrencies")
+            raise ValidationError(
+                f"telemetry requires a non-empty list of unique positive benchmark.concurrencies{cpu_only_fix}"
+            )
 
     def _frontend_profiling_control_is_leader_only(self) -> bool:
         """Whether the frontend's workers expose one profiler control server per logical endpoint."""
@@ -3918,8 +3935,9 @@ class SrtConfig:
             return
         if not 1 <= exporter.port <= 65535:
             raise ValidationError("telemetry.cpu_power_exporter.port must be in 1..65535")
-        if exporter.source not in ("auto", "acpi", "dcgm"):
-            raise ValidationError('telemetry.cpu_power_exporter.source must be one of: "auto", "acpi", "dcgm"')
+        sources = get_args(CpuPowerExporterSource)
+        if exporter.source not in sources:
+            raise ValidationError(f"telemetry.cpu_power_exporter.source must be one of: {', '.join(sources)}")
 
         neighbours = [("telemetry.dcgm_exporter", self.telemetry.dcgm_exporter)]
         if self.observability.tachometer_enabled:

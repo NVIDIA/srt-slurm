@@ -51,6 +51,27 @@ MODULE_SOCKET_0 = '{type="module",socket="0",gpus="0,1",source="nvml"} 498.72000
 MODULE_SOCKET_1 = '{type="module",socket="1",gpus="2,3",source="nvml"} 470.500000'
 
 
+def _rapl_body():
+    return (
+        "# HELP cpu_power_rapl_watts x\n"
+        "# TYPE cpu_power_rapl_watts gauge\n"
+        'cpu_power_rapl_watts{sensor="intel-rapl:0",type="package",socket="0",source="rapl"} 182.5\n'
+        'cpu_power_rapl_watts{sensor="intel-rapl:1",type="package",socket="1",source="rapl"} 171.25\n'
+    )
+
+
+def test_rapl_mode_reports_one_package_reading_per_socket():
+    scrape = parse_cpu_scrape(_rapl_body())
+
+    assert scrape.mode == "rapl"
+    assert [(r.source, r.kind, r.sensor, r.socket_id, r.power_w) for r in scrape.readings] == [
+        ("rapl", "package", "CPU0:packagePowerUsageW", 0, 182.5),
+        ("rapl", "package", "CPU1:packagePowerUsageW", 1, 171.25),
+    ]
+    assert [(s.socket_id, s.power_w, s.rails) for s in scrape.sockets] == [(0, 182.5, {}), (1, 171.25, {})]
+    assert scrape.total_power_w == 182.5 + 171.25
+
+
 def test_dcgm_mode_sums_all_sockets_into_the_total():
     scrape = parse_cpu_scrape(_dcgm_body())
 
