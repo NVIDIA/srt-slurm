@@ -17,8 +17,10 @@ from srtctl.core.schema import (
     BenchmarkConfig,
     CpuPowerExporterConfig,
     ModelConfig,
+    ObservabilityConfig,
     ResourceConfig,
     SrtConfig,
+    TachometerConfig,
     TelemetryConfig,
 )
 
@@ -92,6 +94,33 @@ class TestValidateSetup:
 
         with pytest.raises(SystemExit):
             validate_setup(tmp_path)
+
+    @pytest.mark.parametrize(
+        ("observability", "needs_scraper"),
+        [
+            (ObservabilityConfig(), True),
+            (ObservabilityConfig(enabled="minimal"), False),
+            (ObservabilityConfig(tachometer=TachometerConfig(enabled=False)), False),
+            (ObservabilityConfig(enabled="minimal", tachometer=TachometerConfig(enabled=True)), True),
+        ],
+    )
+    def test_tachometer_scraper_is_required_only_when_tachometer_runs(
+        self, tmp_path: Path, observability: ObservabilityConfig, needs_scraper: bool
+    ):
+        self._setup_tree(tmp_path)
+        (tmp_path / "bin" / "tachometer-scraper").unlink()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(type="manual"),
+            observability=observability,
+        )
+        if needs_scraper:
+            with pytest.raises(SystemExit):
+                validate_setup(tmp_path, config)
+        else:
+            validate_setup(tmp_path, config)
 
     def test_fails_when_all_missing(self, tmp_path: Path):
         """validate_setup fails when nothing has been set up."""

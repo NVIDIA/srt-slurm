@@ -182,14 +182,42 @@ def test_container_reuse_cluster_default_and_recipe_override(
     assert ("reuse_container: true" in capsys.readouterr().out) is expected
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-def test_dynamo_lifecycle_collector_visible_independently_of_observability(capsys, enabled):
+@pytest.mark.parametrize("enabled", ["default", True, "full"])
+def test_dynamo_lifecycle_collector_visible_outside_minimal_observability(capsys, enabled):
     show_config_details(_make_config({"observability": {"enabled": enabled}}))
     output = " ".join(capsys.readouterr().out.split())
     assert "otel-collector" in output
-    assert "Dynamo lifecycle tracing (independent of observability.enabled)" in output
+    assert "Dynamo lifecycle tracing (observability.enabled default or full)" in output
     assert "otel-collector.yaml" in output
     assert "<host-native>" in output
+
+
+@pytest.mark.parametrize("enabled", [False, "minimal"])
+def test_minimal_observability_dry_run_shows_what_is_off(capsys, enabled):
+    show_config_details(_make_config({"observability": {"enabled": enabled}}))
+    output = " ".join(capsys.readouterr().out.split())
+    assert "otel-collector" not in output
+    assert "minimal" in output
+    assert "lifecycle tracing" in output
+    assert "DYN_LOG default" in output and "warn (recipe env wins)" in output
+    assert "tachometer-scraper" not in output
+
+
+def test_minimal_observability_dry_runs_a_services_only_recipe(capsys):
+    data = yaml.safe_load(Path("examples/features/torchrun-pool.yaml").read_text())
+    data["observability"] = {"enabled": "minimal"}
+    show_config_details(SrtConfig.Schema().load(data))
+    output = " ".join(capsys.readouterr().out.split())
+    assert "minimal" in output
+    assert "lifecycle tracing" not in output
+
+
+def test_minimal_observability_keeps_a_declared_collector(capsys):
+    services = [{"name": "otel-collector", "type": "otel-collector"}]
+    show_config_details(_make_config({"observability": {"enabled": "minimal"}, "services": services}))
+    output = " ".join(capsys.readouterr().out.split())
+    assert "otel-collector" in output
+    assert "on (declared collector)" in output
 
 
 def test_role_engines_images_and_environments_are_visible(capsys):

@@ -127,7 +127,8 @@ services:
 ## Implicit Services
 
 Dynamo stacks also imply a critical, host-native `otel-collector` on the head
-node, independent of `observability.enabled`. It starts `before_workers`, stays
+node unless `observability.enabled` is `minimal` (a declared `otel-collector` still
+runs then). It starts `before_workers`, stays
 alive through their shutdown, and writes `otel/traces.jsonl` and `otel/logs.jsonl`
 under the log directory. `make setup` installs its binary; `options.binary` and
 `options.port` override the executable and OTLP/gRPC port (4317). See
@@ -143,7 +144,7 @@ Things the recipe asks for elsewhere are services the job runs without an entry;
 | a vLLM role with `connector: lmcache-mp` (engine-level or `roles.<role>.args.connector`), unless a `lmcache-server` entry is declared | `lmcache-server` | that role's nodes, or every worker node when several roles use it, phase `before_workers` |
 | `engine.failover` (see [Shadow Engine Recovery](shadow-engine-recovery.md)) | `gms` | one instance per vLLM worker (`placement.per: worker`), phase `before_workers` |
 | `frontend.type: llm-d` with prefill and decode workers (see [llm-d Router](llm-d.md)) | `llm-d-sidecar` | one instance per routable decode worker (`placement.per: worker`), phase `before_workers` |
-| tachometer on (the default; `observability.tachometer.enabled`) | `dcgm-exporter`, `node-exporter` | every worker node, phase `after_frontend` |
+| tachometer on (the default outside `observability.enabled: minimal`; `observability.tachometer.enabled`) | `dcgm-exporter`, `node-exporter` | every worker node, phase `after_frontend` |
 
 `srtctl dry-run` lists them next to the declared ones, marked `implied by:`. A declared entry with
 the same `name` replaces the implied one, so the recipe only says what differs:
@@ -325,7 +326,7 @@ environment its process needs; the launch path is shared by every kind. Register
 | Type | Default command | Start | Critical | Notes |
 | --- | --- | --- | --- | --- |
 | `generic` | none (required) | `after_frontend` | `false` | Launches exactly what you wrote. |
-| `otel-collector` | `configs/otelcol-contrib --config <log_dir>/otel-collector.yaml` on the bare node | `before_workers` | `true` | Implied only by Dynamo, independent of observability. Head node, OTLP/gRPC port 4317. `options`: `binary`, `port`. Writes DSight-compatible OTLP JSONL and stops after workers. |
+| `otel-collector` | `configs/otelcol-contrib --config <log_dir>/otel-collector.yaml` on the bare node | `before_workers` | `true` | Implied only by Dynamo, outside `observability.enabled: minimal`. Head node, OTLP/gRPC port 4317. `options`: `binary`, `port`. Writes DSight-compatible OTLP JSONL and stops after workers. |
 | `etcd` | `/configs/etcd` from the job container, advertising the node's IP | `infra` | `true` | Implied by the Dynamo frontend. Placement `head`, `infra`, or `dedicated`; supports `external`. Fresh data dir on node-local `/tmp` each job. |
 | `nats` | `/configs/nats-server -js` from the job container | `infra` | `true` | Implied by the Dynamo frontend. `options.max_payload_mb` writes a server config. Same placements as etcd; supports `external`. |
 | `mooncake-master` | `mooncake_master` with the RPC, HTTP metadata, and metrics ports srtctl owns | `before_workers` | `true` | Declared by name; see [Mooncake KV Store](mooncake-kv-store.md). `args` are appended; `options.store_config` is the vLLM or TRT-LLM connector JSON (a TRT-LLM role layers its own keys in `roles.<role>.mooncake_store_config`). Container falls back to the job container. Supports `dedicated` and `external`. |

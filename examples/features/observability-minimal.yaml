@@ -1,0 +1,56 @@
+# Observability minimal mode on a vLLM worker behind the Dynamo frontend.
+#
+# `observability.enabled: minimal` (or `false`) keeps only what the run needs to produce
+# and report its result: no Tachometer scraper or DCGM/node/process exporters, no Dynamo
+# lifecycle tracing (no otel-collector service, no OTEL_* or DYN_LIFECYCLE_TRACE_ENABLED
+# env), no automatic nsys, and DYN_LOG=warn on the Dynamo frontend and workers. An
+# explicit per-feature setting still wins: `tachometer.enabled: true`, a declared
+# otel-collector service, or DYN_LOG in the recipe environment. Compare with
+# observability-vllm.yaml (`full`). See docs/observability.md#observability.
+#
+# Aliases (`qwen3-0.6b`, `vllm`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-vllm-observability-minimal"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "vllm"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+dynamo:
+  source:
+    pypi: "1.4.2"
+
+observability:
+  enabled: minimal
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+
+engine: vllm
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 2
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 2
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

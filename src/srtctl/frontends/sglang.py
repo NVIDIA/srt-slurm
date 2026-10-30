@@ -54,9 +54,11 @@ class SGLangRouterFrontend(StaticRouterFrontend):
         """Expose the gateway's Prometheus listener unless the recipe configured it itself.
 
         The Model Gateway only starts its metrics server when ``--prometheus-port``
-        is given (``PrometheusConfig`` is ``None`` otherwise), and tachometer is on
-        by default, so srtctl always asks for it on every interface.
+        is given (``PrometheusConfig`` is ``None`` otherwise), and Tachometer is its
+        only reader, so srtctl asks for it on every interface whenever Tachometer runs.
         """
+        if not config.observability.tachometer_enabled:
+            return []
         frontend_args = config.frontend.args or {}
         normalized = {str(key).replace("_", "-") for key in frontend_args}
         managed: list[str] = []

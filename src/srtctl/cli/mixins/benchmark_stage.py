@@ -30,6 +30,7 @@ from srtctl.core.power.contract import (
     WINDOWS_DIRNAME,
 )
 from srtctl.core.processes import terminate_and_reap
+from srtctl.core.schema import ObservabilityMode
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
 from srtctl.core.telemetry import sidecar_logical_worker_metrics_target, sidecar_worker_metrics_targets
@@ -513,14 +514,14 @@ class BenchmarkStageMixin:
         # Host/process telemetry for the benchmark window. The Prometheus
         # families describe what Dynamo publishes; they say nothing about the
         # machine underneath, where host CPU saturation, lock convoys and fd
-        # exhaustion live. Follows observability.enabled; best-effort contract.
+        # exhaustion live. On in observability full mode; best-effort contract.
         #
-        # `is True` is deliberate, not a truthiness check: this mixin is
+        # The identity check is deliberate, not a truthiness check: this mixin is
         # routinely driven with a mocked config whose every attribute is
         # truthy, and plain truthiness would silently switch it on there.
         observability = getattr(self.config, "observability", None)
         host_sampler = None
-        if getattr(observability, "enabled", False) is True:
+        if getattr(observability, "mode", None) is ObservabilityMode.FULL:
             from srtctl.analysis.host_sampler import try_start_host_sampler
 
             host_sampler = try_start_host_sampler(self.runtime.log_dir, observability, stop_event)

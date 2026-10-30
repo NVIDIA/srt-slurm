@@ -59,8 +59,8 @@ def worker_step_name(
     return f"{name}_r{attempt}" if attempt else name
 
 
-# Dynamo runtime (Rust) log filter for worker containers; a recipe's roles.<role>.env
-# overrides it via the merge below.
+# Dynamo runtime (Rust) log filter for worker containers outside observability minimal
+# mode (which uses MINIMAL_DYN_LOG); a recipe's roles.<role>.env overrides it via the merge below.
 _DEFAULT_WORKER_DYN_LOG = "info,dynamo_runtime::pipeline::network::ingress::push_handler=warn"
 
 
@@ -219,12 +219,19 @@ class WorkerStageMixin:
         env = {"HEAD_NODE_IP": self.runtime.head_node_ip}
         if get_frontend(self.config.frontend.type).worker_launch == "dynamo":
             env.update(discovery_env(self.config, self.runtime))
-            env.update(lifecycle_otel_env(self.config.services, self.runtime.head_node_ip, process.endpoint_mode))
+            env.update(
+                lifecycle_otel_env(
+                    self.config.services,
+                    self.runtime.head_node_ip,
+                    process.endpoint_mode,
+                    implied=self.config.observability.lifecycle_tracing,
+                )
+            )
             env.update(
                 DYN_SYSTEM_PORT=str(process.sys_port),
                 DYN_REQUEST_PLANE=self.config.dynamo.request_plane,
                 DYN_SKIP_SGLANG_LOG_FORMATTING="1",
-                DYN_LOG=_DEFAULT_WORKER_DYN_LOG,
+                DYN_LOG=self.config.observability.dynamo_log or _DEFAULT_WORKER_DYN_LOG,
             )
             if self.config.dynamo.event_plane:
                 env["DYN_EVENT_PLANE"] = self.config.dynamo.event_plane

@@ -271,11 +271,13 @@ def try_start_host_sampler(log_dir: Path, observability, stop_event: threading.E
     Single entry point for :class:`BenchmarkStageMixin`. All failures are
     logged and swallowed -- host telemetry never blocks a benchmark.
 
-    Gated on ``observability.enabled`` rather than a new knob: it answers the
+    Gated on the ``full`` observability mode rather than a new knob: it answers the
     same question (is this run capturing observability?) and a second switch would let a
     run be half-instrumented in a way nobody intends.
     """
-    if getattr(observability, "enabled", False) is not True:
+    from srtctl.core.schema import ObservabilityMode
+
+    if getattr(observability, "mode", None) is not ObservabilityMode.FULL:
         return None
     try:
         # One cadence knob for the whole capture stack: follow the tachometer
