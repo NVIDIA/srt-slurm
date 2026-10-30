@@ -358,6 +358,15 @@ class Backend(ABC):
         """
         return False
 
+    def owns_dp_ranks(self, process: "Process") -> bool:
+        """Whether this worker process runs data-parallel ranks of its own and exports their metrics.
+
+        A custom benchmark gets one metrics URL per logical worker leader, plus
+        every follower for which this is true. Defaults to ``False``: a
+        follower rank reports through its leader.
+        """
+        return False
+
     def runs_dynamo_sidecar(self, process: "Process", endpoint_processes: list["Process"]) -> bool:
         """In Dynamo sidecar mode (``dynamo.sidecar``), whether this process launches a Dynamo sidecar.
 

@@ -790,6 +790,21 @@ class VLLMBackend(Backend):
             for key, value in self.get_config_for_mode(mode).items()
         )
 
+    def owns_dp_ranks(self, process: Process) -> bool:
+        """Whether a worker process runs data-parallel ranks of its own and exports their metrics.
+
+        Each per-GPU rank, and each per-node process whose node holds whole TP x PP x PCP
+        replicas (``--data-parallel-hybrid-lb``), is its own engine-core client: it serves the
+        requests routed to its ranks and records their ``vllm:*`` series, including the
+        speculative decoding counters, on its own ``/metrics``. A node of a replica that spans
+        nodes runs headless and reports through the replica's leader.
+        """
+        return self.is_dp_mode(process.endpoint_mode) and not self._replica_spans_nodes(process)
+
+    def _replica_spans_nodes(self, process: Process) -> bool:
+        """Whether one DP replica (TP x PP x PCP GPUs) needs more GPUs than this process holds."""
+        return self._get_model_parallel_size(process.endpoint_mode) > len(process.gpu_indices)
+
     def _get_dp_size(self, mode: WorkerMode) -> int | None:
         """Get the data-parallel-size for a mode, or None if not in DP mode."""
         config = self.get_config_for_mode(mode)
@@ -1552,9 +1567,7 @@ class VLLMBackend(Backend):
         """Whether this process belongs to one TP/PP replica spanning the endpoint's nodes."""
         mode = process.endpoint_mode
         is_multi_node = len({candidate.node for candidate in endpoint_processes}) > 1
-        return is_multi_node and (
-            not self.is_dp_mode(mode) or self._get_model_parallel_size(mode) > len(process.gpu_indices)
-        )
+        return is_multi_node and (not self.is_dp_mode(mode) or self._replica_spans_nodes(process))
 
     def runs_dynamo_sidecar(self, process: Process, endpoint_processes: list[Process]) -> bool:
         """Every frontend node runs a sidecar; the headless followers of a cross-node replica run none."""
