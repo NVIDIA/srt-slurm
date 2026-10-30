@@ -93,6 +93,26 @@
       "description": "GPU-subset mask passed to workers; ROCm clusters use ROCR_VISIBLE_DEVICES.",
       "default": "CUDA_VISIBLE_DEVICES"
     },
+    "port_registry_dir": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Directory on a filesystem every node shares where each job records the ports it binds, so a job whose nodes another job also uses allocates around them. Unset: no registry.",
+      "default": null
+    },
+    "reserved_port_ranges": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Inclusive port ranges (\"LOW-HIGH\") no allocated port may fall in, e.g. the kernel's ephemeral range (\"32768-60999\", net.ipv4.ip_local_port_range) or ports a site daemon uses.",
+      "default": []
+    },
     "default_gpu_exporter": {
       "anyOf": [
         {

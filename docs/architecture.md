@@ -576,6 +576,41 @@ consumer derives one port from another.
 
 Fixed constants: frontend public port 8000, internal 8180 (behind nginx); etcd 2379, NATS 4222.
 
+A kind's counter does not stop at the next kind's base. Each candidate covers its
+whole stride (`PortKind.span`: 32 ports for `http`), and the allocator skips one slot
+of the kind at a time while any port of that span is already taken:
+
+- by another allocation of the same job on that node (a global kind counts against every node);
+- by `FIXED_PORTS`, the fixed listeners above plus the service ports in `srtctl/ports.py`;
+- by an entry of the cluster's `reserved_port_ranges`, such as the kernel's ephemeral
+  range (`net.ipv4.ip_local_port_range`), where a connection's source port can take a
+  listener's port before the listener binds;
+- by a port another job holds on that node, when the cluster sets `port_registry_dir`.
+
+Only running past 65535 is an error. Nothing moves for a topology whose kinds never
+meet, which is every example recipe.
+
+#### Jobs that share nodes
+
+Without exclusive allocations, Slurm can put two jobs on one node, and both start every
+kind at the same base. With `port_registry_dir` set in `srtslurm.yaml` (a directory on
+a filesystem every node shares), the orchestrator takes the registry lock, reads the
+ports every live job holds on its nodes, allocates around them, publishes its own and
+releases the lock (`core/port_registry.py`). Two jobs that start together therefore
+end up with different ports; the second one's `http` leader gets 6132 where the first
+got 6100. A job's entry is live while its orchestrator holds a POSIX record lock on
+it, so a job that is killed leaves nothing to clean up: the next reader finds the
+entry unlocked and removes it. The entry is removed after the job's workers stop.
+
+```yaml
+# srtslurm.yaml
+port_registry_dir: /shared/srt-slurm/port-registry
+reserved_port_ranges: ["32768-60999"]
+```
+
+The fixed listeners (frontend, etcd, NATS, services) are not moved: two jobs that
+both run a frontend or a discovery plane on the same node still collide on them.
+
 ### Process Relationships
 
 ```mermaid
@@ -635,23 +670,22 @@ flowchart LR
 
 ### NodePortAllocator
 
-Manages per-node port assignments to avoid conflicts:
+Hands out every port a worker binds, one counter per `PortKind` (see
+[Port Allocation Strategy](#port-allocation-strategy)):
 
 ```python
 @dataclass
 class NodePortAllocator:
-    base_http_port: int = 30000
-    base_bootstrap_port: int = 31000
-    base_kv_events_port: int = 5550
+    bases: dict[str, int]                         # first port per kind name
+    reserved: frozenset[int] = FIXED_PORTS        # never handed out
+    reserved_ranges: tuple[tuple[int, int], ...]  # srtslurm.yaml reserved_port_ranges
+    occupied: Mapping[str, frozenset[int]]        # ports other jobs hold, by node
 
-    def next_http_port(self, node: str) -> int:
-        """Get next available HTTP port for a node."""
+    def next(self, kind: PortKind, node: str | None = None, size: int = 1) -> int:
+        """Reserve size slots of kind, skipping slots whose span is taken."""
 
-    def next_bootstrap_port(self, node: str) -> int:
-        """Get next available bootstrap port for a node."""
-
-    def next_kv_events_port(self) -> int:
-        """Get next available kv-events port (globally unique)."""
+    def ports_by_node(self, nodes: Sequence[str]) -> dict[str, frozenset[int]]:
+        """What this job binds on each node, as published to the port registry."""
 ```
 
 ### ProcessRegistry

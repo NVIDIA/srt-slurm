@@ -25,6 +25,7 @@ from srtctl.backends.base import WorkerMode
 from srtctl.ports import (
     BOOTSTRAP_PORTS,
     DYN_SYSTEM_PORT_BASE,
+    FIXED_PORTS,
     HTTP_PORTS,
     KV_EVENTS_PORTS,
     KVBM_ZMQ_PORTS,
@@ -52,6 +53,15 @@ class NodePortAllocator:
     kind name: the system-status base for tests, the Dynamo sidecar gRPC base
     from ``dynamo.sidecar_port``.
 
+    A candidate is skipped, one slot of its kind at a time, while any port of its
+    span (``PortKind.span``) is already taken: by another allocation of this job
+    on the same node (global kinds count against every node), by one of
+    ``reserved`` (srtctl's fixed listeners), by a ``reserved_ranges`` entry (the
+    cluster's ``reserved_port_ranges``, e.g. the kernel's ephemeral range), or by
+    ``occupied``, the ports other jobs hold on each node (``core/port_registry.py``).
+    A kind that grows into another kind's range therefore steps past it instead
+    of binding the same port at runtime; only running past 65535 is an error.
+
     Example:
         allocator = NodePortAllocator()
         allocator.next(HTTP_PORTS, "node0")  # 6100
@@ -61,7 +71,12 @@ class NodePortAllocator:
     """
 
     bases: dict[str, int] = field(default_factory=dict)
+    reserved: frozenset[int] = FIXED_PORTS
+    reserved_ranges: tuple[tuple[int, int], ...] = ()
+    occupied: Mapping[str, frozenset[int]] = field(default_factory=dict)
     _next: dict[tuple[str, str | None], int] = field(default_factory=dict, repr=False)
+    # Ports this allocator handed out, by node; None holds the job-global kinds.
+    _taken: dict[str | None, set[int]] = field(default_factory=dict, repr=False)
 
     def next(self, kind: PortKind, node: str | None = None, size: int = 1) -> int:
         """Reserve ``size`` consecutive slots of ``kind`` and return the first port.
@@ -75,14 +90,40 @@ class NodePortAllocator:
             raise ValueError(f"{kind.name}: size must be at least 1, got {size}")
         if kind.per_node and node is None:
             raise ValueError(f"{kind.name} ports are allocated per node; pass the node")
-        key = (kind.name, node if kind.per_node else None)
+        scope = node if kind.per_node else None
+        key = (kind.name, scope)
         ordinal = self._next.get(key, 0)
+        base = self.bases.get(kind.name, kind.base)
+        while True:
+            port = base + ordinal * kind.stride
+            span = kind.span(port, size)
+            if span[-1] > 65535:
+                raise ValueError(f"{kind.name} port range exhausted at {port}..{span[-1]}")
+            if not self._conflicts(span, scope):
+                break
+            ordinal += 1
         self._next[key] = ordinal + size
-        port = self.bases.get(kind.name, kind.base) + ordinal * kind.stride
-        last = port + (size - 1) * kind.stride
-        if last > 65535:
-            raise ValueError(f"{kind.name} port range exhausted at {port}..{last}")
+        self._taken.setdefault(scope, set()).update(span)
         return port
+
+    def ports_by_node(self, nodes: Sequence[str]) -> dict[str, frozenset[int]]:
+        """Every port this allocator handed out that may be bound on each of ``nodes``.
+
+        A job-global kind is not tied to a node here, so its ports count on all of them.
+        """
+        shared = self._taken.get(None, set())
+        return {node: frozenset(self._taken.get(node, set()) | shared) for node in nodes}
+
+    def _conflicts(self, span: range, scope: str | None) -> bool:
+        """True when any port of ``span`` is not free for an allocation in ``scope``."""
+        if scope is None:
+            taken = set().union(*self._taken.values(), *self.occupied.values())
+        else:
+            taken = self._taken.get(scope, set()) | self._taken.get(None, set()) | self.occupied.get(scope, frozenset())
+        return any(
+            port in taken or port in self.reserved or any(low <= port <= high for low, high in self.reserved_ranges)
+            for port in span
+        )
 
 
 @dataclass(frozen=True)

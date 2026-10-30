@@ -807,6 +807,8 @@ Top-level keys of `srtslurm.yaml`. Recipes inherit these defaults and resolve al
 | `default_gpu_type` | str \| None | `None` | Default for ``ResourceConfig.gpu_type`` when the recipe omits it. Lets one recipe move between clusters of different GPU types without an edit. |
 | `network_interface` | str \| None | `None` | Interface whose IP address frontends use to reach workers (e.g. `ib0`). Unset resolves the hostname. |
 | `visible_devices_env` | str | `'CUDA_VISIBLE_DEVICES'` | GPU-subset mask passed to workers; ROCm clusters use ROCR_VISIBLE_DEVICES. |
+| `port_registry_dir` | str \| None | `None` | Directory on a filesystem every node shares where each job records the ports it binds, so a job whose nodes another job also uses allocates around them. Unset: no registry. |
+| `reserved_port_ranges` | list[str] | `[]` | Inclusive port ranges ("LOW-HIGH") no allocated port may fall in, e.g. the kernel's ephemeral range ("32768-60999", net.ipv4.ip_local_port_range) or ports a site daemon uses. |
 | `default_gpu_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `<lambda>()` | Recipe exporter settings win. Explicit null disables the GPU default only. |
 | `use_gpus_per_node_directive` | bool | `True` | Emit `#SBATCH --gpus-per-node`. Set false on clusters that reject or ignore it. |
 | `use_segment_sbatch_directive` | bool | `True` | Emit `#SBATCH --segment` so the allocation stays inside one topology segment (NVL72 domain). |
