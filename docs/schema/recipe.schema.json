@@ -1570,9 +1570,20 @@
       "additionalProperties": false,
       "properties": {
         "enabled": {
-          "type": "boolean",
-          "description": "Additional analytics (including nsys); does not gate Dynamo lifecycle tracing or Tachometer. Default: False.",
-          "default": false
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "enum": [
+                "default",
+                "full",
+                "minimal"
+              ]
+            }
+          ],
+          "description": "Observability mode: ``default`` (Tachometer and Dynamo lifecycle tracing), ``full`` or ``true`` (plus analytics and nsys), ``minimal`` or ``false`` (none of them; Dynamo logs at warn). Default: ``default``.",
+          "default": "default"
         },
         "enable_otel": {
           "type": "boolean",
@@ -1593,14 +1604,14 @@
         },
         "tachometer": {
           "$ref": "#/$defs/TachometerConfig",
-          "description": "Native Tachometer capture configuration. Collects on every run, independent of ``enabled``, unless ``tachometer.enabled: false`` (see :class:`TachometerConfig`)."
+          "description": "Native Tachometer capture configuration. Collects unless the mode is ``minimal``; an explicit ``tachometer.enabled`` wins (see :class:`TachometerConfig`)."
         },
         "nsys": {
           "$ref": "#/$defs/NsysObservabilityConfig",
-          "description": "Automatic Nsight Systems capture, enabled with the master switch."
+          "description": "Automatic Nsight Systems capture, on in ``full`` mode."
         }
       },
-      "description": "Optional analytics capture and external OTEL export."
+      "description": "Observability capture mode and external OTEL export."
     },
     "OutputConfig": {
       "type": "object",
@@ -3372,7 +3383,7 @@
               "type": "null"
             }
           ],
-          "description": "None (default) collects on every run; false opts out.",
+          "description": "None (default) collects unless observability.enabled is minimal; true or false decides outright.",
           "default": null
         },
         "binary_path": {
@@ -3466,7 +3477,7 @@
           "default": null
         }
       },
-      "description": "Native Tachometer collection for an observability-enabled run."
+      "description": "Native Tachometer collection (on unless ``observability.enabled`` is minimal)."
     },
     "TcpProbe": {
       "type": "object",

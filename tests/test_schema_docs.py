@@ -249,7 +249,7 @@ def test_required_field_renders_as_required() -> None:
 
 def test_docstring_attributes_become_descriptions() -> None:
     rows = {row.key: row for row in field_docs(ObservabilityConfig)}
-    assert "does not gate Dynamo lifecycle tracing" in rows["enabled"].description
+    assert "Observability mode" in rows["enabled"].description
 
 
 def test_field_comments_become_descriptions() -> None:

@@ -367,11 +367,12 @@ class TestFrontendProperties:
             dynamo=SimpleNamespace(request_plane="nats", event_plane="zmq"),
             infra_dedicated_node=False,
             nats_max_payload_mb=None,
+            observability=SimpleNamespace(lifecycle_tracing=True),
         )
         implied = get_frontend("dynamo").implied_services(dynamo_config)
         assert [(entry.service.name, entry.service.type, entry.reason) for entry in implied] == [
             ("etcd", "etcd", "frontend.type dynamo"),
-            ("otel-collector", "otel-collector", "Dynamo lifecycle tracing (independent of observability.enabled)"),
+            ("otel-collector", "otel-collector", "Dynamo lifecycle tracing (observability.enabled default or full)"),
             ("nats", "nats", "dynamo.request_plane nats"),
         ]
         for frontend_type in ("vllm", "sglang", "sglang-router", "trtllm_serve", "vllm-router"):
@@ -524,6 +525,7 @@ class MockObservabilityConfig:
 
     enable_otel: bool = False
     otel_endpoint: str | None = None
+    tachometer_enabled: bool = True
 
 
 @dataclass
@@ -548,6 +550,7 @@ def test_sglang_router_starts_only_after_workers_are_healthy(tmp_path, ready):
         backend=SimpleNamespace(type="sglang"),
         frontend=MockFrontendConfig(),
         health_check=SimpleNamespace(interval_seconds=1, max_attempts=100),
+        observability=MockObservabilityConfig(),
     )
     runtime = SimpleNamespace(
         network_interface="fabric0",

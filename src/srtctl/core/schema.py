@@ -1775,11 +1775,12 @@ DEFAULT_PROCESS_EXPORTER = TelemetryExporterConfig(
 
 @dataclass(frozen=True)
 class TachometerConfig:
-    """Native Tachometer collection for an observability-enabled run.
+    """Native Tachometer collection (on unless ``observability.enabled`` is minimal).
 
-    ``enabled`` is tri-state: ``None`` (the default) means ON — every run
-    collects Tachometer data with no ``tachometer:`` block at all; an
-    explicit ``false`` opts out. Note that without ``observability.enabled``
+    ``enabled`` is tri-state: ``None`` (the default) follows
+    ``observability.enabled`` — every run collects Tachometer data with no
+    ``tachometer:`` block at all unless the mode is ``minimal``; an explicit
+    ``true`` or ``false`` decides outright. Note that outside ``full`` mode
     the TRT-LLM worker endpoints may have no engine metrics to serve (the
     observability expansion is what turns their content on); the frontend
     and the exporters are always worth capturing.
@@ -1792,7 +1793,7 @@ class TachometerConfig:
     power-telemetry sharing validation and the --bash gate key on.
     """
 
-    # None (default) collects on every run; false opts out.
+    # None (default) collects unless observability.enabled is minimal; true or false decides outright.
     enabled: bool | None = None
     # Scraper command or path on the compute nodes.
     binary_path: str = "tachometer-scraper"
@@ -1851,7 +1852,7 @@ class TachometerConfig:
 class NsysObservabilityConfig:
     """Automatic NVTX tracing and CPU sampling of workers and Dynamo frontends.
 
-    Enabled by ``observability.enabled`` unless explicitly opted out. An
+    Enabled by ``observability.enabled: full`` unless explicitly opted out. An
     explicit top-level ``profiling`` mode takes precedence over this preset.
     By default the benchmark starts capture after warmup and stops it when
     measured work finishes. ``including_startup`` captures from process launch
@@ -1889,13 +1890,45 @@ class NsysObservabilityConfig:
     Schema: ClassVar[type[Schema]] = Schema
 
 
+class ObservabilityMode(str, Enum):
+    """Resolved ``observability.enabled``: ``true`` is ``full`` and ``false`` is ``minimal``."""
+
+    FULL = "full"
+    DEFAULT = "default"
+    MINIMAL = "minimal"
+
+    @classmethod
+    def resolve(cls, enabled: object) -> "ObservabilityMode":
+        """Mode for a recipe value; booleans take marshmallow's spellings (``on``, ``yes``, ...)."""
+        if enabled is None:
+            return cls.DEFAULT
+        if isinstance(enabled, str) and enabled in {mode.value for mode in cls}:
+            return cls(enabled)
+        return cls.FULL if fields.Boolean().deserialize(enabled) else cls.MINIMAL
+
+
 @dataclass(frozen=True)
 class ObservabilityConfig:
-    """Optional analytics capture and external OTEL export.
+    """Observability capture mode and external OTEL export.
 
-    Dynamo stacks always enable native request-lifecycle OTEL tracing to a
-    managed local collector, independent of ``enabled`` and ``enable_otel``.
-    Other frontend stacks do not receive that collector or its environment.
+    ``enabled`` selects one of three modes (:class:`ObservabilityMode`):
+
+    * ``default`` (unset): Tachometer and its exporters collect, and Dynamo
+      stacks trace the request lifecycle to a managed local collector. No
+      analytics expansion and no automatic nsys.
+    * ``full`` (or ``true``): ``default`` plus the analytics expansion below,
+      automatic nsys and the host sampler.
+    * ``minimal`` (or ``false``): only what the run needs to produce and report
+      its result. Tachometer and its exporters, Dynamo lifecycle tracing and its
+      collector, automatic nsys and the host sampler are off, and Dynamo workers
+      and frontends default to ``DYN_LOG=warn``. srtctl sets no engine log
+      level; engine metrics publication, power telemetry, reporting and explicit
+      ``profiling`` are unchanged.
+
+    An explicit per-feature setting wins in every mode: ``tachometer.enabled``,
+    a declared ``otel-collector`` service, ``enable_otel`` with an endpoint,
+    top-level ``profiling``, and ``DYN_LOG`` in the recipe environment. Other
+    frontend stacks never receive the lifecycle collector or its environment.
 
     When enable_otel is True, OTEL environment variables (DYN_LOGGING_JSONL,
     OTEL_EXPORT_ENABLED, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, OTEL_SERVICE_NAME)
@@ -1905,7 +1938,7 @@ class ObservabilityConfig:
     dynamo-decode, dynamo-frontend) and can be overridden per-component via
     roles.<role>.env or frontend.env.
 
-    ``enabled`` configures server-side analytics capture. It expands (at config-load time,
+    ``full`` configures server-side analytics capture. It expands (at config-load time,
     via :func:`srtctl.core.config.expand_observability`) into:
 
     * ``enable_iter_perf_stats`` + ``return_perf_metrics`` on every engine
@@ -1938,16 +1971,17 @@ class ObservabilityConfig:
     ``BenchmarkStageMixin``.)
 
     Attributes:
-        enabled: Additional analytics (including nsys); does not gate Dynamo
-            lifecycle tracing or Tachometer. Default: False.
+        enabled: Observability mode: ``default`` (Tachometer and Dynamo lifecycle
+            tracing), ``full`` or ``true`` (plus analytics and nsys), ``minimal``
+            or ``false`` (none of them; Dynamo logs at warn). Default: ``default``.
         enable_otel: Export traces to an explicit endpoint and enable JSONL logs.
             Not needed for default Dynamo lifecycle capture. Requires
             otel_endpoint to be set. Default: False.
         otel_endpoint: Explicit OTEL trace endpoint (e.g. "http://10.0.0.1:4317").
             Used with enable_otel; overrides Dynamo's local trace destination.
-        nsys: Automatic Nsight Systems capture, enabled with the master switch.
-        tachometer: Native Tachometer capture configuration. Collects on every run,
-            independent of ``enabled``, unless ``tachometer.enabled: false`` (see
+        nsys: Automatic Nsight Systems capture, on in ``full`` mode.
+        tachometer: Native Tachometer capture configuration. Collects unless the
+            mode is ``minimal``; an explicit ``tachometer.enabled`` wins (see
             :class:`TachometerConfig`).
 
     The retired ``scrape_metrics`` / ``scrape_interval_seconds`` /
@@ -1955,7 +1989,7 @@ class ObservabilityConfig:
     at load like any unknown key.
     """
 
-    enabled: bool = False
+    enabled: bool | Literal["default", "full", "minimal"] = "default"
     enable_otel: bool = False
     otel_endpoint: str | None = None
 
@@ -1965,15 +1999,33 @@ class ObservabilityConfig:
     Schema: ClassVar[type[Schema]] = Schema
 
     @property
+    def mode(self) -> ObservabilityMode:
+        """Resolved ``enabled``; readers use this, never the raw value."""
+        return ObservabilityMode.resolve(self.enabled)
+
+    @property
     def tachometer_enabled(self) -> bool:
         """Resolved Tachometer enablement (tri-state ``tachometer.enabled``).
 
         Tachometer is on by default for every run — server-side capture is
         not an opt-in special occasion, and its cost is bounded (1 Hz,
-        best-effort, complement of the client's polling). ``enabled: false``
-        opts out; ``observability.enabled`` no longer gates it.
+        best-effort, complement of the client's polling). An unset
+        ``tachometer.enabled`` follows the mode (off only in ``minimal``);
+        an explicit value wins.
         """
-        return True if self.tachometer.enabled is None else self.tachometer.enabled
+        if self.tachometer.enabled is not None:
+            return self.tachometer.enabled
+        return self.mode is not ObservabilityMode.MINIMAL
+
+    @property
+    def lifecycle_tracing(self) -> bool:
+        """Imply Dynamo's lifecycle collector and its env; a declared ``otel-collector`` decides for itself."""
+        return self.mode is not ObservabilityMode.MINIMAL
+
+    @property
+    def dynamo_log(self) -> str | None:
+        """``DYN_LOG`` this mode gives Dynamo workers and frontends; ``None`` keeps srtctl's own default."""
+        return MINIMAL_DYN_LOG if self.mode is ObservabilityMode.MINIMAL else None
 
 
 @dataclass(frozen=True)
@@ -2109,13 +2161,22 @@ def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[s
     """
     if not observability.enable_otel or not observability.otel_endpoint:
         return {}
-    return {
+    env = {
         "DYN_LOGGING_JSONL": "1",
         "OTEL_EXPORT_ENABLED": "1",
         "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": observability.otel_endpoint,
         "OTEL_SERVICE_NAME": f"dynamo-{component}",
     }
+    if not observability.lifecycle_tracing:
+        # Minimal mode implies no local collector, so the explicit export carries the lifecycle
+        # spans the other modes get from lifecycle_otel_env; Dynamo exports them past DYN_LOG.
+        env["DYN_LIFECYCLE_TRACE_ENABLED"] = "1"
+    return env
 
+
+# DYN_LOG for Dynamo workers and the Dynamo frontend in ``minimal`` mode; recipe env
+# still wins. DYN_LOG sets both Dynamo's Rust log filter and its Python logger level.
+MINIMAL_DYN_LOG = "warn"
 
 # Env that makes Dynamo emit one JSONL ``SPAN_CLOSED`` line per closed span on
 # the component's stdout.
@@ -3979,7 +4040,11 @@ class SrtConfig:
     @property
     def observability_nsys_enabled(self) -> bool:
         """Use the automatic preset only when no explicit profiler owns the run."""
-        return self.observability.enabled and self.observability.nsys.enabled and not self.profiling.enabled
+        return (
+            self.observability.mode is ObservabilityMode.FULL
+            and self.observability.nsys.enabled
+            and not self.profiling.enabled
+        )
 
     def _validate_observability(self):
         """Validate automatic profiling and Tachometer collection."""

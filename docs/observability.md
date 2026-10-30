@@ -4,8 +4,38 @@ The `observability:` preset (nsys, OTEL, Tachometer) and the `telemetry:` provid
 
 ## observability
 
-**Dynamo request-lifecycle OTel tracing is on by default**, including when
-`observability.enabled: false` or the entire block is omitted. It applies only to
+`observability.enabled` selects one of three modes. `true` and `full` are the same
+mode, and so are `false` and `minimal`:
+
+| Capture | `default` (unset) | `full` (`true`) | `minimal` (`false`) |
+|---|---|---|---|
+| Tachometer scraper and DCGM, node and process exporters | on | on | off |
+| Dynamo lifecycle tracing (`otel-collector` service and its OTEL env) | on | on | off |
+| Automatic nsys on frontends and workers | off | on | off |
+| Span-event logs, request trace, TRT-LLM iteration statistics, host sampler | off | on | off |
+| `DYN_LOG` on Dynamo workers | `info,...push_handler=warn` | `debug` | `warn` |
+| `DYN_LOG` on the Dynamo frontend | Dynamo's default (`info`) | `debug` | `warn` |
+
+An explicit per-feature setting wins in every mode: `observability.tachometer.enabled`,
+a declared `otel-collector` service, `enable_otel` with `otel_endpoint`, top-level
+`profiling`, `nsys.enabled: false`, and `DYN_LOG` in `environment`, `roles.<role>.env`
+or `frontend.env`. In `minimal` mode, `enable_otel` with `otel_endpoint` exports the
+lifecycle spans too (there is no local collector), while JSONL logs follow `DYN_LOG=warn`.
+
+`minimal` keeps engine metrics publication, power `telemetry`, `reporting`, resource
+snapshots and fingerprints, and the benchmark client's `AIPERF_SERVER_METRICS_URLS`
+polling, whose output is part of the client's own result artifacts and whose URL list
+custom clients read. The SGLang Model Gateway's Prometheus listener, which only Tachometer
+reads, is not opened. srtctl sets no engine log level, and logs of non-Dynamo frontends
+(for example the llm-d Envoy access log) are unchanged. `DYN_LOG` also sets the Python
+root logger level inside each Dynamo process; vLLM follows `VLLM_LOGGING_LEVEL`, and
+SGLang's scheduler processes configure their own logging, so their `#running-req` lines
+still reach the sa-bench rollup. `srtctl dry-run` shows the mode and, in `minimal`, what is
+off. [examples/features/observability-minimal.yaml](https://github.com/NVIDIA/srt-slurm/blob/main/examples/features/observability-minimal.yaml)
+is a `minimal` recipe.
+
+**Dynamo request-lifecycle OTel tracing is on by default**, including when the
+`observability` block is omitted, and in `full` mode; `minimal` mode drops it. It applies only to
 the Dynamo stack (`frontend.type: dynamo`). No `enable_otel`, `otel_endpoint`, or
 `DYN_LIFECYCLE_TRACE_ENABLED` recipe setting is needed.
 
@@ -22,20 +52,21 @@ must include it. The default lifecycle mode is Dynamo's `core` mode.
 `otelcol-contrib` host binary. A missing binary fails startup with a setup hint.
 An air-gapped installation can set `services[name: otel-collector].options.binary`
 to a shared executable; `options.port` changes both its listener and the automatic
-endpoint. `srtctl dry-run` shows the implied collector regardless of the analytics
-level. [DSight](dsight.md) discovers the saved OTLP JSONL when building the report.
+endpoint. `srtctl dry-run` shows the implied collector in the `default` and `full`
+modes. [DSight](dsight.md) discovers the saved OTLP JSONL when building the report.
 
 Explicit recipe environment still wins. The existing `enable_otel: true` plus
 `otel_endpoint` redirects traces to that external endpoint, so those traces are
 not saved locally. To opt out of automatic collection, declare the
 `otel-collector` service with `enabled: false`; this also removes its default
-lifecycle/export environment. Neither option changes other stacks' defaults.
+lifecycle/export environment. In `minimal` mode, a declared and enabled
+`otel-collector` service keeps the collector and its environment. Neither option changes other stacks' defaults.
 
-Tachometer collection is **on by default for every run** (no configuration needed; `observability.tachometer.enabled: false` opts out). `observability.enabled` turns on the server metrics *content* (the TRT-LLM publish flag and engine statistics) and the trace surfaces:
+Tachometer collection is **on by default** (no configuration needed; `observability.tachometer.enabled: false` opts out, and `minimal` mode turns it off unless `tachometer.enabled: true`). `full` mode turns on the server metrics *content* (TRT-LLM engine statistics) and the trace surfaces:
 
 ```yaml
 observability:
-  enabled: true
+  enabled: full
 ```
 
 The capture window aligns with the load, the same window the benchmark client's own `AIPERF_SERVER_METRICS_URLS` polling covers: on benchmark runs the scraper starts once the server passes the health gate (bring-up produces only dead-endpoint noise while workers load) and is stopped **gracefully** when the client exits, with a configurable grace period for compacting `final.parquet`. Runs without a discrete load window (serve-only, `manual`, eval-only) capture the whole serve session as before. Signal handlers and the critical-process monitor still use the process registry's existing teardown budget; the benchmark shutdown grace does not override those paths.
@@ -44,9 +75,9 @@ Tachometer scrapes all configured worker, frontend, DCGM, and node-exporter endp
 
 The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape_metrics`, `scrape_interval_seconds`, or `scrape_output` fails validation at submit time.
 
-Fields: [ObservabilityConfig](schema-reference.md#observabilityconfig), [NsysObservabilityConfig](schema-reference.md#nsysobservabilityconfig). `tachometer.enabled: null` (the default) collects on every run, independent of `observability.enabled`; explicit `false` opts out. See [Profiling](profiling.md#observability-capture) for the nsys settings.
+Fields: [ObservabilityConfig](schema-reference.md#observabilityconfig), [NsysObservabilityConfig](schema-reference.md#nsysobservabilityconfig). `tachometer.enabled: null` (the default) collects unless the mode is `minimal`; an explicit `true` or `false` decides in every mode. See [Profiling](profiling.md#observability-capture) for the nsys settings.
 
-`observability.enabled: true` also enables nsys with NVTX tracing and CPU sampling
+`full` mode also enables nsys with NVTX tracing and CPU sampling
 on every frontend and worker process/rank.
 Its default `nsys.capture_window: measured_workload` starts collection after warmup and
 stops it when the measured workload finishes. Supported bundled runners call
@@ -66,7 +97,7 @@ Tachometer collects every worker rank, frontend, DCGM, node, and process metrics
 
 ```yaml
 observability:
-  enabled: true
+  enabled: full
   tachometer:
     enabled: true
     collect_interval_ms: 1000
@@ -102,11 +133,11 @@ Every exporter block ([TelemetryExporterConfig](schema-reference.md#telemetryexp
 
 `make setup ARCH=<compute_arch>` downloads and checksum-verifies the matching Tachometer binary from the latest srt-slurm release and installs the process-exporter binary for the same arch. The scraper and the process exporter run as native `srun` processes; the DCGM and node exporters remain containerized on worker nodes. Run `make tachometer-scraper` to build the scraper from source instead. The process-exporter passthrough filter and node process-state/NUMA-label preservation require a scraper built from this revision or a release containing it; rebuild the scraper when using an older downloaded binary.
 
-The pressure collector reports PSI only when the host exposes the corresponding `/proc/pressure` files; missing metrics indicate unavailable data. NUMA memory and allocation metrics retain the exported `node` label as `numa_node` in raw metric names, separately from host metadata. With `observability.enabled: true`, the existing local host sampler also records cumulative PSI stall totals in microseconds in its `psi` JSONL field. That optional sampler covers the sweep/orchestrator host only; it does not extend exporter placement to dedicated frontend or client nodes. Collector overhead has not been measured for this change.
+The pressure collector reports PSI only when the host exposes the corresponding `/proc/pressure` files; missing metrics indicate unavailable data. NUMA memory and allocation metrics retain the exported `node` label as `numa_node` in raw metric names, separately from host metadata. In `full` mode, the existing local host sampler also records cumulative PSI stall totals in microseconds in its `psi` JSONL field. That optional sampler covers the sweep/orchestrator host only; it does not extend exporter placement to dedicated frontend or client nodes. Collector overhead has not been measured for this change.
 
 Tachometer writes its Parquet stream under `<log_dir>/<storage_subdir>/raw/scrape/` (the leaf is created by the scraper itself; srtctl pre-creates only the parent, because the scraper refuses a pre-existing storage directory), compacting to `final.parquet` there on shutdown. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes. Rows carry an epoch `timestamp_ns` column, so they join directly with AIPerf records and Dynamo spans.
 
-The scraper runs as a best-effort process: if it dies (or the binary is missing at runtime), the benchmark continues and the loss is visible in `tachometer.out` and the sweep log. `srtctl validate-setup` still fails fast at submit time when `bin/tachometer-scraper` is absent.
+The scraper runs as a best-effort process: if it dies (or the binary is missing at runtime), the benchmark continues and the loss is visible in `tachometer.out` and the sweep log. `srtctl validate-setup` still fails fast at submit time when `bin/tachometer-scraper` is absent and the recipe's Tachometer is on.
 
 ## telemetry
 

@@ -26,9 +26,17 @@ DEFAULT_OTEL_BINARY = "configs/otelcol-contrib"
 OTEL_CONFIG_NAME = "otel-collector.yaml"
 
 
-def lifecycle_otel_env(services: Sequence[ServiceConfig], head_ip: str, component: str) -> dict[str, str]:
-    """Defaults for Dynamo launches; explicit recipe environment wins at the caller."""
+def lifecycle_otel_env(
+    services: Sequence[ServiceConfig], head_ip: str, component: str, *, implied: bool
+) -> dict[str, str]:
+    """Defaults for Dynamo launches; explicit recipe environment wins at the caller.
+
+    ``implied`` is ``observability.lifecycle_tracing``, the same gate the Dynamo frontend uses to
+    imply the collector, so the env and the collector agree; a declared collector decides for itself.
+    """
     service = next((s for s in services if s.name == OTEL_SERVICE_NAME), None)
+    if service is None and not implied:
+        return {}
     if service is not None and (not service.enabled or service.type != "otel-collector"):
         return {}
     port = _port(service) if service is not None else OTEL_GRPC_PORT

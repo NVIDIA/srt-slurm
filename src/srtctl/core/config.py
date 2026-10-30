@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from marshmallow import ValidationError
 from ruamel.yaml.comments import CommentedMap
 
 from .lockfile import verify_lock_integrity
@@ -823,16 +824,23 @@ def expand_observability(cfg: dict) -> dict:
     Defaults preserve explicit recipe values. Observability leaves publication
     settings unchanged; the legacy combined flag requires an explicit true.
 
-    No-op unless ``observability.enabled`` is truthy.
+    No-op unless ``observability.enabled`` resolves to ``full``.
     """
     from srtctl.core.schema import (
         ANALYTICS_ENGINE_CONFIG,
         ANALYTICS_REQUEST_TRACE_ENV,
         ANALYTICS_SPAN_ENV,
+        ObservabilityMode,
     )
 
     observability = cfg.get("observability")
-    if not isinstance(observability, dict) or not observability.get("enabled"):
+    if not isinstance(observability, dict):
+        return cfg
+    try:
+        mode = ObservabilityMode.resolve(observability.get("enabled"))
+    except ValidationError:
+        return cfg  # the schema load reports the invalid value
+    if mode is not ObservabilityMode.FULL:
         return cfg
 
     # --- traces leg: SPAN_CLOSED lines on every worker role and the frontend ----
@@ -867,17 +875,17 @@ def expand_observability(cfg: dict) -> dict:
     ]
     if opted_out:
         # Also reached by a saved or locked recipe: the load step bakes the
-        # resolved engine keys in, so a later observability.enabled: true
+        # resolved engine keys in, so a later observability.enabled: full
         # meets an explicit false rather than an omission.
         logger.warning(
-            "observability.enabled but %s is false — the iteration-level "
+            "observability.enabled: full but %s is false — the iteration-level "
             "trtllm_kv_cache_* gauges (enable_iter_perf_stats) and per-request histograms "
             "(return_perf_metrics) need true; remove the explicit false to get them back.",
             ", ".join(opted_out),
         )
 
     logger.info(
-        "observability.enabled: expanded span-event env (every role and the frontend), and per-iteration engine stats"
+        "observability.enabled: full: expanded span-event env (every role and the frontend), and per-iteration engine stats"
     )
     return cfg
 
