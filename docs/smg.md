@@ -13,6 +13,7 @@ Upstream references below are pinned to SMG
 | Topology | Backends | What srtctl launches |
 | --- | --- | --- |
 | Aggregated | any engine whose workers serve HTTP (`sglang`, `vllm`, `trtllm`, ...) | `smg launch --worker-urls <url> ...` |
+| Aggregated or prefill/decode | `tokenspeed` | Headless engines dialing gateway-owned TCP ZMQ sockets; see [TokenSpeed](tokenspeed.md#smg) |
 | Prefill/decode | `sglang` | `smg launch --pd-disaggregation --prefill <url> <bootstrap-port> --decode <url>` |
 | Prefill/decode | `vllm` with `grpc: true` and `connector: nixl` | `smg launch --pd-disaggregation --prefill grpc://<host:port> ... --decode grpc://<host:port>` |
 
@@ -163,6 +164,6 @@ srtctl advertises a worker over HTTP unless its backend reports gRPC for the rol
 (`Backend.is_grpc_mode`: SGLang `grpc-mode: true`, vLLM `grpc: true`), and
 then as `grpc://`. Before SMG starts, a gRPC worker is probed by connecting to its
 port (vLLM's gRPC server binds it only once the engine is up), an HTTP worker on `/health`.
-SMG's ZMQ and encode (EPD) worker modes, its Kubernetes service discovery, mesh, and the cloud-provider, history, MCP
+ZMQ workers are supported for TokenSpeed as described above. Encode (EPD), Kubernetes service discovery, mesh, and the cloud-provider, history, MCP
 and WASM features are not configured by srtctl; `frontend.args` can still pass any
 `smg launch` flag that needs no srtctl-managed process or port.

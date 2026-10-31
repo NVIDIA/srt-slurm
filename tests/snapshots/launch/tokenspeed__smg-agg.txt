@@ -21,7 +21,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python3 -m smg_grpc_servicer.tokenspeed --model /model --served-model-name Qwen/Qwen3-0.6B --host 127.0.0.1 --port 10000 --dist-init-addr 127.0.0.1:8300 --nnodes 1 --node-rank 0 --gpu-memory-utilization 0.5 --max-model-len 4096 --tensor-parallel-size 1
+    python3 -m tokenspeed.cli serve --headless --model /model --served-model-name Qwen/Qwen3-0.6B --host 127.0.0.1 --port 10000 --dist-init-addr 127.0.0.1:8300 --nnodes 1 --node-rank 0 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 31000 --zmq-engine-index 0 --metrics-port 6800 --attn-tp-size 1 --enable-metrics --gpu-memory-utilization 0.5 --max-model-len 4096 --metrics-host 0.0.0.0
 
 ## agg_1_node-01
 nodelist: node-01
@@ -42,7 +42,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python3 -m smg_grpc_servicer.tokenspeed --model /model --served-model-name Qwen/Qwen3-0.6B --host 127.0.0.1 --port 11024 --dist-init-addr 127.0.0.1:8307 --nnodes 1 --node-rank 0 --gpu-memory-utilization 0.5 --max-model-len 4096 --tensor-parallel-size 1
+    python3 -m tokenspeed.cli serve --headless --model /model --served-model-name Qwen/Qwen3-0.6B --host 127.0.0.1 --port 11024 --dist-init-addr 127.0.0.1:8307 --nnodes 1 --node-rank 0 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 31001 --zmq-engine-index 0 --metrics-port 6801 --attn-tp-size 1 --enable-metrics --gpu-memory-utilization 0.5 --max-model-len 4096 --metrics-host 0.0.0.0
 
 ## smg_0
 nodelist: node-01
@@ -54,7 +54,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 command: |
-    smg launch --worker-urls grpc://127.0.0.1:10000 grpc://127.0.0.1:11024 --host 0.0.0.0 --port 8000 --prometheus-port 29000
+    smg launch --worker-urls tcp://127.0.0.1:31000 tcp://127.0.0.1:31001 --host 0.0.0.0 --port 8000 --prometheus-port 29000 --backend tokenspeed --model /model --model-alias Qwen/Qwen3-0.6B=/model
 
 ## service_dcgm-exporter_node-01
 nodelist: node-01

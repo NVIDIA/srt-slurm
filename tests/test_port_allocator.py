@@ -29,7 +29,9 @@ from srtctl.ports import (
     PROXY_PORTS,
     SIDECAR_GRPC_PORTS,
     SYS_PORTS,
+    TOKENSPEED_METRICS_PORTS,
     TOKENSPEED_PORTS,
+    TOKENSPEED_ZMQ_PORTS,
     TRTLLM_DIST_INIT_PORTS,
     VLLM_SCAN_PORTS,
     PortKind,
@@ -98,6 +100,8 @@ class TestNodePortAllocator:
             MORIIO_NOTIFY_PORTS,
             TRTLLM_DIST_INIT_PORTS,
             TOKENSPEED_PORTS,
+            TOKENSPEED_ZMQ_PORTS,
+            TOKENSPEED_METRICS_PORTS,
             SIDECAR_GRPC_PORTS,
             PROXY_PORTS,
         ]
@@ -145,6 +149,7 @@ def test_example_topologies_bind_no_port_twice(recipe: Path):
             "moriio_notify": process.moriio_notify_port,
             "trtllm_dist_init": process.trtllm_dist_init_port,
             "tokenspeed": process.tokenspeed_port,
+            "tokenspeed_metrics": process.tokenspeed_metrics_port,
         }
         for kind, port in ports.items():
             if port is not None:
@@ -175,6 +180,10 @@ def test_example_topologies_bind_no_port_twice(recipe: Path):
         if p.is_leader and p.dist_init_port is not None and p.engine_id == 0
     )
     assert all(count == 1 for count in dist_init_by_leader.values()), f"{recipe}: dist_init_port repeats on a node"
+    # SMG binds all ZMQ handshakes on one frontend node, even for remote endpoints.
+    zmq_by_endpoint = {(p.endpoint_mode, p.endpoint_index): p.tokenspeed_zmq_port for p in processes}
+    zmq_ports = [port for port in zmq_by_endpoint.values() if port is not None]
+    assert len(zmq_ports) == len(set(zmq_ports)), f"{recipe}: TokenSpeed handshakes repeat on the gateway"
 
 
 @pytest.mark.parametrize(

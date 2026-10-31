@@ -1,12 +1,8 @@
-# TokenSpeed disaggregated prefill/decode behind the Shepherd Model Gateway (SMG).
-#
-# One TP1 prefill and one TP1 decode gRPC engine sharing a node (`nodes: colocate`).
-# srtctl passes SMG `--prefill grpc://<host:port> <bootstrap-port> --decode grpc://<host:port>`;
-# SMG mints a bootstrap room per request and sends both workers the prefill's Mooncake
-# bootstrap address, and the decode worker pulls the KV cache from the prefill worker.
-# srtctl adds `--disaggregation-mode` and the prefill bootstrap port. See docs/tokenspeed.md.
-#
-# Aliases (`qwen3-0.6b`, `tokenspeed`) resolve through srtslurm.yaml; see examples/README.md.
+# TokenSpeed headless ZMQ workers behind one SMG gateway on the head node.
+# Use tokenspeed 0.1.1.post20261101 with its pinned tokenspeed-smg dependencies.
+# The gateway binds TCP handshake sockets; the workers dial them and export
+# metrics on separate HTTP ports. See docs/tokenspeed.md.
+# Aliases resolve through srtslurm.yaml; see examples/README.md.
 
 schema: 2
 name: "qwen3-0.6b-tokenspeed-smg-disagg"
@@ -37,7 +33,8 @@ roles:
       PYTHONUNBUFFERED: "1"
     args:
       served-model-name: "Qwen/Qwen3-0.6B"
-      tensor-parallel-size: 1
+      attn-tp-size: 1
+      enable-metrics: true
       gpu-memory-utilization: 0.5
       max-model-len: 4096
   decode:
@@ -48,7 +45,8 @@ roles:
       PYTHONUNBUFFERED: "1"
     args:
       served-model-name: "Qwen/Qwen3-0.6B"
-      tensor-parallel-size: 1
+      attn-tp-size: 1
+      enable-metrics: true
       gpu-memory-utilization: 0.5
       max-model-len: 4096
 

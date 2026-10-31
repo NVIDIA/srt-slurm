@@ -48,7 +48,6 @@ env_to_set:
     OTEL_EXPORT_ENABLED: 1
     OTEL_SERVICE_NAME: dynamo-prefill
     PYTHONUNBUFFERED: 1
-    TOKENSPEED_SKIP_GRPC_WARMUP: 1
 bash_preamble: |
     ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
@@ -79,7 +78,6 @@ env_to_set:
     OTEL_EXPORT_ENABLED: 1
     OTEL_SERVICE_NAME: dynamo-decode
     PYTHONUNBUFFERED: 1
-    TOKENSPEED_SKIP_GRPC_WARMUP: 1
 bash_preamble: |
     ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>

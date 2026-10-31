@@ -60,6 +60,8 @@ TRTLLM_DIST_INIT_PORT_BASE = 29500
 # of the engine's own NCCL free-port scan, which starts 100 to 1000 ports above it.
 TOKENSPEED_PORT_BASE = 10000
 TOKENSPEED_PORT_STRIDE = 1024
+TOKENSPEED_ZMQ_PORT_BASE = 31000
+TOKENSPEED_METRICS_PORT_BASE = 6800
 
 # Mooncake transfer-engine ports (shared by SGLang and vLLM backends).
 MOONCAKE_MASTER_PORT = 8700
@@ -163,3 +165,6 @@ MORIIO_HANDSHAKE_PORTS = PortKind("moriio_handshake", VLLM_MORIIO_HANDSHAKE_PORT
 MORIIO_NOTIFY_PORTS = PortKind("moriio_notify", VLLM_MORIIO_NOTIFY_PORT_BASE)
 TRTLLM_DIST_INIT_PORTS = PortKind("trtllm_dist_init", TRTLLM_DIST_INIT_PORT_BASE)
 TOKENSPEED_PORTS = PortKind("tokenspeed", TOKENSPEED_PORT_BASE, TOKENSPEED_PORT_STRIDE, per_node=True)
+# SMG binds one handshake per endpoint on the frontend node, including remote workers.
+TOKENSPEED_ZMQ_PORTS = PortKind("tokenspeed_zmq", TOKENSPEED_ZMQ_PORT_BASE)
+TOKENSPEED_METRICS_PORTS = PortKind("tokenspeed_metrics", TOKENSPEED_METRICS_PORT_BASE, per_node=True)

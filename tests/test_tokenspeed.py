@@ -12,12 +12,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import tomli
 import yaml
 from marshmallow import ValidationError
 
 from srtctl.backends import TokenSpeedBackend
 from srtctl.core.config import resolve_config_with_defaults
 from srtctl.core.schema import SrtConfig
+from srtctl.core.topology import NodePortAllocator
+from srtctl.frontends import SMGFrontend
 from srtctl.mock import MockOptions, run_mock_sweep
 
 
@@ -117,9 +120,12 @@ def test_mock_orchestrator_launches_dynamo_tokenspeed_workers(tmp_path: Path) ->
     assert _flag(decode_0, "--dist-init-addr") != _flag(decode_1, "--dist-init-addr")
 
 
-def test_smg_runs_grpc_engines_on_their_tokenspeed_port(tmp_path: Path) -> None:
-    """Behind SMG each worker is the gRPC engine, advertised as grpc:// on its --port."""
+def test_smg_runs_headless_engines_on_gateway_zmq_sockets(tmp_path: Path) -> None:
+    """Remote and colocated P/D workers dial distinct gateway sockets and export local metrics."""
     recipe = _recipe(frontend={"type": "smg", "enable_multiple_frontends": False}, dynamo={"install": False})
+    for role in recipe["roles"].values():
+        role["args"]["enable-metrics"] = True
+        role["args"]["metrics-reporters"] = ["prometheus", "otlp"]
     config_path = tmp_path / "recipe.yaml"
     config_path.write_text(yaml.safe_dump(recipe))
     launches: list[dict[str, Any]] = []
@@ -132,6 +138,7 @@ def test_smg_runs_grpc_engines_on_their_tokenspeed_port(tmp_path: Path) -> None:
             child_duration_s=0.05,
             phase_pause_s=0.01,
             nodelist=("node-01", "node-02", "node-03"),
+            hostname_ips={"node-01": "10.0.0.1", "node-02": "10.0.0.2", "node-03": "10.0.0.3"},
             on_srun=launches.append,
         ),
     )
@@ -141,31 +148,154 @@ def test_smg_runs_grpc_engines_on_their_tokenspeed_port(tmp_path: Path) -> None:
     workers = {
         launch["step_name"]: shlex.split(" ".join(launch["command"]))
         for launch in launches
-        if "smg_grpc_servicer.tokenspeed" in launch["command"]
+        if "tokenspeed.cli" in launch["command"]
     }
     assert sorted(workers) == ["decode_0_node-03", "decode_1_node-03", "prefill_0_node-01", "prefill_0_node-02"]
-    assert all(cmd[:3] == ["python3", "-m", "smg_grpc_servicer.tokenspeed"] for cmd in workers.values())
+    assert all(cmd[:5] == ["python3", "-m", "tokenspeed.cli", "serve", "--headless"] for cmd in workers.values())
 
     router = next(cmd for cmd in commands if cmd[:2] == ["smg", "launch"])
     prefill = workers["prefill_0_node-01"]
-    prefill_url = f"grpc://{_flag(prefill, '--host')}:{_flag(prefill, '--port')}"
-    assert router[router.index("--prefill") + 1 : router.index("--prefill") + 3] == [
-        prefill_url,
-        _flag(prefill, "--disaggregation-bootstrap-port"),
-    ]
+    prefill_url = f"tcp://{_flag(prefill, '--data-parallel-address')}:{_flag(prefill, '--data-parallel-rpc-port')}"
+    assert router[router.index("--prefill") + 1 : router.index("--prefill") + 3] == [prefill_url, "--decode"]
+    assert _flag(prefill, "--disaggregation-bootstrap-port") is not None
+    assert _flag(router, "--backend") == "tokenspeed"
+    assert _flag(router, "--model") == "Qwen/Qwen3-0.6B"
+    assert _flag(router, "--model-alias") == "qwen3=Qwen/Qwen3-0.6B"
     decode_urls = [router[i + 1] for i, token in enumerate(router) if token == "--decode"]
     assert decode_urls == [
-        f"grpc://{_flag(workers[step], '--host')}:{_flag(workers[step], '--port')}"
+        f"tcp://{_flag(workers[step], '--data-parallel-address')}:{_flag(workers[step], '--data-parallel-rpc-port')}"
         for step in ("decode_0_node-03", "decode_1_node-03")
     ]
     # The prefill follower node joins the leader's engine and is not routed.
     assert router.count("--prefill") == 1
-    # A prefill/decode engine cannot serve the bootstrap-less startup warmup.
-    assert all(
-        launch["env_to_set"]["TOKENSPEED_SKIP_GRPC_WARMUP"] == "1"
-        for launch in launches
-        if "smg_grpc_servicer.tokenspeed" in launch["command"]
+    follower = workers["prefill_0_node-02"]
+    assert _flag(follower, "--data-parallel-rpc-port") == _flag(prefill, "--data-parallel-rpc-port")
+    assert _flag(follower, "--dist-init-addr") == _flag(prefill, "--dist-init-addr")
+    assert _flag(follower, "--node-rank") == "1"
+    assert len(set(decode_urls + [prefill_url])) == 3
+    assert len({_flag(cmd, "--data-parallel-address") for cmd in workers.values()}) == 1
+    assert _flag(workers["decode_0_node-03"], "--host") != _flag(prefill, "--data-parallel-address")
+    metrics_urls = set()
+    for cmd in workers.values():
+        assert _flag(cmd, "--zmq-engine-index") == "0"
+        assert _flag(cmd, "--metrics-host") == "0.0.0.0"
+        assert [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--metrics-reporters"] == ["prometheus", "otlp"]
+        metrics_urls.add(f"http://{_flag(cmd, '--host')}:{_flag(cmd, '--metrics-port')}/metrics")
+    assert len(metrics_urls) == len(workers)
+    benchmark = next(launch for launch in launches if launch["command"] == ["bash", "-lc", "echo done"])
+    assert metrics_urls.issubset(set(benchmark["env_to_set"]["AIPERF_SERVER_METRICS_URLS"].split(",")))
+    telemetry = tomli.loads((tmp_path / "outputs/4243/logs/tachometer_config.toml").read_text())
+    assert metrics_urls.issubset({endpoint["url"] for endpoint in telemetry["endpoints"]})
+
+
+@pytest.mark.parametrize("nodes,workers,gpus", [(1, 2, 1), (2, 1, 16)])
+def test_smg_aggregate_launch_matches_engine_handshakes(tmp_path: Path, nodes: int, workers: int, gpus: int) -> None:
+    recipe = _recipe(
+        frontend={"type": "smg", "enable_multiple_frontends": False},
+        roles={"agg": {"nodes": nodes, "workers": workers, "gpus": gpus, "args": {"data-parallel-size": gpus}}},
     )
+    path = tmp_path / "recipe.yaml"
+    path.write_text(yaml.safe_dump(recipe))
+    launches: list[dict[str, Any]] = []
+    assert (
+        run_mock_sweep(
+            config_path=path,
+            output_dir=tmp_path / "outputs/4246",
+            job_id="4246",
+            options=MockOptions(
+                child_duration_s=0.05,
+                phase_pause_s=0.01,
+                nodelist=tuple(f"node-0{i + 1}" for i in range(nodes)),
+                on_srun=launches.append,
+            ),
+        )
+        == 0
+    )
+    commands = [shlex.split(" ".join(launch["command"])) for launch in launches]
+    engines = [cmd for cmd in commands if cmd[:5] == ["python3", "-m", "tokenspeed.cli", "serve", "--headless"]]
+    router = next(cmd for cmd in commands if cmd[:2] == ["smg", "launch"])
+    urls = router[router.index("--worker-urls") + 1 : router.index("--host")]
+    assert len(engines) == nodes * workers
+    assert len(urls) == workers
+    assert set(urls) == {
+        f"tcp://{_flag(cmd, '--data-parallel-address')}:{_flag(cmd, '--data-parallel-rpc-port')}" for cmd in engines
+    }
+    assert all(_flag(cmd, "--data-parallel-size") == str(gpus) for cmd in engines)
+    assert all("--metrics-port" not in cmd for cmd in engines)
+
+
+@pytest.mark.parametrize(
+    "frontend,role_args,message",
+    [
+        ({"enable_multiple_frontends": True}, {}, "one SMG frontend on head"),
+        ({"placement": {"node": "first_decode"}}, {}, "one SMG frontend on head"),
+        ({"args": {"backend": "vllm"}}, {}, "frontend.args.backend: tokenspeed"),
+        ({}, {"data_parallel_rpc_port": 1234}, "data-parallel-rpc-port"),
+        ({}, {"data-parallel-address": "other-host"}, "data-parallel-address"),
+        ({}, {"zmq-engine-index": 1}, "zmq-engine-index"),
+        ({}, {"metrics-port": 1234}, "metrics-port"),
+    ],
+)
+def test_smg_rejects_conflicting_zmq_topology(frontend: dict, role_args: dict, message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        _load(
+            _recipe(
+                frontend={"type": "smg", "enable_multiple_frontends": False, **frontend},
+                roles={"agg": {"nodes": 1, "workers": 1, "args": role_args}},
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        ({}, False),
+        ({"enable_metrics": True}, True),
+        ({"enable-metrics": True, "metrics-reporters": None}, True),
+        ({"enable-metrics": True, "metrics-reporters": ["otlp"]}, False),
+    ],
+)
+def test_smg_allocates_only_enabled_engine_metrics(args: dict, expected: bool) -> None:
+    config = _load(
+        _recipe(
+            frontend={"type": "smg", "enable_multiple_frontends": False},
+            roles={"agg": {"nodes": 1, "workers": 2, "gpus": 1, "args": args}},
+        )
+    )
+    processes = config.worker_processes(
+        config.allocate_worker_endpoints(["node-01"]), port_allocator=NodePortAllocator()
+    )
+    ports = [process.tokenspeed_metrics_port for process in processes]
+    assert all((port is not None) == expected for port in ports)
+    if expected:
+        assert len(set(ports)) == 2
+
+
+def test_smg_preserves_explicit_model_and_tokenizer() -> None:
+    config = _load(
+        _recipe(
+            frontend={
+                "type": "smg",
+                "enable_multiple_frontends": False,
+                "args": {"model": "router-model", "tokenizer_path": "/custom-tokenizer", "backend": "tokenspeed"},
+            },
+            roles={
+                "agg": {
+                    "nodes": 1,
+                    "workers": 1,
+                    "args": {"served-model-name": "served", "tokenizer": "/engine-tokenizer"},
+                }
+            },
+        )
+    )
+    frontend = SMGFrontend()
+    args = frontend.get_managed_frontend_args(config, config.backend, []) + frontend.get_frontend_args_list(
+        config.frontend.args
+    )
+    assert _flag(args, "--model") == "router-model"
+    assert _flag(args, "--tokenizer-path") == "/custom-tokenizer"
+    assert _flag(args, "--model-alias") == "served=router-model"
+    assert args.count("--model") == args.count("--tokenizer-path") == args.count("--backend") == 1
 
 
 def test_mooncake_master_service_points_the_l3_store_at_it(tmp_path: Path) -> None:

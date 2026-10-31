@@ -4,8 +4,8 @@
 
 """TokenSpeed inference backend.
 
-Behind the Dynamo frontend each worker is ``python3 -m dynamo.tokenspeed``; behind a
-static router (SMG) it is TokenSpeed's gRPC engine, ``python3 -m smg_grpc_servicer.tokenspeed``.
+Behind Dynamo each worker is ``python3 -m dynamo.tokenspeed``; behind SMG it is
+``python3 -m tokenspeed.cli serve --headless``, dialing the gateway's ZMQ sockets.
 """
 
 from __future__ import annotations
@@ -15,14 +15,20 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
 from srtctl.backends.base import Backend, BoundRolesField, RoleSettings, WorkerMode, role_args
 from srtctl.backends.sglang import MooncakeKVStoreConfig, _config_to_cli_args
-from srtctl.ports import DIST_INIT_PORTS, DYN_SYSTEM_PORT_BASE, TOKENSPEED_PORTS
+from srtctl.ports import (
+    DIST_INIT_PORTS,
+    DYN_SYSTEM_PORT_BASE,
+    TOKENSPEED_METRICS_PORTS,
+    TOKENSPEED_PORTS,
+    TOKENSPEED_ZMQ_PORTS,
+)
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
@@ -62,19 +68,21 @@ class TokenSpeedBackend(Backend):
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
-    def get_process_environment(self, process: Process) -> dict[str, str]:
-        """Skip the gRPC engine's startup warmup on prefill and decode workers.
+    def get_config_for_mode(self, mode: WorkerMode) -> dict[str, Any]:
+        """Resolve underscore and kebab-case spellings once for all TokenSpeed consumers."""
+        return {key.replace("_", "-"): value for key, value in role_args(self.roles, mode).items()}
 
-        The warmup is a generate without a KV bootstrap room, which a prefill/decode
-        engine cannot serve: prefill waits for a decode peer that never comes, and an
-        attention-DP decode engine fails dispatching it by room. ``dynamo.tokenspeed``
-        does not read the variable.
-        """
-        return {} if process.endpoint_mode == "agg" else {"TOKENSPEED_SKIP_GRPC_WARMUP": "1"}
+    def prometheus_enabled(self, mode: WorkerMode) -> bool:
+        """Whether the role enables TokenSpeed's HTTP Prometheus reporter."""
+        args = self.get_config_for_mode(mode)
+        reporters = args.get("metrics-reporters")
+        if reporters is None:
+            reporters = ["prometheus"]
+        return args.get("enable-metrics") is True and "prometheus" in reporters
 
-    def is_grpc_mode(self, mode: WorkerMode) -> bool:
-        """A direct TokenSpeed worker is always the gRPC engine (``smg_grpc_servicer.tokenspeed``)."""
-        return True
+    def owns_dp_ranks(self, process: Process) -> bool:
+        """Each headless process exports the metrics of its local ranks, including followers."""
+        return process.tokenspeed_metrics_port is not None
 
     def get_served_model_name(self, default: str) -> str:
         """A role's ``served-model-name``, else ``default``; srtctl always passes the result."""
@@ -123,8 +131,8 @@ class TokenSpeedBackend(Backend):
     ) -> list[Process]:
         """Each process gets its own ``--port``; each endpoint a rendezvous block on its leader node.
 
-        A direct worker's leader serves gRPC on that ``--port``, so it is also the
-        process's routable port (``http_port``).
+        A direct endpoint's routable port names the handshake SMG binds on the
+        frontend node. Each worker node has a separate optional metrics listener.
         """
         if dynamo_sidecar:
             raise ValueError("TokenSpeed does not support Dynamo sidecars")
@@ -140,15 +148,27 @@ class TokenSpeedBackend(Backend):
             )
             for endpoint in endpoints
         }
+        zmq_ports = {
+            (endpoint.mode, endpoint.index): allocator.next(TOKENSPEED_ZMQ_PORTS) for endpoint in endpoints if direct
+        }
         result = []
         for process in processes:
             port = allocator.next(TOKENSPEED_PORTS, process.node)
+            key = (process.endpoint_mode, process.endpoint_index)
+            zmq_port = zmq_ports.get(key)
+            metrics_port = (
+                allocator.next(TOKENSPEED_METRICS_PORTS, process.node)
+                if direct and self.prometheus_enabled(process.endpoint_mode)
+                else None
+            )
             result.append(
                 replace(
                     process,
                     tokenspeed_port=port,
-                    http_port=port if direct and process.http_port > 0 else process.http_port,
-                    dist_init_port=dist_init_ports[(process.endpoint_mode, process.endpoint_index)],
+                    http_port=zmq_port if zmq_port is not None and process.http_port > 0 else process.http_port,
+                    tokenspeed_zmq_port=zmq_port,
+                    tokenspeed_metrics_port=metrics_port,
+                    dist_init_port=dist_init_ports[key],
                 )
             )
         return result
@@ -178,18 +198,17 @@ class TokenSpeedBackend(Backend):
         leader_ip = get_hostname_ip(endpoint_nodes[0], runtime.network_interface)
         frontend = get_frontend(frontend_type)
         direct_workers = frontend.worker_launch == "direct"
-        python_module = "smg_grpc_servicer.tokenspeed" if direct_workers else "dynamo.tokenspeed"
+        entrypoint = ["tokenspeed.cli", "serve", "--headless"] if direct_workers else ["dynamo.tokenspeed"]
         cmd = [
             *(nsys_prefix or []),
             "python3",
             "-m",
-            python_module,
+            *entrypoint,
             "--model",
             runtime.worker_model_arg,
             "--served-model-name",
             self.get_served_model_name(runtime.model_path.name),
-            # A prefill worker advertises this host for the Mooncake bootstrap; a direct
-            # worker also binds its gRPC server on it.
+            # The engine advertises its own address for the P/D bootstrap, not the gateway's.
             "--host",
             get_hostname_ip(process.node, runtime.network_interface),
             "--port",
@@ -205,6 +224,30 @@ class TokenSpeedBackend(Backend):
             cmd.extend(["--disaggregation-mode", mode])
         if mode == "prefill" and process.bootstrap_port is not None:
             cmd.extend(["--disaggregation-bootstrap-port", str(process.bootstrap_port)])
+        if direct_workers:
+            if process.tokenspeed_zmq_port is None:
+                raise ValueError("build the topology with TokenSpeedBackend.endpoints_to_processes")
+            cmd.extend(
+                [
+                    "--data-parallel-address",
+                    runtime.head_node_ip,
+                    "--data-parallel-rpc-port",
+                    str(process.tokenspeed_zmq_port),
+                    "--zmq-engine-index",
+                    "0",
+                ]
+            )
+            if process.tokenspeed_metrics_port is not None:
+                config.setdefault("metrics-host", "0.0.0.0")
+                cmd.extend(["--metrics-port", str(process.tokenspeed_metrics_port)])
+        # argparse's append action needs one flag per reporter, unlike nargs-based lists.
+        reporters = config.get("metrics-reporters")
+        if isinstance(reporters, list):
+            config.pop("metrics-reporters")
+            if not reporters:
+                raise ValueError("metrics-reporters must contain at least one reporter")
+            for reporter in reporters:
+                cmd.extend(["--metrics-reporters", str(reporter)])
         # TokenSpeed parses mapping-valued flags (kv-events-config, Mooncake extra config) as JSON.
         config = {key: json.dumps(value) if isinstance(value, dict) else value for key, value in config.items()}
         cmd.extend(_config_to_cli_args(config))
