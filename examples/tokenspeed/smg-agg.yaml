@@ -1,12 +1,8 @@
-# TokenSpeed aggregated behind the Shepherd Model Gateway (SMG).
-#
-# Two TP1 workers on one node, each TokenSpeed's gRPC engine
-# (`python3 -m smg_grpc_servicer.tokenspeed`), the engine `ts serve` runs behind its
-# bundled SMG. srtctl advertises them to SMG as grpc:// URLs. The `tokenspeed`
-# container must ship TokenSpeed, which installs the gRPC servicer and the `smg`
-# command it pins; SMG runs in the same container. See docs/tokenspeed.md.
-#
-# Aliases (`qwen3-0.6b`, `tokenspeed`) resolve through srtslurm.yaml; see examples/README.md.
+# TokenSpeed headless ZMQ workers behind one SMG gateway on the head node.
+# The image must include TokenSpeed and its matching tokenspeed-smg dependency.
+# The gateway binds TCP handshake sockets; the workers dial them and export
+# metrics on separate HTTP ports. See docs/tokenspeed.md.
+# Aliases resolve through srtslurm.yaml; see examples/README.md.
 
 schema: 2
 name: "qwen3-0.6b-tokenspeed-smg-agg"
@@ -37,7 +33,8 @@ roles:
       PYTHONUNBUFFERED: "1"
     args:
       served-model-name: "Qwen/Qwen3-0.6B"
-      tensor-parallel-size: 1
+      attn-tp-size: 1
+      enable-metrics: true
       gpu-memory-utilization: 0.5
       max-model-len: 4096
 

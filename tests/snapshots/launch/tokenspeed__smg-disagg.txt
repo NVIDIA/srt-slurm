@@ -15,14 +15,13 @@ env_to_set:
     CUDA_VISIBLE_DEVICES: 0
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
-    TOKENSPEED_SKIP_GRPC_WARMUP: 1
 bash_preamble: |
     ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python3 -m smg_grpc_servicer.tokenspeed --model /model --served-model-name Qwen/Qwen3-0.6B --host 127.0.0.1 --port 10000 --dist-init-addr 127.0.0.1:8300 --nnodes 1 --node-rank 0 --disaggregation-mode prefill --disaggregation-bootstrap-port 7200 --gpu-memory-utilization 0.5 --max-model-len 4096 --tensor-parallel-size 1
+    python3 -m tokenspeed.cli serve --headless --model /model --served-model-name Qwen/Qwen3-0.6B --host 127.0.0.1 --port 10000 --dist-init-addr 127.0.0.1:8300 --nnodes 1 --node-rank 0 --disaggregation-mode prefill --disaggregation-bootstrap-port 7200 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 31000 --zmq-engine-index 0 --metrics-port 6800 --attn-tp-size 1 --enable-metrics --gpu-memory-utilization 0.5 --max-model-len 4096 --metrics-host 0.0.0.0
 
 ## decode_0_node-02
 nodelist: node-02
@@ -37,14 +36,13 @@ env_to_set:
     CUDA_VISIBLE_DEVICES: 0
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
-    TOKENSPEED_SKIP_GRPC_WARMUP: 1
 bash_preamble: |
     ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python3 -m smg_grpc_servicer.tokenspeed --model /model --served-model-name Qwen/Qwen3-0.6B --host 127.0.0.1 --port 10000 --dist-init-addr 127.0.0.1:8300 --nnodes 1 --node-rank 0 --disaggregation-mode decode --gpu-memory-utilization 0.5 --max-model-len 4096 --tensor-parallel-size 1
+    python3 -m tokenspeed.cli serve --headless --model /model --served-model-name Qwen/Qwen3-0.6B --host 127.0.0.1 --port 10000 --dist-init-addr 127.0.0.1:8300 --nnodes 1 --node-rank 0 --disaggregation-mode decode --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 31001 --zmq-engine-index 0 --metrics-port 6800 --attn-tp-size 1 --enable-metrics --gpu-memory-utilization 0.5 --max-model-len 4096 --metrics-host 0.0.0.0
 
 ## smg_0
 nodelist: node-01
@@ -56,7 +54,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 command: |
-    smg launch --pd-disaggregation --prefill grpc://127.0.0.1:10000 7200 --decode grpc://127.0.0.1:10000 --host 0.0.0.0 --port 8000 --prometheus-port 29000
+    smg launch --pd-disaggregation --prefill tcp://127.0.0.1:31000 --decode tcp://127.0.0.1:31001 --host 0.0.0.0 --port 8000 --prometheus-port 29000 --backend tokenspeed --model /model --model-alias Qwen/Qwen3-0.6B=/model
 
 ## service_dcgm-exporter_node-01
 nodelist: node-01
