@@ -169,7 +169,7 @@ def test_dynamo_source_git_maps_to_hash_and_defaults_upstream_repo() -> None:
     cmd = config.get_install_commands()
     # An unpinned ref is fetched by name; a plain clone has no PR refs.
     assert "git fetch origin refs/pull/14000/head && git checkout FETCH_HEAD" in cmd
-    assert "/configs/dynamo-wheels/refs-pull-14000-head" in cmd
+    assert "/configs/dynamo-wheels/refs-pull-14000-head-nvtx/" in cmd
     assert f"clone {UPSTREAM} dynamo" in cmd
 
 
@@ -185,7 +185,7 @@ def test_dynamo_source_pinned_sha_and_fork_and_patches() -> None:
     cmd = config.get_install_commands()
     assert "clone https://github.com/me/dynamo-fork dynamo" in cmd
     assert f"git checkout {SHA}" in cmd
-    assert f"/configs/dynamo-wheels/{SHA}-patch-" in cmd
+    assert f"/configs/dynamo-wheels/{SHA}-nvtx-patch-" in cmd
     assert patch_line in cmd
 
 

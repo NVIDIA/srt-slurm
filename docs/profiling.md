@@ -121,7 +121,8 @@ needs Bash, `setsid`, `pgrep`, `pkill`, and `timeout`. The preset sets
 `DYN_ENABLE_RUST_NVTX=1` and `DYN_NVTX=1` on every target. The Rust runtime ranges
 (`preprocess.*`, `route.*`, `detokenize`, `transport.*`) exist only in a Dynamo
 wheel built with the `nvtx` Cargo feature; a wheel without it still yields CPU
-samples but no Rust ranges. The Python ranges need the `nvtx` package in the
+samples but no Rust ranges. Release wheels enable it, and a `dynamo.source`
+build enables it whenever the checked-out bindings declare it. The Python ranges need the `nvtx` package in the
 image. On TRT-LLM workers the preset also sets `TLLM_LLMAPI_ENABLE_NVTX=1` and
 `TLLM_PROFILE_LOG_RANKS=all`. On SGLang workers it sets
 `SGLANG_ENABLE_NVTX_SCHEDULER=1` (SGLang 0.5.x from June 2026 onward), which
