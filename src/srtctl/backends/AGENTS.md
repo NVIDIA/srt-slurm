@@ -22,6 +22,7 @@ Rules for `src/srtctl/backends/`. Every consumer asks a backend through `Backend
    - `is_grpc_mode(mode)` - Defaults to `False`; override when the mode's workers serve gRPC (static routers advertise `grpc://` from it)
    - `runs_dynamo_sidecar(process, endpoint_processes)` / `sidecar_engine_metrics_port(process, endpoint_processes)` - Default to `False` / `None`; in Dynamo sidecar mode, whether the process runs a sidecar (and so serves runtime metrics on its system port) and the allocated port its native engine serves Prometheus on. Answer them from the same helpers the sidecar command builder uses; `core/telemetry.py:sidecar_worker_metrics_targets` turns them into the Tachometer and AIPerf targets (`docs/sidecars.md#metrics`)
    - `nvtx_environment` - Defaults to `{}`; the worker environment the automatic nsys preset (`observability.nsys`) sets so the engine emits its own NVTX ranges and nsys can follow the processes that emit them
+   - `upstream_image_has_nsys` - Defaults to `True`; `False` when the engine's upstream serving image has no `nsys`, so submit warns when nsys would run without a configured absolute `nsys_binary`
    - `fatal_log_patterns(mode)` - Defaults to `()`; override for launchers that survive engine failure
 4. Export from `backends/__init__.py`
 5. Add polymorphic deserialization in `BackendConfigField` in `schema.py`
