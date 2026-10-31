@@ -1,5 +1,5 @@
 # TokenSpeed headless ZMQ workers behind one SMG gateway on the head node.
-# Use tokenspeed 0.1.1.post20261101 with its pinned tokenspeed-smg dependencies.
+# The image must include TokenSpeed and its matching tokenspeed-smg dependency.
 # The gateway binds TCP handshake sockets; the workers dial them and export
 # metrics on separate HTTP ports. See docs/tokenspeed.md.
 # Aliases resolve through srtslurm.yaml; see examples/README.md.

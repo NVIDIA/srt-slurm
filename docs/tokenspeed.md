@@ -21,10 +21,8 @@ The Dynamo integration follows
 [TokenSpeed](https://github.com/lightseekorg/tokenspeed/tree/22251686ff26a2b2f495263b348db80980b8ac9e),
 Dynamo's
 [`dynamo.tokenspeed`](https://github.com/ai-dynamo/dynamo/tree/7778c8d0cddb2a1ab7b2782c92cf97b30b2a5dcd/components/src/dynamo/tokenspeed)
-with the matching TokenSpeed version in its image. The SMG integration targets
-[TokenSpeed `0.1.1.post20261101`](https://github.com/lightseekorg/whl/releases/tag/tokenspeed-nightly-v0.1.1.post20261101)
-(source [5d670a1](https://github.com/lightseekorg/tokenspeed/tree/5d670a1659ed3ac23383dbfab43f6907c4e3011a))
-and its pinned `tokenspeed-smg==1.13.0.post20261027`.
+with the matching TokenSpeed version in its image. The SMG integration requires
+TokenSpeed's native headless ZMQ serving and its matching `tokenspeed-smg` dependency.
 
 ## Image
 
