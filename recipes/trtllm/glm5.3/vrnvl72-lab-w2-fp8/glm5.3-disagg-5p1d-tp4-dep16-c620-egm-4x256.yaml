@@ -6,7 +6,8 @@
 # 620 users, FP8 KV on prefill and decode, MTP draft 5, decode batch 10.
 # Dynamo from local wheels on the GLM-5.3 Rubin image and the local AgentX client.
 # Model, image and wheel paths are explicit; configure cluster settings in srtslurm.yaml.
-# EGM/NVLink four-provider variant of the BTK Mooncake pool; preserves paths and tuning.
+# EGM/NVLink four-provider variant of the BTK Mooncake pool; preserves paths and tuning,
+# except four async-load workers on 4GiB of staging (BTK: two on 2GiB).
 # Requires an ARM64 CUDA 13 Mooncake wheel containing
 # db195f7f7cad61a0a3c3141b8ecf6ca399a54fca or its upstream equivalent,
 # built with USE_VRAM_SEGMENT=OFF (the default); see README.md#egm-over-nvlink.
@@ -318,9 +319,12 @@ services:
       # copies these host payloads directly to/from the providers' host DRAM;
       # TRT-LLM still copies active inference KV between GPU and local slots.
       stage_through_host: true
-      staging_buffer_bytes: 2GiB
+      # BTK runs two async-load workers on 2GiB. FP8 KV loads (p50 4.7GiB, p90 14.7GiB)
+      # queued 1.5-2.6s behind them, so run four; staging is split evenly across workers,
+      # so 4GiB keeps 1GiB (346 FP8 pages) per worker.
+      staging_buffer_bytes: 4GiB
       async_load: true
-      async_load_workers: 2
+      async_load_workers: 4
       role: both
       model_key: GLM-5.3
   readiness:
