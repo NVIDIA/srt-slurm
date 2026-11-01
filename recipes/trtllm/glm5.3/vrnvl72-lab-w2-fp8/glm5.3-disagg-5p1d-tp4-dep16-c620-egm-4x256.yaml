@@ -7,7 +7,8 @@
 # Dynamo from local wheels on the GLM-5.3 Rubin image and the local AgentX client.
 # Model, image and wheel paths are explicit; configure cluster settings in srtslurm.yaml.
 # EGM/NVLink four-provider variant of the BTK Mooncake pool; preserves paths and tuning,
-# except four async-load workers on 4GiB of staging (BTK: two on 2GiB).
+# except four async-load workers on 4GiB of staging (BTK: two on 2GiB) and a 300s
+# object lease (BTK: 60s).
 # Requires an ARM64 CUDA 13 Mooncake wheel containing
 # db195f7f7cad61a0a3c3141b8ecf6ca399a54fca or its upstream equivalent,
 # built with USE_VRAM_SEGMENT=OFF (the default); see README.md#egm-over-nvlink.
@@ -295,7 +296,9 @@ services:
   - mooncake.cli
   - --rpc_port={master_port}
   - --metrics_port=8702
-  - --default_kv_lease_ttl=60000
+  # Lookups renew the lease and leased objects are never evicted. AgentX sessions idle up
+  # to 300s; with BTK's 60s, eviction swept idle sessions' prefixes and they recomputed them.
+  - --default_kv_lease_ttl=300000
   - --eviction_ratio=0.02
   - --allocation_strategy=random
   env:
