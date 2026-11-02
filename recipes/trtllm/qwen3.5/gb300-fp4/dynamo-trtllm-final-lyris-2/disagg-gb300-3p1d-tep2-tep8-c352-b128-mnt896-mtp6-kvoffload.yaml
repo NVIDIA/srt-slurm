@@ -1,4 +1,4 @@
-# Dynamo counterpart of ../trtllm-serve-final-jhb-2/disagg-gb300-3p1d-tep2-tep8-c352-b128-mnt896-mtp6-kvoffload.yaml
+# Dynamo counterpart of ../trtllm-serve-final-sa-2/disagg-gb300-3p1d-tep2-tep8-c352-b128-mnt896-mtp6-kvoffload.yaml
 # Same image, topology, NUMA binding, engine args and worker env; dynamo.trtllm workers and the Dynamo
 # frontend installed from the ai-dynamo 1.6.0.dev20261010 wheels (dynamo.source.wheel).
 # Dropped trtllm-serve-only settings: frontend process pools, per-conversation frontend affinity,
@@ -10,15 +10,15 @@ schema: 2
 name: disagg-gb300-3p1d-tep2-tep8-c352-b128-mnt896-mtp6-kvoffload-dynamo
 model:
   path: /lustre/fsw/coreai_comparch_inferencex/rihuo/Qwen3.5-397B-A17B-NVFP4-V2
-  container: /lustre/fsw/coreai_comparch_inferencex/rihuo/nvidia+tensorrt-llm+release+1.4.0rc2.dev202610210802+pr20815r3-481e06cca.sqsh
+  container: /lustre/fsw/coreai_comparch_inferencex/rihuo/tensorrt-llm-release-1.4.0rc3.dev202611020007.sqsh
   precision: nvfp4
 identity:
   model:
     repo: nvidia/Qwen3.5-397B-A17B-NVFP4-V2
   container:
-    image: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/xiaomingc/qwen35_e2e/images/nvidia+tensorrt-llm+release+1.4.0rc2.dev202610210802+pr20815r3-481e06cca.sqsh
+    image: /lustre/fsw/coreai_comparch_inferencex/rihuo/tensorrt-llm-release-1.4.0rc3.dev202611020007.sqsh
   frameworks:
-    tensorrt_llm: 1.4.0rc2.dev202610210802
+    tensorrt_llm: 1.4.0rc3.dev202611020007
     dynamo: 1.6.0.dev20261010
 slurm:
   time_limit: 04:00:00
@@ -56,14 +56,8 @@ roles:
       UCX_CUDA_IPC_MAX_POLL: inf
       UCX_CUDA_COPY_MAX_POLL: inf
       UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
-      TRTLLM_Q35_MTP_MOE_QUANT_MAX_M: '0'
       TRTLLM_ENABLE_PDL: '1'
       TRTLLM_KV_TRANSFER_NUM_THREADS: '8'
-      TRTLLM_Q35_PROFILE: ctx
-      TRTLLM_MAMBA_INFORWARD_SNAPSHOT: '1'
-      TRTLLM_CTX_SCHED_SRPT: '1'
-      TRTLLM_EMBED_COMPILE_ONCE: '1'
-      TRTLLM_PREFILL_BCG: '1'
       CUDA_SCALE_LAUNCH_QUEUES: 4x
       TRTLLM_SKIP_KV_CACHE_ESTIMATION: '1'
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
@@ -94,6 +88,7 @@ roles:
         block_reuse_config:
           max_num_turns: 3
           policy: per_conversation
+          enable_branch_snapshot: true
         dtype: fp8
         enable_block_reuse: true
         event_buffer_max_size: 0
@@ -103,7 +98,6 @@ roles:
         mamba_state_config:
           additional_snapshot_offsets_from_end:
           - 2
-          enable_branch_snapshot: true
           periodic_snapshot_interval: 0
         pool_ratio:
         - 0.2
@@ -123,50 +117,48 @@ roles:
         - cutedsl
         - cuda_core
       pipeline_parallel_size: 1
+      prefill_capture_num_tokens:
+      - 1
+      - 2
+      - 4
+      - 8
+      - 16
+      - 32
+      - 64
+      - 128
+      - 256
+      - 384
+      - 512
+      - 768
+      - 1024
+      - 1536
+      - 2048
+      - 2560
+      - 3072
+      - 3584
+      - 4096
+      - 4608
+      - 5120
+      - 5632
+      - 6144
+      - 6656
+      - 7168
+      - 7680
+      - 8192
+      - 10240
+      - 12288
+      - 14336
+      - 16384
+      prefill_cuda_graph_backend: breakable
       print_iter_log: true
       return_perf_metrics: false
       scheduler_config:
         capacity_scheduler_policy: MAX_UTILIZATION
+        context_scheduling_policy: shortest_uncached_first
       speculative_config:
         decoding_type: MTP
         max_draft_len: 1
       tensor_parallel_size: 2
-      torch_compile_config:
-        capture_num_tokens:
-        - 1
-        - 2
-        - 4
-        - 8
-        - 16
-        - 32
-        - 64
-        - 128
-        - 256
-        - 384
-        - 512
-        - 768
-        - 1024
-        - 1536
-        - 2048
-        - 2560
-        - 3072
-        - 3584
-        - 4096
-        - 4608
-        - 5120
-        - 5632
-        - 6144
-        - 6656
-        - 7168
-        - 7680
-        - 8192
-        - 10240
-        - 12288
-        - 14336
-        - 16384
-        enable_fullgraph: true
-        enable_piecewise_cuda_graph: true
-        enable_userbuffers: false
       trust_remote_code: true
   decode:
     nodes: 2
@@ -186,30 +178,8 @@ roles:
       UCX_CUDA_IPC_MAX_POLL: inf
       UCX_CUDA_COPY_MAX_POLL: inf
       UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
-      TRTLLM_Q35_MTP_MOE_QUANT_MAX_M: '0'
       TRTLLM_ENABLE_PDL: '1'
       TRTLLM_KV_TRANSFER_NUM_THREADS: '8'
-      TRTLLM_Q35_PROFILE: gen
-      TRTLLM_DISAGG_GEN_KEEP_TRANSFER_WINDOW: '1'
-      TRTLLM_MNNVL_TWOSHOT_FP8: '1'
-      TRTLLM_MNNVL_TWOSHOT_FP8_MAX_TOKENS: '1024'
-      TRTLLM_CUBLAS_FP8_ALGO: 224,2560,4096=66,321,36,1,0,0,3,3,0;280,2560,4096=66,324,36,1,0,0,1,3,0;336,2560,4096=66,328,36,1,0,0,3,3,0;392,2560,4096=66,331,36,1,0,0,3,3,0;448,2560,4096=66,333,36,1,0,0,1,3,0;560,2560,4096=66,20,36,1,0,0,1,4,0;672,2560,4096=66,30,36,1,0,0,0,6,0;784,2560,4096=66,29,36,1,0,0,3,3,0;896,2560,4096=66,119,36,1,0,0,1,3,0;504,2560,4096=66,19,36,1,0,0,1,3,0;616,2560,4096=66,412,36,1,0,0,1,4,0;728,2560,4096=66,118,36,1,0,0,1,3,0;840,2560,4096=66,119,36,1,0,0,1,3,0
-      TRTLLM_DISAGG_GEN_ADMIT_BEFORE_ALLOC: '1'
-      TRTLLM_SPEC_SAMPLER_FUSED_STORE: '1'
-      TRTLLM_Q35_MOEGEMM_PIN: 512x64:7=8/70,14=8/70,21=8/70,28=8/70|512x128:3=8/59,5=8/59,6=8/70,7=8/70,8=8/48,9=8/48,10=8/70,11=8/70,12=8/70,13=8/70,14=8/48,15=8/70,16=8/4,18=8/4,20=8/4,21=8/4,22=8/4,24=8/48,26=8/4,28=8/4,30=8/4,32=8/4,35=8/4,42=8/48,49=8/4,56=8/2,63=8/70,70=16/20,77=16/20,84=8/48,91=16/20,98=16/20,105=16/20,112=8/70,126=16/20,140=16/20,154=16/20,168=16/20,182=16/20,196=16/20,210=16/20,224=16/20,80=8/2,96=8/4,128=8/70,560=32/4,672=32/4,784=32/4,896=64/0,72=8/4,88=8/4,104=8/4,120=8/4,504=32/4,616=32/4,728=32/4,840=64/0|256x256:7=8/55,14=8/66,28=8/66|256x128:7=8/59,14=8/44,28=8/66
-      TRTLLM_OVERLAP_LOOP_ON_EXECUTION_STREAM: '1'
-      TRTLLM_DISAGG_GEN_IDLE_POLL_SKIP: '1'
-      TRTLLM_Q35_ATTN_CP_MAX_BATCH: '128'
-      TRTLLM_Q35_CP_EXCHANGE_KB: '2048'
-      TRTLLM_DISAGG_GEN_EMIT_FIRST_STEP: '1'
-      TRTLLM_Q35_LL_EXCHANGE_MAX_ROWS: '1024'
-      TRTLLM_Q35_FUSED_AR_MAX_ROWS: '1024'
-      TRTLLM_Q35_ATTN_CP_FUSED_MAX_BATCH: '128'
-      TRTLLM_Q35_GDN_FUSE_MAX_BATCH: '128'
-      TRTLLM_Q35_GDN_REPLAY_PARTITION_MIN_BATCH: '129'
-      TRTLLM_Q35_CP_MERGE_MAX_ROWS: '4096'
-      TRTLLM_Q35_MOE_FRONT_BIG_MS: 35,42,49,56,63,70,77,84,91,98,105,112,119,126,133,140,147,154,161,168,175,182,189,196,203,210,217,224,40,48,64,280,336,392,448,560,672,784,896,80,96,128,504,616,728,840,72,88,104,120
-      TRTLLM_Q35_ATTN_CP_FUSED_MAX_BATCH_Q1: '64'
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
       TRTLLM_PINNED_WEIGHT_STAGING: '1'
       MIMALLOC_PURGE_DELAY: ''
@@ -281,6 +251,7 @@ roles:
       max_batch_size: 128
       max_num_tokens: 896
       max_seq_len: 262148
+      mnnvl_allreduce_fp8_payload: true
       moe_config:
         backend: TRTLLM
         use_low_precision_moe_combine: true
@@ -294,11 +265,13 @@ roles:
         - cuda_core
       pipeline_parallel_size: 1
       print_iter_log: true
+      replicate_embedding: true
       return_perf_metrics: false
       scheduler_config:
         capacity_scheduler_policy: GUARANTEED_NO_EVICT
       speculative_config:
         decoding_type: MTP
+        draft_lm_head_dtype: mxfp8
         max_draft_len: 6
       stream_interval: 20
       tensor_parallel_size: 8

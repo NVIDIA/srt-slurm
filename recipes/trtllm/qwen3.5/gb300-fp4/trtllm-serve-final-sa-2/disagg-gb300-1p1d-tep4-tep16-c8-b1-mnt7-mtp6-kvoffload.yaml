@@ -2,15 +2,15 @@ schema: 2
 name: disagg-gb300-1p1d-tep4-tep16-c8-b1-mnt7-mtp6-kvoffload
 model:
   path: /data/home/rihuo/Qwen3.5-397B-A17B-NVFP4-V2
-  container: /data/home/rihuo/tensorrt-llm-release-feat-qwen3.5-opt-1.4.0a0.dev202610281318.sqsh
+  container: /data/home/rihuo/tensorrt-llm-release-1.4.0rc3.dev202611020007.sqsh
   precision: nvfp4
 identity:
   model:
     repo: nvidia/Qwen3.5-397B-A17B-NVFP4-V2
   container:
-    image: /data/home/rihuo/tensorrt-llm-release-feat-qwen3.5-opt-1.4.0a0.dev202610281318.sqsh
+    image: /data/home/rihuo/tensorrt-llm-release-1.4.0rc3.dev202611020007.sqsh
   frameworks:
-    tensorrt_llm: 1.4.0a0.dev202610281318
+    tensorrt_llm: 1.4.0rc3.dev202611020007
 slurm:
   time_limit: 04:00:00
 extra_mount:
@@ -45,17 +45,8 @@ roles:
       UCX_CUDA_IPC_MAX_POLL: inf
       UCX_CUDA_COPY_MAX_POLL: inf
       UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
-      TRTLLM_Q35_MTP_MOE_QUANT_MAX_M: '0'
-      TRTLLM_INCREMENTAL_TOKENIZE: '1'
-      TRTLLM_INCREMENTAL_TOKENIZE_VERIFY_EVERY: '50'
       TRTLLM_ENABLE_PDL: '1'
       TRTLLM_KV_TRANSFER_NUM_THREADS: '8'
-      TRTLLM_Q35_PROFILE: ctx
-      TRTLLM_MAMBA_INFORWARD_SNAPSHOT: '1'
-      TRTLLM_FRONTEND_AFFINITY_PORT_STRIDE: '10'
-      TRTLLM_CTX_SCHED_SRPT: '1'
-      TRTLLM_EMBED_COMPILE_ONCE: '1'
-      TRTLLM_PREFILL_BCG: '1'
       CUDA_SCALE_LAUNCH_QUEUES: 4x
       TRTLLM_SKIP_KV_CACHE_ESTIMATION: '1'
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
@@ -78,11 +69,13 @@ roles:
       enable_chunked_prefill: true
       enable_iter_perf_stats: true
       enable_iter_req_stats: false
+      enable_tokenization_cache: true
       iter_perf_stats_interval: 40
       kv_cache_config:
         block_reuse_config:
           max_num_turns: 3
           policy: per_conversation
+          enable_branch_snapshot: true
         dtype: fp8
         enable_block_reuse: true
         event_buffer_max_size: 0
@@ -92,7 +85,6 @@ roles:
         mamba_state_config:
           additional_snapshot_offsets_from_end:
           - 2
-          enable_branch_snapshot: true
           periodic_snapshot_interval: 0
         pool_ratio:
         - 0.2
@@ -114,50 +106,49 @@ roles:
         - cuda_core
       perf_metrics_max_requests: 100000
       pipeline_parallel_size: 1
+      prefill_capture_num_tokens:
+      - 1
+      - 2
+      - 4
+      - 8
+      - 16
+      - 32
+      - 64
+      - 128
+      - 256
+      - 384
+      - 512
+      - 768
+      - 1024
+      - 1536
+      - 2048
+      - 2560
+      - 3072
+      - 3584
+      - 4096
+      - 4608
+      - 5120
+      - 5632
+      - 6144
+      - 6656
+      - 7168
+      - 7680
+      - 8192
+      - 10240
+      - 12288
+      - 14336
+      - 16384
+      prefill_cuda_graph_backend: breakable
       print_iter_log: true
       return_perf_metrics: true
       scheduler_config:
         capacity_scheduler_policy: MAX_UTILIZATION
+        context_scheduling_policy: shortest_uncached_first
+      serve_frontend_affinity_port_stride: 10
       speculative_config:
         decoding_type: MTP
         max_draft_len: 1
       tensor_parallel_size: 4
-      torch_compile_config:
-        capture_num_tokens:
-        - 1
-        - 2
-        - 4
-        - 8
-        - 16
-        - 32
-        - 64
-        - 128
-        - 256
-        - 384
-        - 512
-        - 768
-        - 1024
-        - 1536
-        - 2048
-        - 2560
-        - 3072
-        - 3584
-        - 4096
-        - 4608
-        - 5120
-        - 5632
-        - 6144
-        - 6656
-        - 7168
-        - 7680
-        - 8192
-        - 10240
-        - 12288
-        - 14336
-        - 16384
-        enable_fullgraph: true
-        enable_piecewise_cuda_graph: true
-        enable_userbuffers: false
       trust_remote_code: true
   decode:
     nodes: 4
@@ -177,17 +168,8 @@ roles:
       UCX_CUDA_IPC_MAX_POLL: inf
       UCX_CUDA_COPY_MAX_POLL: inf
       UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
-      TRTLLM_Q35_MTP_MOE_QUANT_MAX_M: '0'
-      TRTLLM_INCREMENTAL_TOKENIZE: '1'
-      TRTLLM_INCREMENTAL_TOKENIZE_VERIFY_EVERY: '50'
       TRTLLM_ENABLE_PDL: '1'
       TRTLLM_KV_TRANSFER_NUM_THREADS: '8'
-      TRTLLM_Q35_PROFILE: gen
-      TRTLLM_DISAGG_GEN_KEEP_TRANSFER_WINDOW: '1'
-      TRTLLM_SPEC_SAMPLER_FUSED_STORE: '1'
-      TRTLLM_OVERLAP_LOOP_ON_EXECUTION_STREAM: '1'
-      TRTLLM_DISAGG_GEN_IDLE_POLL_SKIP: '1'
-      TRTLLM_DISAGG_GEN_EMIT_FIRST_STEP: '1'
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
       TRTLLM_PINNED_WEIGHT_STAGING: '1'
       MIMALLOC_PURGE_DELAY: ''
@@ -197,6 +179,7 @@ roles:
         backend: NIXL
         kv_transfer_sender_future_timeout_ms: 20
         kv_transfer_timeout_ms: 600000
+        max_tokens_in_buffer: 262144
         transceiver_runtime: PYTHON
       cuda_graph_config:
         batch_sizes:
@@ -207,6 +190,7 @@ roles:
       enable_iter_perf_stats: true
       enable_iter_req_stats: false
       enable_lm_head_tp_in_adp: false
+      enable_tokenization_cache: true
       iter_perf_stats_interval: 40
       kv_cache_config:
         avg_seq_len: 102150
@@ -237,11 +221,13 @@ roles:
       perf_metrics_max_requests: 100000
       pipeline_parallel_size: 1
       print_iter_log: true
+      replicate_embedding: true
       return_perf_metrics: true
       scheduler_config:
         capacity_scheduler_policy: GUARANTEED_NO_EVICT
       speculative_config:
         decoding_type: MTP
+        draft_lm_head_dtype: mxfp8
         max_draft_len: 6
       stream_interval: 20
       tensor_parallel_size: 16
@@ -251,17 +237,19 @@ frontend:
   enable_multiple_frontends: false
   ctx_router:
     type: conversation
+    enable_tokenization_cache: true
   gen_router:
     type: load_balancing
   env:
     TRTLLM_SERVER_DISABLE_GC: '1'
-    TRTLLM_DISAGG_CTX_FRONTEND_AFFINITY: '8:10'
-    TRTLLM_INCREMENTAL_TOKENIZE: '1'
-    TRTLLM_INCREMENTAL_TOKENIZE_VERIFY_EVERY: '50'
   server_config_extra:
     gen_strip_message_history: true
     gen_tokids_ctxbytes: true
     num_workers: 4
+    # Top-level keys are inherited into context_servers, where the orchestrator reads the
+    # affinity layout of the context workers (num_serve_frontends: 8 in their args).
+    num_serve_frontends: 8
+    serve_frontend_affinity_port_stride: 10
     server_keep_alive_timeout: 3600
     backend: pytorch
   placement:
