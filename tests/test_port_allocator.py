@@ -20,6 +20,7 @@ from srtctl.core.topology import NodePortAllocator, Process
 from srtctl.ports import (
     BOOTSTRAP_PORTS,
     DIST_INIT_PORTS,
+    FRONTEND_PUBLIC_PORT,
     HTTP_PORTS,
     KV_EVENTS_PORTS,
     MORIIO_HANDSHAKE_PORTS,
@@ -83,6 +84,46 @@ class TestNodePortAllocator:
         assert allocator.next(tiny) == 65535
         with pytest.raises(ValueError, match="exhausted"):
             allocator.next(tiny)
+
+    def test_a_kind_that_grows_into_another_steps_past_it(self):
+        allocator = NodePortAllocator()
+        low, high = PortKind("low", 100), PortKind("high", 102, per_node=True)
+        assert allocator.next(high, "node0") == 102
+        assert [allocator.next(low) for _ in range(3)] == [100, 101, 103]
+        assert allocator.next(high, "node1") == 102
+        assert allocator.next(high, "node1") == 104, "a global kind's port counts on every node"
+
+    def test_a_strided_kind_holds_its_whole_stride(self):
+        allocator = NodePortAllocator(reserved=frozenset({HTTP_PORTS.base + 10}))
+        assert allocator.next(HTTP_PORTS, "node0") == HTTP_PORTS.base + HTTP_PORTS.stride
+        assert allocator.ports_by_node(["node0"])["node0"] == frozenset(
+            HTTP_PORTS.span(HTTP_PORTS.base + HTTP_PORTS.stride)
+        )
+
+    def test_fixed_listeners_are_never_handed_out(self):
+        allocator = NodePortAllocator(bases={"near": FRONTEND_PUBLIC_PORT - 1})
+        near = PortKind("near", FRONTEND_PUBLIC_PORT - 1)
+        assert [allocator.next(near) for _ in range(2)] == [FRONTEND_PUBLIC_PORT - 1, FRONTEND_PUBLIC_PORT + 1]
+
+    def test_reserved_ranges_are_skipped(self):
+        allocator = NodePortAllocator(bases={SIDECAR_GRPC_PORTS.name: 60990}, reserved_ranges=((32768, 60999),))
+        assert allocator.next(SIDECAR_GRPC_PORTS) == 61000
+
+    def test_ports_other_jobs_hold_are_skipped_on_their_nodes_only(self):
+        held = frozenset(HTTP_PORTS.span(HTTP_PORTS.base)) | {NCCL_PORTS.base}
+        allocator = NodePortAllocator(occupied={"node0": held})
+        assert allocator.next(HTTP_PORTS, "node0") == HTTP_PORTS.base + HTTP_PORTS.stride
+        assert allocator.next(HTTP_PORTS, "node1") == HTTP_PORTS.base
+        assert allocator.next(NCCL_PORTS) == NCCL_PORTS.base + 1, "a global kind may land on node0"
+
+    def test_ports_by_node_adds_global_kinds_to_every_node(self):
+        allocator = NodePortAllocator()
+        http = allocator.next(HTTP_PORTS, "node0")
+        nccl = allocator.next(NCCL_PORTS)
+        assert allocator.ports_by_node(["node0", "node1"]) == {
+            "node0": frozenset(HTTP_PORTS.span(http)) | {nccl},
+            "node1": frozenset({nccl}),
+        }
 
     def test_every_kind_has_its_own_range(self):
         kinds = [

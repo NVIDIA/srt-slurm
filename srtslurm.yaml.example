@@ -87,6 +87,13 @@ use_segment_sbatch_directive: true  # Default: true
 # Set to true if your cluster requires --exclusive to be set.
 use_exclusive_sbatch_directive: false # Default: false
 
+# Ports, when jobs can share a node (no --exclusive). Each job records the ports it binds
+# in a directory every node shares and allocates around the ports other live jobs hold.
+# reserved_port_ranges keeps allocated ports out of ranges such as the kernel's ephemeral
+# range (net.ipv4.ip_local_port_range) or a site daemon's ports.
+# port_registry_dir: "/shared/srt-slurm/port-registry"
+# reserved_port_ranges: ["32768-60999"]
+
 # Container aliases (optional; a recipe may also name the image directly in model.container)
 containers:
   sglang-latest: "/shared/containers/sglang-v0.4.sqsh"

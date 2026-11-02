@@ -79,6 +79,8 @@ def test_v2_atom_roles_build_prefill_decode_workers(tmp_path: Path) -> None:
         nodes=Nodes(head="node0", bench="node0", infra="node0", worker=("node0", "node1")),
         worker_model_arg="Qwen/Qwen3-0.6B",
         network_interface="hsn0",
+        port_registry_dir=None,
+        reserved_port_ranges=(),
     )
     path = tmp_path / "recipe.yaml"
     path.write_text(yaml.safe_dump(_config()))

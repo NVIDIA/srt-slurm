@@ -23,7 +23,7 @@ import sys
 import textwrap
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from srtctl.backends.base import WorkerMode
@@ -39,6 +39,7 @@ from srtctl.cli.mixins import (
 from srtctl.core.config import load_config
 from srtctl.core.health import wait_for_port
 from srtctl.core.lockfile import write_lockfile
+from srtctl.core.port_registry import PortLease, reserve_ports
 from srtctl.core.processes import (
     ProcessRegistry,
     setup_signal_handlers,
@@ -109,6 +110,8 @@ class SweepOrchestrator(
     config: SrtConfig
     runtime: RuntimeContext
     serve_only: bool = False
+    # This job's port-registry entry, held from the first port allocation until run() ends.
+    port_lease: PortLease | None = field(default=None, init=False, repr=False)
 
     @property
     def backend(self):
@@ -146,10 +149,22 @@ class SweepOrchestrator(
         """Compute physical process topology from endpoints (cached).
 
         Port defaults come from ``srtctl.ports`` and are allocated
-        deterministically within a job.
+        deterministically within a job. With ``port_registry_dir`` set, the ports
+        other live jobs hold on these nodes are read first and skipped, and this
+        job's ports are recorded until ``run`` ends (``core/port_registry.py``).
         """
-        allocator = NodePortAllocator(bases={SIDECAR_GRPC_PORTS.name: self.config.dynamo.sidecar_port})
-        return self.config.worker_processes(self.endpoints, port_allocator=allocator)
+        bases = {SIDECAR_GRPC_PORTS.name: self.config.dynamo.sidecar_port}
+        ranges = self.runtime.reserved_port_ranges
+        if self.runtime.port_registry_dir is None:
+            allocator = NodePortAllocator(bases=bases, reserved_ranges=ranges)
+            return self.config.worker_processes(self.endpoints, port_allocator=allocator)
+        nodes = sorted({node for endpoint in self.endpoints for node in endpoint.nodes})
+        with reserve_ports(self.runtime.port_registry_dir, self.runtime.job_id, nodes) as (lease, occupied):
+            allocator = NodePortAllocator(bases=bases, reserved_ranges=ranges, occupied=occupied)
+            processes = self.config.worker_processes(self.endpoints, port_allocator=allocator)
+            lease.publish(allocator.ports_by_node(nodes))
+        self.port_lease = lease
+        return processes
 
     def start_head_infrastructure(self, registry: ProcessRegistry) -> None:
         """Start the discovery plane (etcd, NATS) as services.
@@ -955,6 +970,9 @@ class SweepOrchestrator(
             exit_code = self.finalize_cpu_power_host_telemetry(exit_code, interrupted=stop_event.is_set())
             stop_event.set()
             registry.cleanup()
+            # Only once every worker has stopped do its ports become free for another job.
+            if self.port_lease is not None:
+                self.port_lease.release()
             # After cleanup so the GPUs are idle before node state is reverted.
             self._run_host_teardown()
             if exit_code != 0:

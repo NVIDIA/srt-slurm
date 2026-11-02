@@ -113,6 +113,36 @@ RAY_DASHBOARD_PORT = 8265
 DYNAMO_SIDECAR_GRPC_PORT = 19000
 
 
+# Listeners srtctl binds at a fixed number. NodePortAllocator never hands one of
+# these to a PortKind, so a kind whose range grows into one steps over it instead
+# of colliding with the frontend, the discovery plane or a service at runtime.
+FIXED_PORTS: frozenset[int] = frozenset(
+    {
+        ETCD_CLIENT_PORT,
+        ETCD_PEER_PORT,
+        NATS_PORT,
+        OTEL_GRPC_PORT,
+        FRONTEND_PUBLIC_PORT,
+        FRONTEND_INTERNAL_PORT,
+        SGLANG_ROUTER_METRICS_PORT,
+        SMG_METRICS_PORT,
+        LLM_D_EPP_GRPC_PORT,
+        LLM_D_EPP_HEALTH_PORT,
+        LLM_D_EPP_METRICS_PORT,
+        LLM_D_ENVOY_ADMIN_PORT,
+        LLM_D_EPP_KV_EVENTS_PORT,
+        MOONCAKE_MASTER_PORT,
+        MOONCAKE_HTTP_METADATA_PORT,
+        MOONCAKE_METRICS_PORT,
+        LMCACHE_SERVER_PORT,
+        LMCACHE_HTTP_PORT,
+        VLLM_DISCOVERY_PORT,
+        RAY_GCS_PORT,
+        RAY_DASHBOARD_PORT,
+    }
+)
+
+
 def rank_offset_subscriber_port(port: int, rank: int) -> int:
     """Undo vLLM's global DP-rank offset to reach a shared KV-event subscriber.
 
@@ -139,6 +169,14 @@ class PortKind:
     base: int
     stride: int = 1
     per_node: bool = False
+
+    def span(self, port: int, size: int = 1) -> range:
+        """Every port an allocation of ``size`` slots starting at ``port`` may bind.
+
+        A stride above one is room the engine uses from the port it is given, so the
+        whole stride counts, not only its first port.
+        """
+        return range(port, port + size * self.stride)
 
 
 # Bound on every worker process.

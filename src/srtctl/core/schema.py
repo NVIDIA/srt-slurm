@@ -395,6 +395,12 @@ class ClusterConfig:
     network_interface: str | None = None
     # GPU-subset mask passed to workers; ROCm clusters use ROCR_VISIBLE_DEVICES.
     visible_devices_env: str = "CUDA_VISIBLE_DEVICES"
+    # Directory on a filesystem every node shares where each job records the ports it binds,
+    # so a job whose nodes another job also uses allocates around them. Unset: no registry.
+    port_registry_dir: str | None = None
+    # Inclusive port ranges ("LOW-HIGH") no allocated port may fall in, e.g. the kernel's
+    # ephemeral range ("32768-60999", net.ipv4.ip_local_port_range) or ports a site daemon uses.
+    reserved_port_ranges: list[str] = field(default_factory=list)
     # Recipe exporter settings win. Explicit null disables the GPU default only.
     default_gpu_exporter: "TelemetryExporterConfig | None" = field(default_factory=lambda: DEFAULT_DCGM_EXPORTER)
     # Emit `#SBATCH --gpus-per-node`. Set false on clusters that reject or ignore it.
