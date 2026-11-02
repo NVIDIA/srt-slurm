@@ -29,7 +29,7 @@ container_mounts:
 env_to_set:
     CUDA_VISIBLE_DEVICES: 0
     HEAD_NODE_IP: 127.0.0.1
-    INFERA_VERSION: 0.3.2
+    INFERA_VERSION: 0.3.3
     SGLANG_CUDA_COREDUMP_BEFORE_CRASH: 0
     SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
 bash_preamble: |
@@ -52,7 +52,7 @@ container_mounts:
 env_to_set:
     CUDA_VISIBLE_DEVICES: 0
     HEAD_NODE_IP: 127.0.0.1
-    INFERA_VERSION: 0.3.2
+    INFERA_VERSION: 0.3.3
     SGLANG_CUDA_COREDUMP_BEFORE_CRASH: 0
     SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
 bash_preamble: |
@@ -73,7 +73,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    INFERA_VERSION: 0.3.2
+    INFERA_VERSION: 0.3.3
 bash_preamble: |
     setup_script=install-infera.sh && script_path="/configs/${setup_script}" && patch_script_path="/configs/patches/${setup_script}" && echo "Running setup script: ${script_path} (fallback ${patch_script_path})" && if [ -f "${script_path}" ]; then bash "${script_path}"; elif [ -f "${patch_script_path}" ]; then bash "${patch_script_path}"; else echo "WARNING: ${script_path} or ${patch_script_path} not found"; fi
 command: |
@@ -188,7 +188,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
-    INFERA_VERSION: 0.3.2
+    INFERA_VERSION: 0.3.3
     SRTCTL_FRONTEND_TYPE: infera
     SRT_FRONTEND_HOST: 127.0.0.1
     SRT_FRONTEND_PORT: 8000

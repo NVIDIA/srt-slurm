@@ -26,7 +26,7 @@ resources:
 
 setup_script: install-infera.sh
 environment:
-  INFERA_VERSION: "0.3.2"
+  INFERA_VERSION: "0.3.3"
 
 frontend:
   type: infera
