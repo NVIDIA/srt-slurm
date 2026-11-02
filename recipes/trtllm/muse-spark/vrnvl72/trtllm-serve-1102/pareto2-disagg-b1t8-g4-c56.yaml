@@ -1,0 +1,352 @@
+# Muse Spark Open NVFP4, Vera Rubin (VR), AgentX 1M corpus, full protocol (3600 s): disagg-b1t8-g4-c56.
+# mso-vrmerge delivery recipe (xiaow/trtllm-study 1b81cf82, notes/pinedrift/2026-10-30-mso-merge-vr-configs/
+# configs/vr/vr-disagg-b1t8-g4-c56.yaml), measured on Hecate batch-xdr: x p10 1007.3 tok/s/user, y 12,818 tok/s/GPU,
+# TTFT p90 5.0 s (jobs 915488).
+# container = the image built from xiaow/tekit mso-vrmerge/staircase-clean @ 32862f7e42 (sm103, sm107);
+# no code-overlay mounts. Engine args, env opt-ins and the benchmark block are the delivered recipe's.
+# Converted from BTK e2e_pareto/pareto2.yaml with hecate's substitutions resolved. The checkpoint is the
+# cluster's MODEL_MUSESPARK_OPEN_NVFP4 substitution (same weights); the chat template is pinned to
+# the no-date template the delivery was measured with.
+schema: 2
+name: mso-vrmerge-disagg-b1t8-g4-c56
+model:
+  path: /lustre/share/coreai_dlalgo_ci/artifacts/model/meta-models_muse-spark-open-816b-a42b-nvfp4/hf/hf-4239e4d_orig
+  container: /lustre/fsw/coreai_comparch_trtllm/xiaow/mso-vrmerge-20261030/images/tensorrt-llm-musespark-open-mso-vrmerge-32862f7e42-sm103-sm107-aarch64.sqsh
+  precision: nvfp4
+slurm:
+  account: coreai_comparch_inferencex
+  partition: batch-xdr
+  time_limit: 02:30:00
+sbatch_directives:
+  mem: '0'
+  job-name: coreai_comparch_inferencex-mso-vrmerge.disagg-b1t8-g4-c56
+  constraint: cr
+  exclude: hecate[0263-0264]
+srun_options:
+  account: coreai_comparch_inferencex
+  container-remap-root: ''
+  cpu-bind: none
+  mem: '0'
+dynamo:
+  install: false
+environment:
+  SLURM_ACCOUNT: coreai_comparch_inferencex
+  HF_HOME: /lustre/fsw/coreai_comparch_aarwlt/itabrizian/hf_cache
+health_check:
+  max_attempts: 720
+  interval_seconds: 10
+container_mounts:
+  /lustre: /lustre
+extra_mount:
+- /lustre/fsw/coreai_comparch_trtllm/xiaow/mso-midc-vr-bn-20261028/inputs/chat_template-nodate-ab7a0b67.jinja:/lustre/fsw/coreai_comparch_trtllm/xiaow/mso-midc-vr-bn-20261028/inputs/chat_template-nodate-ab7a0b67.jinja:ro
+# Hecate VR200 performance runs need the HBM clock locked at 4752 MHz: lock it on every node before any
+# worker starts and reset it when the job ends (teardown also runs on failure). A failed lock fails the job.
+host_setup:
+  commands:
+  - sudo -n nvidia-smi -lmc 4752,4752
+  teardown:
+  - sudo -n nvidia-smi -rmc
+resources:
+  gpu_type: vr200
+  gpus_per_node: 4
+frontend:
+  type: trtllm_serve
+  enable_multiple_frontends: false
+  ctx_router:
+    type: conversation
+  gen_router:
+    type: load_balancing
+  server_config_extra:
+    gen_strip_message_history: true
+    gen_tokids_ctxbytes: true
+    num_workers: 4
+    server_keep_alive_timeout: 3600
+    backend: pytorch
+  env:
+    TRTLLM_SERVER_DISABLE_GC: '1'
+  placement:
+    node: first_decode
+  args:
+    server_start_timeout: 7200
+    request_timeout: 7200
+engine:
+  type: trtllm
+  numa_memory_bind: true
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 4
+    env:
+      TLLM_LOG_LEVEL: INFO
+      TRTLLM_SERVER_DISABLE_GC: '1'
+      TRTLLM_WORKER_DISABLE_GC: '1'
+      ENROOT_ALLOW_DEV: 'yes'
+      NCCL_GRAPH_MIXING_SUPPORT: '0'
+      MIMALLOC_ARENA_RESERVE: '0'
+      OMP_NUM_THREADS: '1'
+      TLLM_NUMA_AWARE_WORKER_AFFINITY: '1'
+      MPI_UCX_TLS: rc,ud,sm,self
+      MPI_UCX_NET_DEVICES: all
+      OMPI_MCA_coll: ^ucc,hcoll
+      FLASHINFER_CACHE_DIR: /lustre/fsw/coreai_comparch_aarwlt/itabrizian/hf_cache/musespark-open/mso-vrmerge/verarubin/disagg-b1t8-g4-c56/flashinfer
+      FLASHINFER_WORKSPACE_BASE: /lustre/fsw/coreai_comparch_aarwlt/itabrizian/hf_cache/musespark-open/mso-vrmerge/verarubin/disagg-b1t8-g4-c56/flashinfer
+      NCCL_CUMEM_ENABLE: '1'
+      NCCL_MNNVL_ENABLE: '1'
+      TRTLLM_ENABLE_PDL: '1'
+      TRTLLM_SKIP_KV_CACHE_ESTIMATION: '1'
+      TRTLLM_KV_CACHE_TRANSFER_TIMEOUT_SEC: '600'
+      TLLM_PROFILE_LOG_RANKS: all
+      MUSESPARK_OPEN_SM107_FUSED_KERNELS: '1'
+      MUSESPARK_OPEN_ALLREDUCE: MNNVL
+      MUSESPARK_OPEN_FUSED_FINALIZE_AR_MNNVL: '1'
+      MUSESPARK_OPEN_SHARDED_PROJECTIONS: '1'
+      TRTLLM_LOW_M_GEMM_BACKEND: auto
+      MUSESPARK_OPEN_FULL_ROUTING_ALL_BATCHES: '1'
+      MUSESPARK_OPEN_FULL_ROUTING_TORCH_ORDER: '1'
+      MUSESPARK_OPEN_FUSED_FINALIZE_AR_CHUNKED: '1'
+      MUSESPARK_OPEN_LARGE_NORM_GATE: '1'
+      MUSESPARK_OPEN_LARGE_PREPARE_OVERLAP: '1'
+      MUSESPARK_OPEN_LARGE_FINALIZE_SPARSE: '1'
+      TRTLLM_KV_HOST_TIER_DROP_PAGE_CACHE: '1'
+      TRTLLM_KV_HOST_TIER_COLLAPSE: '1'
+      TRTLLM_SCHED_SHORTEST_PREFILL_FIRST: '1'
+      UCX_TLS: cuda_ipc,cuda_copy,sm,self,tcp
+    extra_args:
+    - --chat_template
+    - /lustre/fsw/coreai_comparch_trtllm/xiaow/mso-midc-vr-bn-20261028/inputs/chat_template-nodate-ab7a0b67.jinja
+    args:
+      allreduce_strategy: NCCL
+      attn_backend: TRTLLM
+      cache_transceiver_config:
+        backend: NIXL
+        kv_cache_bounce_size_mb: 5120
+        kv_transfer_timeout_ms: 600000
+        max_tokens_in_buffer: 1048576
+        transceiver_runtime: PYTHON
+      cuda_graph_config:
+        enable_padding: true
+        max_batch_size: 64
+      custom_tokenizer: musespark_open
+      disable_mm_encoder: true
+      disable_overlap_scheduler: false
+      enable_attention_dp: false
+      enable_chunked_prefill: true
+      kv_cache_config:
+        block_reuse_config:
+          policy: all_reusable
+          swa_endpoint_rewind_tokens: 1024
+        dtype: fp8
+        enable_block_reuse: true
+        enable_partial_reuse: true
+        free_gpu_memory_fraction: 0.8
+        host_cache_size: 257698037760
+        pool_ratio:
+        - 0.25
+        - 0.75
+        tokens_per_block: 32
+        use_kv_cache_manager_v2: true
+      max_batch_size: 64
+      max_num_tokens: 16384
+      max_seq_len: 996672
+      moe_config:
+        backend: TRTLLM
+      moe_expert_parallel_size: 4
+      num_postprocess_workers: 8
+      pipeline_parallel_size: 1
+      prefill_capture_num_tokens:
+      - 1
+      - 2
+      - 4
+      - 8
+      - 16
+      - 32
+      - 64
+      - 128
+      - 256
+      - 512
+      - 768
+      - 1024
+      - 1280
+      - 1536
+      - 1792
+      - 2048
+      - 2304
+      - 2560
+      - 2816
+      - 3072
+      - 3584
+      - 4096
+      - 4608
+      - 5120
+      - 5632
+      - 6144
+      - 6656
+      - 7168
+      - 7680
+      - 8192
+      prefill_cuda_graph_backend: breakable
+      print_iter_log: false
+      scheduler_config:
+        capacity_scheduler_policy: MAX_UTILIZATION
+      tensor_parallel_size: 4
+      trust_remote_code: true
+      enable_iter_perf_stats: true
+      iter_perf_stats_interval: 40
+      return_perf_metrics: false
+  decode:
+    nodes: 8
+    workers: 4
+    gpus: 8
+    env:
+      TLLM_LOG_LEVEL: INFO
+      TRTLLM_SERVER_DISABLE_GC: '1'
+      TRTLLM_WORKER_DISABLE_GC: '1'
+      ENROOT_ALLOW_DEV: 'yes'
+      NCCL_GRAPH_MIXING_SUPPORT: '0'
+      MIMALLOC_ARENA_RESERVE: '0'
+      OMP_NUM_THREADS: '1'
+      TLLM_NUMA_AWARE_WORKER_AFFINITY: '1'
+      MPI_UCX_TLS: rc,ud,sm,self
+      MPI_UCX_NET_DEVICES: all
+      OMPI_MCA_coll: ^ucc,hcoll
+      FLASHINFER_CACHE_DIR: /lustre/fsw/coreai_comparch_aarwlt/itabrizian/hf_cache/musespark-open/mso-vrmerge/verarubin/disagg-b1t8-g4-c56/flashinfer
+      FLASHINFER_WORKSPACE_BASE: /lustre/fsw/coreai_comparch_aarwlt/itabrizian/hf_cache/musespark-open/mso-vrmerge/verarubin/disagg-b1t8-g4-c56/flashinfer
+      NCCL_CUMEM_ENABLE: '1'
+      NCCL_MNNVL_ENABLE: '1'
+      TRTLLM_ENABLE_PDL: '1'
+      TRTLLM_SKIP_KV_CACHE_ESTIMATION: '0'
+      TRTLLM_KV_CACHE_TRANSFER_TIMEOUT_SEC: '600'
+      TLLM_PROFILE_LOG_RANKS: all
+      MUSESPARK_OPEN_SM107_FUSED_KERNELS: '1'
+      MUSESPARK_OPEN_ALLREDUCE: MNNVL
+      MUSESPARK_OPEN_FUSED_FINALIZE_AR_MNNVL: '1'
+      MUSESPARK_OPEN_SHARDED_PROJECTIONS: '1'
+      TRTLLM_LOW_M_GEMM_BACKEND: auto
+      TRTLLM_DFLASH_WINDOWED_CTX_ARENA: '1'
+      TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS: '3.05'
+      UCX_TLS: cuda_ipc,cuda_copy,sm,self,tcp
+      MUSESPARK_OPEN_LEVER__ROLE: gen
+    extra_args:
+    - --chat_template
+    - /lustre/fsw/coreai_comparch_trtllm/xiaow/mso-midc-vr-bn-20261028/inputs/chat_template-nodate-ab7a0b67.jinja
+    args:
+      allreduce_strategy: NCCL
+      attn_backend: TRTLLM
+      cache_transceiver_config:
+        backend: NIXL
+        kv_cache_bounce_size_mb: 5120
+        kv_transfer_timeout_ms: 600000
+        max_tokens_in_buffer: 1048576
+        transceiver_runtime: PYTHON
+      cuda_graph_config:
+        batch_sizes:
+        - 1
+        enable_padding: true
+        max_batch_size: 1
+      custom_tokenizer: musespark_open
+      disable_mm_encoder: true
+      enable_attention_dp: false
+      enable_lm_head_tp_in_adp: false
+      kv_cache_config:
+        dtype: fp8
+        enable_block_reuse: false
+        enable_partial_reuse: false
+        free_gpu_memory_fraction: 0.9
+        host_cache_size: 0
+        pool_ratio:
+        - 0.05
+        - 0.95
+        tokens_per_block: 32
+        use_kv_cache_manager_v2: true
+      max_batch_size: 1
+      max_num_tokens: 8
+      max_seq_len: 997696
+      modeling_v2: require
+      moe_config:
+        backend: TRTLLM
+      moe_expert_parallel_size: 8
+      num_postprocess_workers: 8
+      pipeline_parallel_size: 1
+      print_iter_log: false
+      scheduler_config:
+        capacity_scheduler_policy: MAX_UTILIZATION
+      speculative_config:
+        decoding_type: DFlash
+        max_draft_len: 7
+        speculative_model: /lustre/share/coreai_dlalgo_ci/artifacts/model/radixark_muse-spark-open-dflash2/hf/hf-46c90f4_orig
+        attention_backend: VANILLA
+      stream_interval: 20
+      tensor_parallel_size: 8
+      trust_remote_code: true
+      enable_iter_perf_stats: true
+      iter_perf_stats_interval: 40
+      return_perf_metrics: false
+benchmark:
+  type: custom
+  env:
+    AGENTX_CLIENT: agentx-harness==1.0.12
+    HF_HOME: /lustre/fsw/coreai_comparch_aarwlt/itabrizian/hf_cache
+    AIPERF_DATASET_MMAP_CACHE_DIR: /lustre/fsw/coreai_comparch_aarwlt/itabrizian/hf_cache/aiperf_mmap_cache
+    AGENTX_CLIENT_CACHE_DIR: /lustre/fsw/coreai_comparch_aarwlt/itabrizian/hf_cache/agentx_client_cache
+    AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID: 'true'
+    HF_HUB_TRUST_REMOTE_CODE: '1'
+    AIPERF_DATASET_CONFIGURATION_TIMEOUT: '1800'
+    AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT: '1800'
+  command: |
+    set -euo pipefail
+    AGENTX_RUNTIME="$(mktemp -d "${TMPDIR:-/tmp}/agentx-client.XXXXXX")"
+    CACHE="${AGENTX_CLIENT_CACHE_DIR:-$AGENTX_RUNTIME/cache}"
+    if ! { mkdir -p "$CACHE" && [ -w "$CACHE" ]; } 2>/dev/null; then
+      echo "AgentX client cache $CACHE is not writable; using a per-job cache"
+      CACHE="$AGENTX_RUNTIME/cache"
+    fi
+    echo "AgentX client cache: $CACHE"
+    export UV_LINK_MODE=copy UV_PYTHON_INSTALL_DIR="$AGENTX_RUNTIME/python" UV_HTTP_TIMEOUT=120 UV_HTTP_RETRIES=3 UV_LOCK_TIMEOUT=1800
+    UV="$(command -v uv || true)"
+    if [ -z "$UV" ]; then
+      PIP_CACHE_DIR="$CACHE/pip" python3 -m pip install -q --target "$AGENTX_RUNTIME/uv" uv
+      UV="$AGENTX_RUNTIME/uv/bin/uv"
+    fi
+    agentx_install() {
+      env -u PYTHONPATH UV_CACHE_DIR="$1/uv" UV_PYTHON_CACHE_DIR="$1/python" "$UV" venv -q --no-config --python 3.11 "$2" &&
+      env -u PYTHONPATH UV_CACHE_DIR="$1/uv" UV_PYTHON_CACHE_DIR="$1/python" "$UV" pip install --no-config --exclude-newer 2026-10-27T13:16:27Z --python "$2/bin/python" "$AGENTX_CLIENT" "datasets>=4.7.0"
+    }
+    AGENTX_VENV="$AGENTX_RUNTIME/venv"
+    if ! agentx_install "$CACHE" "$AGENTX_VENV"; then
+      echo "AgentX client install with the cache $CACHE failed; retrying with a per-job cache"
+      AGENTX_VENV="$AGENTX_RUNTIME/venv-retry"
+      agentx_install "$AGENTX_RUNTIME/cache" "$AGENTX_VENV"
+    fi
+    # The runner's UCX warmup: small requests prime the CTX->GEN KV path before the measured client.
+    python -m tensorrt_llm.serve.scripts.benchmark_serving --model /model --dataset-name random --random-ids \
+      --random-input-len 100 --random-output-len 10 --num-prompts 8 \
+      --host "$SRT_FRONTEND_HOST" --port "$SRT_FRONTEND_PORT" --ignore-eos --trust-remote-code --non-streaming || true
+    mkdir -p /logs/agentic/concurrency_56
+    # Server metrics from every worker srtctl lists (none without an engine metrics endpoint).
+    SERVER_METRICS_ARGS=()
+    if [ -n "${AIPERF_SERVER_METRICS_URLS:-}" ]; then
+      IFS=',' read -r -a SERVER_METRICS_URLS <<< "$AIPERF_SERVER_METRICS_URLS"
+      SERVER_METRICS_ARGS=(--server-metrics "${SERVER_METRICS_URLS[@]}")
+    fi
+    env -u PYTHONPATH PYTHONNOUSERSITE=1 "$AGENTX_VENV/bin/aiperf" profile --scenario agentx \
+      --url http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT --endpoint /v1/chat/completions \
+      -m /model --tokenizer-trust-remote-code \
+      --public-dataset semianalysis_cc_traces_weka_062126 --concurrency 56 \
+      --output-artifact-dir /logs/agentic/concurrency_56 --ui simple \
+      --benchmark-duration 3600 --warmup-requests-per-lane 10 --max-context-length 996579 "${SERVER_METRICS_ARGS[@]}"
+  placement:
+    node: last_decode
+observability:
+  enabled: false
+  tachometer:
+    enabled: false
+telemetry:
+  enabled: false
+identity:
+  container:
+    image: 'mso-vrmerge delivery image: GitHub NVIDIA/TensorRT-LLM feat/musespark-open-agentx c55183f445 + the merged VR HC
+      / midc / LL levers (lever resolver), commit 32862f7e42, built from the branch''s own wheel (sm103+sm107 aarch64, TRT-LLM
+      1.4.0a0); no code overlay'
+  frameworks:
+    tensorrt_llm: 1.4.0a0
