@@ -2,15 +2,15 @@ schema: 2
 name: disagg-gb300-3p2d-dep4-dep4-c720-b36-mnt252-mtp6-kvoffload
 model:
   path: /data/home/rihuo/Qwen3.5-397B-A17B-NVFP4-V2
-  container: /data/home/rihuo/tensorrt-llm-release-feat-qwen3.5-opt-1.4.0a0.dev202610281318.sqsh
+  container: /data/home/rihuo/tensorrt-llm-release-1.4.0rc3.dev202611020007.sqsh
   precision: nvfp4
 identity:
   model:
     repo: nvidia/Qwen3.5-397B-A17B-NVFP4-V2
   container:
-    image: /data/home/rihuo/tensorrt-llm-release-feat-qwen3.5-opt-1.4.0a0.dev202610281318.sqsh
+    image: /data/home/rihuo/tensorrt-llm-release-1.4.0rc3.dev202611020007.sqsh
   frameworks:
-    tensorrt_llm: 1.4.0a0.dev202610281318
+    tensorrt_llm: 1.4.0rc3.dev202611020007
 slurm:
   time_limit: 04:00:00
 extra_mount:
@@ -45,17 +45,8 @@ roles:
       UCX_CUDA_IPC_MAX_POLL: inf
       UCX_CUDA_COPY_MAX_POLL: inf
       UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
-      TRTLLM_Q35_MTP_MOE_QUANT_MAX_M: '0'
-      TRTLLM_INCREMENTAL_TOKENIZE: '1'
-      TRTLLM_INCREMENTAL_TOKENIZE_VERIFY_EVERY: '50'
       TRTLLM_ENABLE_PDL: '1'
       TRTLLM_KV_TRANSFER_NUM_THREADS: '8'
-      TRTLLM_Q35_PROFILE: ctx
-      TRTLLM_CTX_SCHED_SRPT: '1'
-      TRTLLM_CTX_SCHED_SRPT_AGE_S: '8'
-      TRTLLM_CTX_SCHED_SRPT_AGE_CAP: '2048'
-      TRTLLM_MAMBA_INFORWARD_SNAPSHOT: '1'
-      TRTLLM_FRONTEND_AFFINITY_PORT_STRIDE: '10'
       CUDA_SCALE_LAUNCH_QUEUES: 4x
       TRTLLM_SKIP_KV_CACHE_ESTIMATION: '1'
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
@@ -77,6 +68,7 @@ roles:
       enable_chunked_prefill: true
       enable_iter_perf_stats: true
       enable_iter_req_stats: false
+      enable_tokenization_cache: true
       iter_perf_stats_interval: 40
       kv_cache_config:
         block_reuse_config:
@@ -116,6 +108,9 @@ roles:
       return_perf_metrics: true
       scheduler_config:
         capacity_scheduler_policy: MAX_UTILIZATION
+        context_scheduling_policy: shortest_uncached_first
+        context_starvation_iterations: 30
+      serve_frontend_affinity_port_stride: 10
       tensor_parallel_size: 4
       torch_compile_config:
         capture_num_tokens:
@@ -154,16 +149,8 @@ roles:
       UCX_CUDA_IPC_MAX_POLL: inf
       UCX_CUDA_COPY_MAX_POLL: inf
       UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
-      TRTLLM_Q35_MTP_MOE_QUANT_MAX_M: '0'
-      TRTLLM_INCREMENTAL_TOKENIZE: '1'
-      TRTLLM_INCREMENTAL_TOKENIZE_VERIFY_EVERY: '50'
       TRTLLM_ENABLE_PDL: '1'
       TRTLLM_KV_TRANSFER_NUM_THREADS: '8'
-      TRTLLM_Q35_PROFILE: gen
-      TRTLLM_SPEC_SAMPLER_FUSED_STORE: '1'
-      TRTLLM_OVERLAP_LOOP_ON_EXECUTION_STREAM: '1'
-      TRTLLM_DISAGG_GEN_IDLE_POLL_SKIP: '1'
-      TRTLLM_DISAGG_GEN_EMIT_FIRST_STEP: '1'
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
       TRTLLM_PINNED_WEIGHT_STAGING: '1'
       MIMALLOC_PURGE_DELAY: ''
@@ -190,6 +177,7 @@ roles:
       enable_iter_perf_stats: true
       enable_iter_req_stats: false
       enable_lm_head_tp_in_adp: true
+      enable_tokenization_cache: true
       iter_perf_stats_interval: 40
       kv_cache_config:
         avg_seq_len: 102150
@@ -219,6 +207,7 @@ roles:
       perf_metrics_max_requests: 100000
       pipeline_parallel_size: 1
       print_iter_log: true
+      replicate_embedding: true
       return_perf_metrics: true
       scheduler_config:
         capacity_scheduler_policy: GUARANTEED_NO_EVICT
@@ -233,15 +222,17 @@ frontend:
   enable_multiple_frontends: false
   ctx_router:
     type: conversation
+    enable_tokenization_cache: true
   env:
     TRTLLM_SERVER_DISABLE_GC: '1'
-    TRTLLM_INCREMENTAL_TOKENIZE: '1'
-    TRTLLM_INCREMENTAL_TOKENIZE_VERIFY_EVERY: '50'
-    TRTLLM_DISAGG_CTX_FRONTEND_AFFINITY: '8:10'
   server_config_extra:
     gen_strip_message_history: true
     gen_tokids_ctxbytes: true
     num_workers: 4
+    # Top-level keys are inherited into context_servers, where the orchestrator reads the
+    # affinity layout of the context workers (num_serve_frontends: 8 in their args).
+    num_serve_frontends: 8
+    serve_frontend_affinity_port_stride: 10
     server_keep_alive_timeout: 3600
     backend: pytorch
   placement:
