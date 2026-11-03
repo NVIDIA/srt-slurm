@@ -108,6 +108,10 @@ Tachometer writes its Parquet stream under `<log_dir>/<storage_subdir>/raw/scrap
 
 The scraper runs as a best-effort process: if it dies (or the binary is missing at runtime), the benchmark continues and the loss is visible in `tachometer.out` and the sweep log. `srtctl validate-setup` still fails fast at submit time when `bin/tachometer-scraper` is absent.
 
+## nic_traffic
+
+`observability.nic_traffic` records every RDMA NIC's transmit and receive bytes on each node once per second, on by default for any job that spans more than one node and independent of `observability.enabled` and Tachometer. Post-processing writes the mean and peak Gbit/s per NIC and per node for each benchmark concurrency to `<log_dir>/nic_traffic/nic_traffic_summary.csv`. See [RDMA NIC traffic](nic-traffic.md) for the counter sources, artifacts and the summary math.
+
 ## telemetry
 
 `telemetry` is GPU power measurement (the `dcgm-power` artifact producer). It can run alongside `observability.tachometer`; it does not start Tachometer itself. The exporter that supplies the watts is not tied to DCGM: the exporter block's `gpu_labels` and `gpu_metrics` select the labels and metrics (see [GPU power telemetry](power-telemetry.md#gpu-exporter-labels-and-metrics)).
