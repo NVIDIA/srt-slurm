@@ -1,10 +1,11 @@
 # llm-d router
 
 `frontend.type: llm-d` routes requests with the [llm-d](https://llm-d.ai) router: the
-Endpoint Picker (EPP) behind Envoy, in front of direct `vllm serve` workers. The EPP
-scores the workers with the plugins in `frontend.epp_config` (prefix-cache affinity,
-queue depth, load, ...) and, for prefill/decode, picks a prefill and a decode worker for
-every request. No Dynamo, NATS, or etcd is involved.
+Endpoint Picker (EPP) behind Envoy, in front of direct `vllm serve` or SGLang
+(`sglang.launch_server`) workers. The EPP scores the workers with the plugins in
+`frontend.epp_config` (prefix-cache affinity, queue depth, load, ...) and, for
+prefill/decode, picks a prefill and a decode worker for every request. No Dynamo, NATS, or
+etcd is involved.
 
 Upstream references are pinned to llm-d-router
 [v0.10.0](https://github.com/llm-d/llm-d-router/tree/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26)
@@ -17,7 +18,7 @@ and the llm-d [no-Kubernetes guide](https://github.com/llm-d/llm-d/tree/7fb84b0a
 | Envoy | router node | the frontend (`llm-d-envoy_0`) | the public port (8000); admin `/ready` on 9901 |
 | EPP | router node | the frontend (`llm-d-epp_0`) | ext_proc gRPC 9002, gRPC health 9003, Prometheus 9090 |
 | P/D sidecar | every routable decode worker (prefill/decode jobs only) | the implied `llm-d-sidecar` service | `Process.proxy_port`, from the allocator |
-| vLLM | every worker | the backend, as for the other static routers | `Process.http_port` |
+| vLLM / SGLang | every worker | the backend, as for the other static routers | `Process.http_port` |
 
 Envoy owns the public port. For every request it asks the EPP over ext_proc
 (`FULL_DUPLEX_STREAMED`) which endpoint to use; the EPP sets the
@@ -25,11 +26,13 @@ Envoy owns the public port. For every request it asks the EPP over ext_proc
 request there. For prefill/decode the EPP picks a decode endpoint and names the chosen
 prefill worker in `x-prefiller-host-port`
 ([`disagg_profile_handler.go`](https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/epp/framework/plugins/scheduling/profilehandler/disagg/disagg_profile_handler.go#L570-L573)).
-The decode endpoint is llm-d's P/D sidecar: it sends the request to that prefill worker
-first, then hands the returned `kv_transfer_params` to its own vLLM, whose KV connector
-pulls the cache from the prefill worker
-([`connector_nixlv2.go`](https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/sidecar/proxy/connector_nixlv2.go#L54)).
-Everything else, `/metrics` included, the sidecar proxies to its vLLM.
+The decode endpoint is llm-d's P/D sidecar: for vLLM (`nixlv2`) it sends the request to
+that prefill worker first and hands the returned `kv_transfer_params` to its local vLLM,
+whose KV connector pulls the cache from the prefill worker
+([`connector_nixlv2.go`](https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/sidecar/proxy/connector_nixlv2.go#L54));
+for SGLang (`sglang`, [`connector_sglang.go`](https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/sidecar/proxy/connector_sglang.go#L38-L48))
+it coordinates bootstrap metadata and dispatches concurrent prefill and decode requests.
+Everything else, `/metrics` included, the sidecar proxies to its worker.
 
 ### Why the EPP and Envoy are the frontend and the sidecar is a service
 
@@ -63,18 +66,22 @@ flags in `command` or `args` is rejected at config load. P/D jobs require exactl
 enabled sidecar service definition; customize the implied entry by name.
 The allocator hands out the proxy port (`PROXY_PORTS`) for every routable worker of a
 mode the frontend proxies (`Frontend.proxied_worker_modes`), so two decode workers on
-one node never collide. The `--kv-connector` protocol comes from the decode workers' vLLM
-connector class. Engine commands and sidecar selection use the same payload:
-a role's explicit `kv-transfer-config` takes precedence over its `connector`,
-which takes precedence over `engine.connector`:
+one node never collide. The `--kv-connector` protocol comes from the decode workers' KV
+connector or transfer backend (for vLLM, a role's explicit `kv-transfer-config` takes
+precedence over its `connector`, which takes precedence over `engine.connector`; for
+SGLang, `roles.decode.args.disaggregation-transfer-backend` or `engine.args`):
 
-| Decode connector | Sidecar protocol |
+| Engine setting (decode) | Sidecar protocol |
 | --- | --- |
-| `NixlConnector` | `nixlv2` |
+| vLLM `NixlConnector` | `nixlv2` |
+| SGLang `disaggregation-transfer-backend: nixl` | `sglang` |
 
-A `MultiConnector` maps through the first connector it wraps that has a protocol, so
+A vLLM `MultiConnector` maps through the first connector it wraps that has a protocol, so
 NIXL next to vLLM's `OffloadingConnector` (CPU KV offloading, as in llm-d's tiered
-wide-EP guide) runs `nixlv2`. Any other decode connector is rejected at load time.
+wide-EP guide) runs `nixlv2`. For SGLang prefill/decode jobs, srtctl also sets
+`SGLANG_BOOTSTRAP_PORT=7200` (`SGLANG_BOOTSTRAP_PORT_BASE`) in the sidecar environment
+to match the `--disaggregation-bootstrap-port` given to each prefill worker. Any other
+decode connector is rejected at load time.
 
 ## Endpoint discovery
 
@@ -256,7 +263,14 @@ that rank.
 
 ## Limitations
 
-- vLLM workers over HTTP only; gRPC roles are rejected.
+- vLLM or SGLang workers over HTTP only; gRPC roles and mixed engines across prefill and
+  decode are rejected.
+- SGLang prefill/decode allows at most one prefill worker per node (set
+  `resources.spread_workers: true` or dedicate at least one node per prefill worker):
+  srtctl allocates bootstrap ports per node while `pd-sidecar` dials a single
+  `SGLANG_BOOTSTRAP_PORT` (`7200`).
+- `roles.<role>.kv_events` is supported on vLLM only; with SGLang, use
+  `approx-prefix-cache-producer` in `frontend.epp_config`.
 - One router replica: the EPP keeps its scheduling state (the approximate prefix index,
   in-flight load) in memory. Multi-node jobs require `enable_multiple_frontends: false`:
   nginx would put the router on a different node from the public endpoint, where readiness

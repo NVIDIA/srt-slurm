@@ -34,6 +34,7 @@ from srtctl.ports import (
     LLM_D_EPP_GRPC_PORT,
     LLM_D_EPP_KV_EVENTS_PORT,
     LLM_D_EPP_METRICS_PORT,
+    SGLANG_BOOTSTRAP_PORT_BASE,
     WORKER_PROXY_PORT_BASE,
 )
 from srtctl.services.implicit import effective_services
@@ -56,7 +57,9 @@ def _load(recipe: dict) -> SrtConfig:
 def test_registry_resolves_llm_d() -> None:
     frontend = get_frontend("llm-d")
     assert isinstance(frontend, LLMDFrontend)
-    assert frontend.required_backend == "vllm"
+    assert frontend.required_backend is None
+    assert isinstance(frontend.SUPPORTED_BACKENDS, frozenset)
+    assert set(frontend.SUPPORTED_BACKENDS) == {"vllm", "sglang"}
     assert frontend.worker_api_port("decode") == "allocated"
     assert frontend.frontend_metrics_port(None) == LLM_D_EPP_METRICS_PORT
 
@@ -478,12 +481,144 @@ def test_agg_example_launches_epp_and_envoy() -> None:
     assert "pd-sidecar" not in plan
 
 
-def test_engine_must_be_vllm() -> None:
+def test_engine_must_be_supported_backend() -> None:
     recipe = _recipe(AGG)
-    recipe["engine"] = "sglang"
-    recipe["roles"]["agg"]["args"] = {"served-model-name": "m"}
+    recipe["engine"] = "trtllm"
     with pytest.raises(ValidationError, match="requires backend"):
         _load(recipe)
+
+
+def _sglang_disagg_recipe() -> dict:
+    recipe = _recipe(DISAGG)
+    recipe["engine"] = "sglang"
+    for role in ("prefill", "decode"):
+        recipe["roles"][role]["args"] = {
+            "served-model-name": "Qwen/Qwen3-0.6B",
+            "tensor-parallel-size": 1,
+            "disaggregation-transfer-backend": "nixl",
+        }
+    return recipe
+
+
+def test_sglang_agg_example_launches_epp_and_envoy(tmp_path: Path) -> None:
+    recipe = _recipe(AGG)
+    recipe["engine"] = "sglang"
+    recipe["roles"]["agg"]["args"] = {"served-model-name": "Qwen/Qwen3-0.6B", "tensor-parallel-size": 1}
+    recipe_path = tmp_path / "sglang-llm-d-agg.yaml"
+    recipe_path.write_text(yaml.safe_dump(recipe))
+
+    with patch("tests.launch_snapshots.REPO_ROOT", tmp_path):
+        plan = render_launch_plan(recipe_path)
+    assert "# exit_code: 0" in plan
+    assert "sglang.launch_server" in plan
+    assert "## llm-d-epp_0" in plan and "## llm-d-envoy_0" in plan
+    assert "pd-sidecar" not in plan
+
+
+def test_sglang_pd_launches_sidecar_with_sglang_connector_and_bootstrap_port(tmp_path: Path) -> None:
+    recipe = _sglang_disagg_recipe()
+    recipe["resources"] = {"gpu_type": "gb200", "gpus_per_node": 4}
+    recipe["roles"]["prefill"].update(
+        {
+            "nodes": 4,
+            "workers": 2,
+            "gpus": 8,
+            "args": {
+                "served-model-name": "Qwen/Qwen3-0.6B",
+                "tensor-parallel-size": 1,
+                "pipeline-parallel-size": 8,
+                "disaggregation-transfer-backend": "nixl",
+            },
+        }
+    )
+    recipe["roles"]["decode"].update(
+        {
+            "nodes": 4,
+            "workers": 1,
+            "gpus": 16,
+            "args": {
+                "served-model-name": "Qwen/Qwen3-0.6B",
+                "tensor-parallel-size": 16,
+                "data-parallel-size": 16,
+                "expert-parallel-size": 16,
+                "enable-dp-attention": True,
+                "disaggregation-transfer-backend": "nixl",
+            },
+        }
+    )
+    recipe_path = tmp_path / "sglang-llm-d-2p1d.yaml"
+    recipe_path.write_text(yaml.safe_dump(recipe))
+
+    with patch("tests.launch_snapshots.REPO_ROOT", tmp_path):
+        plan = render_launch_plan(recipe_path)
+    assert "# exit_code: 0" in plan
+    steps = [line[3:] for line in plan.splitlines() if line.startswith("## ")]
+    assert "service_llm-d-sidecar_decode_0_node-05" in steps
+    assert "llm-d-epp_0" in steps and "llm-d-envoy_0" in steps
+
+    sidecar_block = plan.split("## service_llm-d-sidecar_decode_0_node-05")[1].split("## ")[0]
+    assert f"SGLANG_BOOTSTRAP_PORT: {SGLANG_BOOTSTRAP_PORT_BASE}" in sidecar_block
+    assert f"--port={WORKER_PROXY_PORT_BASE}" in sidecar_block
+    assert "--model-server-port=6100" in sidecar_block
+    assert "--kv-connector=sglang" in sidecar_block
+
+    prefill0 = plan.split("## prefill_0_node-01")[1].split("## ")[0]
+    prefill1 = plan.split("## prefill_1_node-03")[1].split("## ")[0]
+    decode0 = plan.split("## decode_0_node-05")[1].split("## ")[0]
+    assert f"--disaggregation-bootstrap-port {SGLANG_BOOTSTRAP_PORT_BASE}" in prefill0
+    assert f"--disaggregation-bootstrap-port {SGLANG_BOOTSTRAP_PORT_BASE}" in prefill1
+    assert "--disaggregation-transfer-backend nixl" in prefill0
+    assert "--disaggregation-transfer-backend nixl" in decode0
+    assert "--skip-server-warmup" in prefill0 and "--skip-server-warmup" in decode0
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        (
+            lambda r: r["roles"]["decode"]["args"].update({"disaggregation-transfer-backend": "mooncake"}),
+            "no protocol for the sglang decode KV connector 'mooncake'",
+        ),
+        (
+            lambda r: r["roles"]["decode"]["args"].update({"disaggregation-transfer-backend": "NixlConnector"}),
+            r"no protocol for the sglang decode KV connector 'NixlConnector'; supported for sglang: nixl \(sglang\)",
+        ),
+        (
+            lambda r: r["roles"]["decode"]["args"].pop("disaggregation-transfer-backend"),
+            "no protocol for the sglang decode KV connector None",
+        ),
+        (
+            lambda r: (
+                r.pop("engine"),
+                r["roles"]["prefill"].update({"engine": {"type": "vllm"}}),
+                r["roles"]["decode"].update({"engine": {"type": "sglang"}}),
+            ),
+            "needs the same engine in both roles",
+        ),
+        (
+            lambda r: r["roles"]["prefill"].update({"nodes": 1, "workers": 2, "gpus": 2}),
+            "allows at most one prefill worker per node",
+        ),
+        (
+            lambda r: r["roles"]["prefill"].update({"kv_events": True}),
+            "not supported with frontend.type: llm-d and SGLang",
+        ),
+    ],
+)
+def test_sglang_pd_validation_rules(edit, message: str) -> None:
+    recipe = _sglang_disagg_recipe()
+    edit(recipe)
+    with pytest.raises(ValidationError, match=message):
+        _load(recipe)
+
+
+def test_sglang_pd_spread_prefill_workers_across_nodes_succeeds() -> None:
+    recipe = _sglang_disagg_recipe()
+    recipe["resources"]["spread_workers"] = True
+    recipe["roles"]["prefill"].update({"nodes": 2, "workers": 2, "gpus": 2})
+    recipe["roles"]["decode"].update({"nodes": 1, "workers": 1, "gpus": 2})
+    config = _load(recipe)
+    assert sidecar_kv_connector(config.backend) == "sglang"
 
 
 DP_RANKS = EXAMPLES_DIR / "vllm/llm-d-dp-ranks.yaml"
