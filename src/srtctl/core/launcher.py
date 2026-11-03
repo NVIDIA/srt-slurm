@@ -397,6 +397,11 @@ class SlurmLauncher(Launcher):
     def shell_command(
         self, runtime: RuntimeContext, node: str, *, image: str | None = None, container_name: str | None = None
     ) -> str:
+        from srtctl.core.config import container_runtime
+
+        # Under container_runtime host a shell joins the job's own container with no options.
+        if container_runtime() == "host":
+            return f"srun --jobid {runtime.job_id} -w {node} --overlap --pty bash"
         args = [f"--container-image={image or runtime.container_image}"]
         if container_name:
             args.append(f"--container-name={container_name}")

@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, cast
 
 from srtctl.benchmarks.base import SCRIPTS_DIR
 from srtctl.benchmarks.sa_bench import DEFAULT_NUM_PROMPTS_MULT, DEFAULT_NUM_WARMUP_MULT
-from srtctl.core.config import get_srtslurm_setting
+from srtctl.core.config import container_runtime, get_srtslurm_setting
 from srtctl.core.runtime import resolve_container_image, resolve_local_model_mount, resolve_model_path
 from srtctl.core.slurm import get_container_mounts_str, get_slurm_job_id
 from srtctl.ports import FRONTEND_PUBLIC_PORT
@@ -140,13 +140,15 @@ class CacheInputsPlan:
                 srun.append(f"--partition={self.partition}")
             srun.append(f"--time={self.time_limit}")
 
-        srun += [
-            f"--container-image={self.container_image}",
-            "--no-container-entrypoint",
-            "--no-container-mount-home",
-        ]
-        if self.mounts:
-            srun.append(f"--container-mounts={get_container_mounts_str(self.mounts)}")
+        # Under container_runtime host the step inherits the job's sandbox: no options.
+        if container_runtime() != "host":
+            srun += [
+                f"--container-image={self.container_image}",
+                "--no-container-entrypoint",
+                "--no-container-mount-home",
+            ]
+            if self.mounts:
+                srun.append(f"--container-mounts={get_container_mounts_str(self.mounts)}")
 
         exports = {PREWARM_ENV_VAR: "1"}
         if self.num_workers is not None:

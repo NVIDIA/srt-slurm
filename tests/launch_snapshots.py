@@ -36,7 +36,11 @@ JOB_ID = "4242"
 NOT_A_JOB = {"examples/features/override.yaml", "examples/features/sweep.yaml"}
 
 # Environment required to exercise an example's documented launch mode.
-EXAMPLE_ENV = {"examples/trtllm/trtllm-serve-disagg-eval-only.yaml": {"EVAL_ONLY": "true"}}
+EXAMPLE_ENV = {
+    "examples/trtllm/trtllm-serve-disagg-eval-only.yaml": {"EVAL_ONLY": "true"},
+    # The cluster setting `container_runtime: host`, as the rendered sbatch script exports it.
+    "examples/features/container-runtime-host.yaml": {"SRTCTL_CONTAINER_RUNTIME": "host"},
+}
 
 # Values generated fresh on every run, replaced by a stable placeholder.
 _RANDOM_VALUES = (

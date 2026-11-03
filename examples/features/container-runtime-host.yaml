@@ -1,0 +1,48 @@
+# Dynamo mocker on a cluster whose `srtslurm.yaml` sets `container_runtime: host`.
+#
+# On such a cluster the batch job already runs inside a container built from the
+# recipe's image (a site-level job sandbox), and every step srtctl launches
+# inherits it. srtctl therefore passes no --container-image, --container-name or
+# --container-mounts to srun: compare this recipe's launch snapshot with
+# mocker/dynamo-agg.yaml's. The container has to provide the paths the
+# "Container Mounts" table of `srtctl dry-run` lists; see docs/cluster-config.md.
+# The recipe itself is unchanged; only the cluster file differs.
+#
+# Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-mocker-container-runtime-host"
+
+slurm:
+  time_limit: "00:15:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+dynamo:
+  source:
+    pypi: "1.4.2"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+
+engine:
+  type: mocker
+  engine_type: vllm
+  speedup_ratio: 100
+
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4"

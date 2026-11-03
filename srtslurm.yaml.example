@@ -56,6 +56,12 @@ default_time_limit: "04:00:00"
 # Requires Pyxis :no_exec support and a named-container cleanup policy.
 # default_reuse_container: true
 
+# How a step reaches its container. pyxis (default) passes --container-image
+# and the mounts to every srun. host passes none of them: the job already runs
+# inside one sandbox built from the recipe's image, which binds /model, /configs,
+# /logs and the other mount points itself, so every step inherits it.
+# container_runtime: host
+
 # Commands run on every allocated node's bare host, OUTSIDE the container,
 # before any worker starts -- for node state a container cannot reach, such as
 # locking GPU clocks on machines that need it. Runs as you, so anything
