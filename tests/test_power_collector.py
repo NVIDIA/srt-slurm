@@ -939,6 +939,53 @@ class TestPublication:
             }[case]
         )
 
+    def test_partly_used_amd_node_publishes_with_serial_worker_identity(self, tmp_path, exporters):
+        """An MI325X run using four of eight GPUs: the kfd probe's board serials excuse the idle four."""
+        body = "\n".join(
+            f'gpu_power_usage{{gpu_id="{index}",serial_number="PCB079220-{index:04d}"}} {500 + index}'
+            for index in range(8)
+        )
+        process = _processes()[0]
+        session = _session(
+            tmp_path,
+            _endpoints(("node-a", exporters(body).url)),
+            processes=[process],
+            sample_interval_seconds=0.2,
+            mapping=TelemetryExporterConfig.Schema()
+            .load(
+                {
+                    "container_image": "amd-exporter",
+                    "port": 5000,
+                    "command": "/home/amd/tools/entrypoint.sh",
+                    "kind": "custom",
+                    "worker_gpu_probe": "kfd",
+                    "gpu_labels": {"index": "gpu_id", "identity": "serial_number"},
+                    "gpu_metrics": {"power": {"metric": "gpu_power_usage", "scope": "amd_board"}},
+                }
+            )
+            .power_mapping,
+        )
+        session.initialize()
+        assert session.start_and_wait_for_readiness()
+        worker = WorkerGpuIdentity(
+            hostname="node-a",
+            assignment=DeviceAssignment.from_process(process),
+            step_name="agg_0",
+            step_id="1.0",
+            gpu_uuids=tuple(f"PCB079220-{index:04d}" for index in range(GPUS_PER_NODE)),
+        )
+        session.record_worker_identity(WorkerIdentityProof(100.0, workers=(worker,)))
+
+        start = time.time()
+        time.sleep(0.6)
+        end = time.time()
+        self._write_window_and_result(session, start, end)
+        outcome = session.stop_and_finalize()
+        report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
+
+        assert outcome.publication_valid is True, outcome.reason_codes
+        assert report.ok is True, report.failures
+
     def test_unverified_clock_sync_blocks_publication_without_failing_best_effort(self, tmp_path, exporters):
         """Identical to the covered case except the orchestrator reported an unsynced node.
 
