@@ -1,6 +1,6 @@
 # examples/features/file-readiness.yaml
 # exit_code: 0
-# srun calls: 3
+# srun calls: 4
 
 ## service_initialized_node-01
 nodelist: node-01
@@ -27,6 +27,15 @@ container_mounts:
 use_bash_wrapper: True
 command: |
     python3 -c 'from pathlib import Path; import time; Path('"'"'/logs/service_1.ready'"'"').write_text('"'"'ready\n'"'"'); time.sleep(3600)'
+
+## telemetry_nic_traffic
+nodes: 2
+ntasks: 2
+nodelist: node-01 node-02
+output: <output>/logs/telemetry_nic_traffic.%N.out
+use_bash_wrapper: False
+command: |
+    <python> -m srtctl.core.nic_traffic --output-dir <output>/logs/nic_traffic/nodes --ready-dir <output>/logs/nic_traffic/ready --interval-seconds 1.0
 
 ## <unnamed>
 nodelist: node-01

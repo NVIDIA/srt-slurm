@@ -284,6 +284,7 @@ Optional analytics capture and external OTEL export.
 | `otel_endpoint` | str \| None | `None` | Explicit OTEL trace endpoint (e.g. "http://10.0.0.1:4317"). Used with enable_otel; overrides Dynamo's local trace destination. |
 | `tachometer` | [TachometerConfig](#tachometerconfig) | `TachometerConfig()` | Native Tachometer capture configuration. Collects on every run, independent of ``enabled``, unless ``tachometer.enabled: false`` (see :class:`TachometerConfig`). |
 | `nsys` | [NsysObservabilityConfig](#nsysobservabilityconfig) | `NsysObservabilityConfig()` | Automatic Nsight Systems capture, enabled with the master switch. |
+| `nic_traffic` | [NicTrafficConfig](#nictrafficconfig) | `NicTrafficConfig()` | Per-node RDMA NIC byte-counter capture. On for every multi-node job, independent of ``enabled``, unless ``nic_traffic.enabled: false`` (see :class:`NicTrafficConfig`). |
 
 ### TelemetryConfig
 
@@ -467,6 +468,16 @@ Automatic NVTX tracing and CPU sampling of workers and Dynamo frontends.
 | `report_timeout_secs` | int | `1800` | Maximum wait for a control acknowledgment or a step's report finalization. |
 | `nvtx_injection_path` | str \| None | `None` | Optional container path to libToolsInjection64.so for NVTX injection. |
 | `cpu_sampling` | one of `'system-wide'`, `'process-tree'`, `'none'` | `'system-wide'` | CPU IP sampling and context-switch scope. process-tree fails on engines with many threads ("Not enough resources ... switch to system-wide"); system-wide samples every process on the node, none records NVTX only. |
+
+### NicTrafficConfig
+
+Per-node RDMA NIC traffic capture (``srtctl.core.nic_traffic``).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool \| None | `None` | ``None`` (the default) captures when the job spans more than one node; ``true`` forces capture on a single node; ``false`` opts out. Independent of ``observability.enabled`` and ``telemetry.enabled``. |
+| `sample_interval_seconds` | float | `1.0` | Seconds between counter reads on each node. |
+| `storage_subdir` | str | `'nic_traffic'` | Directory below the run log directory for the per-node samples, the merged ``nic_traffic.csv`` and ``nic_manifest.json``. Must not overlap another capture directory. |
 
 ### TelemetryExporterConfig
 

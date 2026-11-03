@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from srtctl.core.cpu_power_session import CpuPowerSessionSettings as CpuPowerHostSessionSettings
 from srtctl.core.cpu_power_session import CpuPowerTelemetrySession
 from srtctl.core.git_state import head_commit
+from srtctl.core.nic_traffic_session import NicTrafficSession, NicTrafficSessionSettings
 from srtctl.core.power.contract import Reason
 from srtctl.core.power.cpu_session import CpuPowerCollector, CpuPowerSessionSettings
 from srtctl.core.power.identity import WORKER_PROBE_SCRIPTS, WorkerGpuIdentity, WorkerIdentityProof, parse_node_probe
@@ -46,6 +47,8 @@ logger = logging.getLogger(__name__)
 
 # Time tachometer gets after SIGTERM to compact its in-memory arrow rows to parquet.
 TACHOMETER_STEP_NAME = "tachometer"
+
+NIC_TRAFFIC_STEP_NAME = "telemetry_nic_traffic"
 
 # Lowest DCGM sampling interval measured at parity with no telemetry on GB300
 # decode (A/F chain); 100ms measured ~2% ITL p50 overhead. Sampling faster than
@@ -83,6 +86,7 @@ class TelemetryStageMixin:
 
     config: SrtConfig
     runtime: RuntimeContext
+    _nic_traffic_session: NicTrafficSession | None = None
 
     @property
     def backend_processes(self) -> list[Process]:
@@ -193,17 +197,21 @@ class TelemetryStageMixin:
         nodes: list[str],
         registry: ProcessRegistry,
         on_started: Callable[[ManagedProcess], None],
+        slurm_step: bool = False,
     ) -> None:
         """Run ``command`` once per node on the bare host, one srun per het component.
 
         Each process is non-critical and registered before the next launch, so a
-        partial launch stays reachable by cleanup.
+        partial launch stays reachable by cleanup. ``slurm_step`` names the step
+        after the process, which lets ``terminate()`` deliver SIGTERM to the task
+        instead of the srun client (whose abort SIGKILLs it).
         """
         chunks = self._het_chunks(nodes)
         for het_group, chunk in chunks:
             suffix = "" if len(chunks) == 1 else f".g{het_group}"
             chunk_name = name if len(chunks) == 1 else f"{name}_g{het_group}"
             log_file = self.runtime.log_dir / f"{name}{suffix}.%N.out"
+            step_name = chunk_name if slurm_step else None
             proc = start_srun_process(
                 command=command,
                 nodes=len(chunk),
@@ -213,6 +221,7 @@ class TelemetryStageMixin:
                 srun_options=self.runtime.srun_options,
                 het_group=het_group,
                 use_bash_wrapper=False,  # bare host, no container
+                step_name=step_name,
             )
             process = ManagedProcess(
                 name=chunk_name,
@@ -220,6 +229,7 @@ class TelemetryStageMixin:
                 log_file=log_file,
                 node=",".join(chunk),
                 critical=False,
+                step_name=step_name,
             )
             registry.add_process(process)
             on_started(process)
@@ -615,6 +625,72 @@ class TelemetryStageMixin:
             logger.error("telemetry.cpu_power.required is set and CPU power artifacts are not publishable")
             return 1
         return exit_code
+
+    def start_nic_traffic(self, registry: ProcessRegistry) -> NicTrafficSession | None:
+        """Start one RDMA NIC traffic sampler per node on the bare host.
+
+        Best-effort: any failure is logged and the run continues, and the
+        capture never decides whether the benchmark runs.
+        """
+        if not self.config.nic_traffic_enabled:
+            return None
+        nic_traffic = self.config.observability.nic_traffic
+        try:
+            session = NicTrafficSession(
+                NicTrafficSessionSettings(
+                    nic_dir=self.runtime.log_dir / nic_traffic.storage_subdir,
+                    job_id=self.runtime.job_id,
+                    run_name=self.runtime.run_name,
+                    nodes=tuple(self._telemetry_nodes()),
+                    sample_interval_seconds=nic_traffic.sample_interval_seconds,
+                    producer_git_commit=read_producer_commit(),
+                )
+            )
+            self._nic_traffic_session = session
+            session.initialize()
+            self._start_host_collectors(
+                name=NIC_TRAFFIC_STEP_NAME,
+                command=[
+                    sys.executable,
+                    "-m",
+                    "srtctl.core.nic_traffic",
+                    "--output-dir",
+                    str(session.samples_dir),
+                    "--ready-dir",
+                    str(session.ready_dir),
+                    "--interval-seconds",
+                    str(nic_traffic.sample_interval_seconds),
+                ],
+                nodes=list(session.settings.nodes),
+                registry=registry,
+                on_started=session.add_process,
+                slurm_step=True,
+            )
+        except Exception:
+            logger.exception("NIC traffic capture failed to start; continuing without it")
+            return self._nic_traffic_session
+        logger.info(
+            "NIC traffic capture started on %d node(s) (artifacts under %s)",
+            len(session.settings.nodes),
+            session.settings.nic_dir,
+        )
+        return session
+
+    def finalize_nic_traffic(self, *, interrupted: bool = False) -> None:
+        """Stop the samplers and merge their CSVs; never affects the exit code."""
+        session = self._nic_traffic_session
+        if session is None:
+            return
+        try:
+            outcome = session.stop_and_finalize(interrupted=interrupted)
+        except Exception:
+            logger.exception("NIC traffic finalization failed")
+            return
+        logger.info(
+            "NIC traffic: status=%s reasons=%s",
+            outcome.status,
+            ",".join(outcome.reason_codes) or "none",
+        )
 
     def _resolve_bundled_binary(self, name: str) -> str:
         """Resolve a bare binary name against the checkout's ``bin/``.

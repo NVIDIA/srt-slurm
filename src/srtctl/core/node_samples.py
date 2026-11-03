@@ -3,8 +3,8 @@
 
 """Per-node CSVs and readiness markers written by bare-host collectors.
 
-A host collector (``cpu_power``) runs once per node and writes
-``<nodes_dir>/<host>.csv`` plus ``<ready_dir>/<host>.ready.json`` or
+A host collector (``cpu_power``, ``nic_traffic``) runs once per node and
+writes ``<nodes_dir>/<host>.csv`` plus ``<ready_dir>/<host>.ready.json`` or
 ``<host>.error.json``. The head node reads the markers to learn which nodes
 started and merges the CSVs into one file at teardown.
 """

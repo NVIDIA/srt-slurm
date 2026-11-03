@@ -214,6 +214,8 @@ def render_launch_plan(recipe: Path) -> str:
                 str(tmp_path): "<tmp>",
                 str(REPO_ROOT): "<repo>",
                 str(Path.home()): "<home>",
+                # Bare-host collectors run the orchestrator's own interpreter.
+                sys.executable: "<python>",
             },
         )
     header = f"# {recipe.relative_to(REPO_ROOT).as_posix()}\n# exit_code: {exit_code}\n# srun calls: {len(calls)}\n"

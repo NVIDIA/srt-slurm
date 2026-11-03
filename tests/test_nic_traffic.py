@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The RDMA NIC traffic sampler against fake sysfs trees."""
+"""RDMA NIC traffic capture: the sampler on fake sysfs trees, its config, launch and head-node merge."""
 
 from __future__ import annotations
 
@@ -12,9 +12,22 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+import pytest
+import yaml
+from marshmallow import ValidationError
+
+from srtctl.cli.mixins.postprocess_stage import _has_power_samples
+from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core import nic_traffic
+from srtctl.core import schema as schema_module
 from srtctl.core.nic_traffic import SAMPLES_HEADER, discover_ports
+from srtctl.core.nic_traffic_session import NicTrafficSession, NicTrafficSessionSettings
+from srtctl.core.power.contract import MAX_SAMPLE_GAP_SECONDS
+from srtctl.core.processes import ProcessRegistry
+from srtctl.core.schema import SrtConfig
+from srtctl.mock import MockOptions, run_mock_sweep
 
 
 def _rdma_device(
@@ -231,3 +244,273 @@ def test_node_without_counters_writes_an_error_marker_and_exits_cleanly(tmp_path
     assert "no RDMA port" in json.loads((out / "node-b.error.json").read_text())["error"]
     assert not (out / "node-b.csv").exists()
     assert not (out / "node-b.ready.json").exists()
+
+
+def _recipe(tmp_path: Path, roles: dict, nic_traffic: dict | None = None) -> SrtConfig:
+    recipe = {
+        "schema": 2,
+        "name": "nic",
+        "model": {"path": "/models/m", "container": "image.sqsh", "precision": "fp8"},
+        "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+        "roles": roles,
+        "benchmark": {"type": "manual"},
+    }
+    if nic_traffic is not None:
+        recipe["observability"] = {"nic_traffic": nic_traffic}
+    path = tmp_path / "recipe.yaml"
+    path.write_text(yaml.safe_dump(recipe))
+    return SrtConfig.from_yaml(path)
+
+
+SINGLE_NODE = {"agg": {"nodes": 1, "workers": 1}}
+TWO_NODES = {"prefill": {"nodes": 1, "workers": 1}, "decode": {"nodes": 1, "workers": 1}}
+
+
+@pytest.mark.parametrize(
+    ("roles", "nic_traffic", "expected"),
+    [
+        (SINGLE_NODE, None, False),
+        (TWO_NODES, None, True),
+        (SINGLE_NODE, {"enabled": True}, True),
+        (TWO_NODES, {"enabled": False}, False),
+    ],
+    ids=["single-node-default-off", "multi-node-default-on", "explicit-true", "explicit-false"],
+)
+def test_capture_defaults_on_only_for_multi_node_jobs(tmp_path: Path, roles, nic_traffic, expected) -> None:
+    assert _recipe(tmp_path, roles, nic_traffic).nic_traffic_enabled is expected
+
+
+def test_capture_switch_ignores_observability_and_telemetry_master_switches(tmp_path: Path) -> None:
+    config = _recipe(tmp_path, TWO_NODES)
+
+    assert config.observability.enabled is False
+    assert config.telemetry.enabled is False
+    assert config.nic_traffic_enabled is True
+
+
+@pytest.mark.parametrize(
+    ("nic_traffic", "message"),
+    [
+        ({"storage_subdir": "power/nic"}, "overlaps telemetry.storage_subdir"),
+        ({"storage_subdir": "cpu_power"}, "overlaps telemetry.cpu_power.storage_subdir"),
+        ({"storage_subdir": "tachometer"}, "overlaps observability.tachometer.storage_subdir"),
+        ({"storage_subdir": "../nic"}, "safe relative path"),
+        ({"sample_interval_seconds": 0}, "finite and positive"),
+        ({"sample_interval_seconds": 5}, "exceeds"),
+    ],
+)
+def test_invalid_capture_settings_are_rejected_at_load(tmp_path: Path, nic_traffic: dict, message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        _recipe(tmp_path, TWO_NODES, nic_traffic)
+
+
+def test_interval_limit_matches_the_window_boundary_gap() -> None:
+    assert schema_module._NIC_TRAFFIC_MAX_SAMPLE_GAP_SECONDS == MAX_SAMPLE_GAP_SECONDS
+
+
+class _FakeProcess:
+    def __init__(self, name: str, running: bool = True) -> None:
+        self.name = name
+        self.is_running = running
+        self.terminated = False
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.is_running = False
+
+
+def _write_node_csv(nodes_dir: Path, hostname: str, rows: list[tuple[float, str, int, int]]) -> None:
+    with (nodes_dir / f"{hostname}.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(SAMPLES_HEADER)
+        for seq, (timestamp, device, tx, rx) in enumerate(rows):
+            writer.writerow((repr(timestamp), seq, hostname, device, "1", "enp1s0", "ionic", tx, rx))
+
+
+def _session(tmp_path: Path, nodes: tuple[str, ...]) -> NicTrafficSession:
+    session = NicTrafficSession(
+        NicTrafficSessionSettings(
+            nic_dir=tmp_path / "nic_traffic", job_id="7", run_name="run", nodes=nodes, sample_interval_seconds=1.0
+        )
+    )
+    session.initialize()
+    return session
+
+
+def test_finalize_merges_every_node_in_time_order(tmp_path: Path) -> None:
+    session = _session(tmp_path, ("node-a", "node-b"))
+    sampler = _FakeProcess("telemetry_nic_traffic")
+    session.add_process(sampler)  # type: ignore[arg-type]
+    _write_node_csv(session.samples_dir, "node-a", [(2.0, "rdma0", 20, 0), (3.0, "rdma0", 30, 0)])
+    _write_node_csv(session.samples_dir, "node-b", [(2.5, "rdma1", 25, 0)])
+
+    outcome = session.stop_and_finalize()
+
+    assert sampler.terminated
+    assert outcome.status == "complete"
+    assert outcome.reason_codes == ()
+    with session.traffic_path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.reader(handle))
+    assert tuple(rows[0]) == SAMPLES_HEADER
+    assert [(row[0], row[2]) for row in rows[1:]] == [("2.0", "node-a"), ("2.5", "node-b"), ("3.0", "node-a")]
+    manifest = json.loads(session.manifest_path.read_text())
+    assert manifest["observed_nodes"] == ["node-a", "node-b"]
+    assert manifest["sample_row_count"] == 3
+
+
+def test_manifest_names_missing_and_counterless_nodes(tmp_path: Path) -> None:
+    session = _session(tmp_path, ("node-a", "node-b", "node-c"))
+    session.add_process(_FakeProcess("telemetry_nic_traffic", running=False))  # type: ignore[arg-type]
+    _write_node_csv(session.samples_dir, "node-a", [(1.0, "rdma0", 1, 1)])
+    (session.samples_dir / "node-a.metadata.json").write_text(
+        json.dumps({"devices": [{"device": "rdma0", "driver": "ionic"}], "unsupported": []})
+    )
+    (session.ready_dir / "node-b.error.json").write_text(json.dumps({"error": "no RDMA port"}))
+
+    outcome = session.stop_and_finalize(interrupted=True)
+
+    assert outcome.status == "incomplete"
+    assert outcome.reason_codes == (
+        "interrupted",
+        "nic_counters_unavailable",
+        "nic_node_samples_missing",
+        "nic_sampler_exited",
+    )
+    manifest = json.loads(session.manifest_path.read_text())
+    assert manifest["expected_nodes"] == ["node-a", "node-b", "node-c"]
+    assert manifest["observed_nodes"] == ["node-a"]
+    assert manifest["missing_nodes"] == ["node-b", "node-c"]
+    assert manifest["node_errors"] == {"node-b": "no RDMA port"}
+    assert manifest["nodes"]["node-a"]["devices"] == [{"device": "rdma0", "driver": "ionic"}]
+    assert manifest["exited_processes"] == ["telemetry_nic_traffic"]
+
+
+def test_capture_never_writes_files_power_consumers_claim(tmp_path: Path) -> None:
+    session = _session(tmp_path, ("node-a",))
+    _write_node_csv(session.samples_dir, "node-a", [(1.0, "rdma0", 1, 1)])
+    session.stop_and_finalize()
+
+    names = {path.name for path in tmp_path.rglob("*")}
+    assert {"nic_traffic.csv", "nic_manifest.json"} <= names
+    assert not names & {"samples.csv", "manifest.json"}
+    assert not _has_power_samples(tmp_path)
+
+
+class _Stage(TelemetryStageMixin):
+    def __init__(self, tmp_path: Path, config: SrtConfig, *, het_groups: dict[str, int] | None = None) -> None:
+        self.config = config
+        self.runtime = MagicMock()
+        self.runtime.log_dir = tmp_path
+        self.runtime.job_id = "7"
+        self.runtime.run_name = "run"
+        self.runtime.srun_options = {}
+        self.runtime.nodes.compute = ("node-a", "node-b")
+        self.runtime.nodes.het = het_groups is not None
+        self.runtime.nodes.het_group_for.side_effect = lambda node: (het_groups or {}).get(node)
+
+    @property
+    def backend_processes(self):
+        return []
+
+
+@patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+def test_multi_node_job_launches_one_bare_host_sampler_per_node(mock_srun, tmp_path: Path) -> None:
+    stage = _Stage(tmp_path, _recipe(tmp_path, TWO_NODES))
+    registry = ProcessRegistry(job_id="7")
+
+    session = stage.start_nic_traffic(registry)
+
+    assert session is not None
+    kwargs = mock_srun.call_args.kwargs
+    assert mock_srun.call_count == 1
+    assert kwargs["nodelist"] == ["node-a", "node-b"]
+    assert (kwargs["nodes"], kwargs["ntasks"]) == (2, 2)
+    assert kwargs["use_bash_wrapper"] is False
+    assert "container_image" not in kwargs
+    assert kwargs["step_name"] == "telemetry_nic_traffic"
+    assert kwargs["command"][1:3] == ["-m", "srtctl.core.nic_traffic"]
+    assert kwargs["command"][kwargs["command"].index("--interval-seconds") + 1] == "1.0"
+    [process] = registry.get_all_processes().values()
+    assert process.critical is False
+    assert process.step_name == "telemetry_nic_traffic"
+    assert json.loads((tmp_path / "nic_traffic" / "nic_manifest.json").read_text())["expected_nodes"] == [
+        "node-a",
+        "node-b",
+    ]
+
+
+@patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+def test_het_job_launches_one_sampler_step_per_component(mock_srun, tmp_path: Path) -> None:
+    stage = _Stage(tmp_path, _recipe(tmp_path, TWO_NODES), het_groups={"node-a": 0, "node-b": 1})
+
+    stage.start_nic_traffic(ProcessRegistry(job_id="7"))
+
+    launches = [
+        (call.kwargs["het_group"], call.kwargs["nodelist"], call.kwargs["step_name"])
+        for call in mock_srun.call_args_list
+    ]
+    assert launches == [(0, ["node-a"], "telemetry_nic_traffic_g0"), (1, ["node-b"], "telemetry_nic_traffic_g1")]
+
+
+@patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+def test_disabled_capture_launches_nothing(mock_srun, tmp_path: Path) -> None:
+    stage = _Stage(tmp_path, _recipe(tmp_path, TWO_NODES, {"enabled": False}))
+
+    assert stage.start_nic_traffic(ProcessRegistry(job_id="7")) is None
+    stage.finalize_nic_traffic()
+    mock_srun.assert_not_called()
+    assert not (tmp_path / "nic_traffic").exists()
+
+
+@patch("srtctl.cli.mixins.telemetry_stage.start_srun_process", side_effect=OSError("srun: not found"))
+def test_launch_failure_is_absorbed(_mock_srun, tmp_path: Path) -> None:
+    stage = _Stage(tmp_path, _recipe(tmp_path, TWO_NODES))
+
+    session = stage.start_nic_traffic(ProcessRegistry(job_id="7"))
+    stage.finalize_nic_traffic()
+
+    assert session is not None
+    manifest = json.loads(session.manifest_path.read_text())
+    assert manifest["missing_nodes"] == ["node-a", "node-b"]
+
+
+def test_node_discovery_failure_is_absorbed(tmp_path: Path) -> None:
+    stage = _Stage(tmp_path, _recipe(tmp_path, TWO_NODES))
+    stage._telemetry_nodes = MagicMock(side_effect=ValueError("bad allocation"))  # type: ignore[method-assign]
+
+    assert stage.start_nic_traffic(ProcessRegistry(job_id="7")) is None
+    stage.finalize_nic_traffic()
+
+
+def test_mock_sweep_starts_and_finalizes_the_capture(tmp_path: Path) -> None:
+    recipe = {
+        "schema": 2,
+        "name": "nic-mock",
+        "model": {"path": "hf:fake/mock-model", "container": "nvcr.io/fake:latest", "precision": "fp8"},
+        "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+        "roles": TWO_NODES,
+        "benchmark": {"type": "custom", "command": "echo fake-benchmark"},
+        "observability": {"tachometer": {"enabled": False}},
+    }
+    path = tmp_path / "recipe.yaml"
+    path.write_text(yaml.safe_dump(recipe))
+    output_dir = tmp_path / "output"
+    launches: list[dict] = []
+
+    exit_code = run_mock_sweep(
+        config_path=path,
+        output_dir=output_dir,
+        job_id="7",
+        options=MockOptions(
+            child_duration_s=0, phase_pause_s=0, nodelist=("node-01", "node-02"), on_srun=launches.append
+        ),
+    )
+
+    assert exit_code == 0
+    assert [call["step_name"] for call in launches if "srtctl.core.nic_traffic" in call["command"]] == [
+        "telemetry_nic_traffic"
+    ]
+    manifest = json.loads((output_dir / "logs" / "nic_traffic" / "nic_manifest.json").read_text())
+    assert manifest["status"] == "incomplete"
+    assert len(manifest["expected_nodes"]) == 2
+    assert "nic_node_samples_missing" in manifest["reason_codes"]

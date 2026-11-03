@@ -900,6 +900,8 @@ class SweepOrchestrator(
                     self.start_cpu_power_host_telemetry(registry)
                     self.start_incremental_power_report()
 
+            self.start_nic_traffic(registry)
+
             # Tachometer capture aligns with the load window: benchmark runs
             # start it inside run_benchmark once the server is healthy and
             # stop it gracefully when the client exits (see
@@ -953,6 +955,7 @@ class SweepOrchestrator(
             exit_code = self.finalize_power_telemetry(exit_code, interrupted=stop_event.is_set())
             exit_code = self.finalize_cpu_power_telemetry(exit_code, interrupted=stop_event.is_set())
             exit_code = self.finalize_cpu_power_host_telemetry(exit_code, interrupted=stop_event.is_set())
+            self.finalize_nic_traffic(interrupted=stop_event.is_set())
             stop_event.set()
             registry.cleanup()
             # After cleanup so the GPUs are idle before node state is reverted.

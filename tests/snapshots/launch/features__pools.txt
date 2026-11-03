@@ -1,6 +1,6 @@
 # examples/features/pools.yaml
 # exit_code: 0
-# srun calls: 16
+# srun calls: 17
 
 ## agg_0_node-01
 nodelist: node-01
@@ -217,6 +217,15 @@ env_to_set:
 use_bash_wrapper: True
 command: |
     sleep infinity
+
+## telemetry_nic_traffic
+nodes: 4
+ntasks: 4
+nodelist: node-01 node-02 node-03 node-04
+output: <output>/logs/telemetry_nic_traffic.%N.out
+use_bash_wrapper: False
+command: |
+    <python> -m srtctl.core.nic_traffic --output-dir <output>/logs/nic_traffic/nodes --ready-dir <output>/logs/nic_traffic/ready --interval-seconds 1.0
 
 ## tachometer
 nodelist: node-01
