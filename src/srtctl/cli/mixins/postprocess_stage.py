@@ -29,6 +29,7 @@ from srtctl.benchmarks.base import SCRIPTS_DIR
 from srtctl.core.config import load_cluster_config
 from srtctl.core.git_state import GIT_STATE_FILENAME
 from srtctl.core.lockfile import collect_worker_fingerprints, generate_reproduction_report, write_lockfile
+from srtctl.core.nic_traffic_session import TRAFFIC_FILENAME
 from srtctl.core.schema import DEFAULT_S3_ARCHIVE, DEFAULT_S3_EXCLUDE, AIAnalysisConfig, S3Config
 from srtctl.core.slurm import AllocationShrink, get_batch_host, shrink_job_allocation, start_srun_process
 
@@ -371,6 +372,7 @@ class PostProcessStageMixin:
         # Best-effort CPU/GPU energy-per-token report. Must land before the S3
         # sync so it ships with the rest of the log directory.
         self._build_power_energy_report()
+        self._build_nic_traffic_summary()
 
         # Everything above reads the job's SLURM_* environment, which a release
         # rewrites; the upload and AI analysis below run on the retained node.
@@ -439,6 +441,35 @@ class PostProcessStageMixin:
             total_joules,
             output_path,
         )
+
+    def _build_nic_traffic_summary(self) -> None:
+        """Best-effort per-window NIC traffic summary, written next to ``nic_traffic.csv``.
+
+        Independent of power telemetry: it needs only the merged NIC samples
+        and the benchmark's own window timestamps. A run without NIC samples
+        or without benchmark windows (serve-only, eval-only) skips quietly.
+        """
+        nic_dir = self.runtime.log_dir / self.config.observability.nic_traffic.storage_subdir
+        if not (nic_dir / TRAFFIC_FILENAME).is_file():
+            return
+        try:
+            from srtctl.analysis.nic_traffic_report import SUMMARY_FILENAME, write_run_summary
+            from srtctl.analysis.power_energy_report import PowerReportError
+        except ImportError as e:
+            logger.warning("NIC traffic summary unavailable (import failed): %s", e)
+            return
+
+        try:
+            summary = write_run_summary(self.runtime.log_dir, nic_dir)
+        except PowerReportError as e:
+            logger.info("NIC traffic summary skipped (no benchmark windows): %s", e)
+            return
+        except Exception as e:  # noqa: BLE001 - post-processing must never fail the benchmark
+            logger.warning("NIC traffic summary failed: %s", e)
+            return
+        if summary.uncovered:
+            logger.warning("NIC traffic summary: samples do not cover %s", "; ".join(summary.uncovered))
+        logger.info("NIC traffic summary: %d row(s) -> %s", len(summary.rows), nic_dir / SUMMARY_FILENAME)
 
     def start_incremental_power_report(self) -> None:
         """Start per-case energy emission for the duration of the benchmark.

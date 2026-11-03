@@ -1538,12 +1538,12 @@
         },
         "sample_interval_seconds": {
           "type": "number",
-          "description": "Seconds between counter reads on each node.",
+          "description": "Seconds between counter reads on each node; the window peak is the highest rate over one such interval.",
           "default": 1.0
         },
         "storage_subdir": {
           "type": "string",
-          "description": "Directory below the run log directory for the per-node samples, the merged ``nic_traffic.csv`` and ``nic_manifest.json``. Must not overlap another capture directory.",
+          "description": "Directory below the run log directory for the per-node samples, the merged ``nic_traffic.csv``, ``nic_manifest.json`` and the per-window ``nic_traffic_summary.csv``. Must not overlap another capture directory.",
           "default": "nic_traffic"
         }
       },

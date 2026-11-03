@@ -1896,17 +1896,21 @@ class NicTrafficConfig:
 
     One sampler per node reads every RDMA port's cumulative transmit and
     receive byte counters from sysfs on the bare host; the head node merges
-    them at teardown. Capture is best-effort: it never fails or skips the
-    benchmark. ``SrtConfig.nic_traffic_enabled`` resolves the switch.
+    them at teardown, and post-processing reports each concurrency window's
+    mean and peak Gbit/s per NIC and per node. Capture is best-effort: it
+    never fails or skips the benchmark. ``SrtConfig.nic_traffic_enabled``
+    resolves the switch.
 
     Attributes:
         enabled: ``None`` (the default) captures when the job spans more than
             one node; ``true`` forces capture on a single node; ``false`` opts out.
             Independent of ``observability.enabled`` and ``telemetry.enabled``.
-        sample_interval_seconds: Seconds between counter reads on each node.
+        sample_interval_seconds: Seconds between counter reads on each node; the
+            window peak is the highest rate over one such interval.
         storage_subdir: Directory below the run log directory for the per-node
-            samples, the merged ``nic_traffic.csv`` and ``nic_manifest.json``.
-            Must not overlap another capture directory.
+            samples, the merged ``nic_traffic.csv``, ``nic_manifest.json`` and
+            the per-window ``nic_traffic_summary.csv``. Must not overlap another
+            capture directory.
     """
 
     enabled: bool | None = None

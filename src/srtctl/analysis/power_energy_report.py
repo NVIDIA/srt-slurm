@@ -136,9 +136,7 @@ def discover_run(log_dir: Path, *, cpu_samples_csv: Path | None = None) -> RunPa
     legs (scraper under ``power/cpu/``, host collector under ``cpu_power/``)
     wrote a ``samples.csv`` for the same run.
     """
-    benchmark_out = log_dir / "benchmark.out"
-    if not benchmark_out.is_file():
-        raise PowerReportError(f"{benchmark_out}: not found")
+    benchmark_out = _require_benchmark_out(log_dir)
 
     all_matches = sorted(log_dir.rglob("samples.csv"))
     cpu_matches = [p for p in all_matches if p.parent.name in CPU_SAMPLES_DIRNAMES]
@@ -164,6 +162,30 @@ def discover_run(log_dir: Path, *, cpu_samples_csv: Path | None = None) -> RunPa
         candidate = gpu_samples_csv.with_name("manifest.json")
         gpu_manifest = candidate if candidate.is_file() else None
 
+    return RunPaths(
+        benchmark_out=benchmark_out,
+        cpu_samples_csv=cpu_samples_csv,
+        gpu_samples_csv=gpu_samples_csv,
+        gpu_manifest=gpu_manifest,
+        concurrency_sources=_concurrency_sources(log_dir, benchmark_out),
+    )
+
+
+def discover_concurrency_windows(log_dir: Path) -> list[ConcurrencyWindow]:
+    """Every measured concurrency window of the run, whether or not power was sampled."""
+    benchmark_out = _require_benchmark_out(log_dir)
+    sources = _concurrency_sources(log_dir, benchmark_out)
+    return load_concurrency_windows(RunPaths(benchmark_out, None, None, None, sources))
+
+
+def _require_benchmark_out(log_dir: Path) -> Path:
+    benchmark_out = log_dir / "benchmark.out"
+    if not benchmark_out.is_file():
+        raise PowerReportError(f"{benchmark_out}: not found")
+    return benchmark_out
+
+
+def _concurrency_sources(log_dir: Path, benchmark_out: Path) -> tuple[tuple[int, Path], ...]:
     benchmark_type = detect_benchmark_type(benchmark_out)
     if benchmark_type == BENCHMARK_TYPE_AIPERF:
         sources = _discover_aiperf_sources(log_dir)
@@ -171,14 +193,7 @@ def discover_run(log_dir: Path, *, cpu_samples_csv: Path | None = None) -> RunPa
         sources = _discover_sa_bench_sources(log_dir)
     if not sources:
         raise PowerReportError(f"no {benchmark_type} result artifacts found below {log_dir}")
-
-    return RunPaths(
-        benchmark_out=benchmark_out,
-        cpu_samples_csv=cpu_samples_csv,
-        gpu_samples_csv=gpu_samples_csv,
-        gpu_manifest=gpu_manifest,
-        concurrency_sources=tuple(sorted(sources)),
-    )
+    return tuple(sorted(sources))
 
 
 def _discover_aiperf_sources(log_dir: Path) -> list[tuple[int, Path]]:
@@ -637,7 +652,7 @@ class EnergyBreakdown:
 POWER_STAT_FIELDS = ("mean_w", "min_w", "p5_w", "p50_w", "p95_w", "p99_w", "max_w")
 
 
-def _nearest_index(times: np.ndarray, target: float) -> int:
+def nearest_sample_index(times: np.ndarray, target: float) -> int:
     idx = int(np.searchsorted(times, target))
     if idx <= 0:
         return 0
@@ -658,8 +673,8 @@ def windowed_energy(label: str, times: np.ndarray, watts: np.ndarray, start: flo
     """
     if len(times) == 0:
         raise PowerReportError(f"{label}: no power samples available")
-    start_i = _nearest_index(times, start)
-    end_i = _nearest_index(times, end)
+    start_i = nearest_sample_index(times, start)
+    end_i = nearest_sample_index(times, end)
     start_gap = abs(times[start_i] - start)
     end_gap = abs(times[end_i] - end)
     if start_gap > MAX_SAMPLE_GAP_SECONDS:
