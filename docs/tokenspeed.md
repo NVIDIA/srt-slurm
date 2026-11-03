@@ -163,7 +163,9 @@ and [gateway socket contract](https://github.com/lightseekorg/tokenspeed/blob/5d
 
 SMG must bind the handshake before an engine can become ready. srtctl therefore
 does not probe ZMQ URLs as HTTP or gRPC worker listeners before starting SMG.
-The gateway's `/workers` readiness gate still runs before the benchmark.
+The gateway's `/workers` readiness gate waits for the expected healthy workers
+before the benchmark. Pending registrations are excluded even when SMG's
+`stats` already includes them.
 
 For prefill/decode, the engine advertises its own KV bootstrap host and allocated
 bootstrap port in its handshake metadata. No bootstrap port is appended to the
@@ -172,10 +174,18 @@ node. The engine-side `--host` remains the worker's own network-interface IP.
 
 SMG receives the model path/ID and a `--model-alias` for a differing
 `served-model-name`. A role's `tokenizer` supplies `--tokenizer-path` unless the
-frontend sets one explicitly. Local models use the shared `/model` mount in the
-gateway even when weights are staged on the worker nodes. Set model-specific
+frontend sets one explicitly. The gateway uses the runtime-resolved shared
+model mount, including `/srtctl-model-cache/snapshots/<revision>` for a local
+Hugging Face cache snapshot, even when weights are staged on the worker nodes.
+An explicit `frontend.args.model` takes precedence. Set model-specific
 `tool-call-parser`, `reasoning-parser`, and other gateway options in
 `frontend.args`.
+
+For structured-output benchmarks, set `grammar-backend: xgrammar` in the worker
+role's `args` when the checkpoint does not enable it by default. TokenSpeed's
+`grammar-backend: none` rejects requests using `json_schema`, `regex`, `ebnf` or
+`structural_tag`; the default depends on the checkpoint
+([upstream arguments](https://github.com/lightseekorg/tokenspeed/blob/5d670a1659ed3ac23383dbfab43f6907c4e3011a/python/tokenspeed/runtime/utils/server_args.py#L3317-L3327)).
 
 With `roles.<role>.args.enable-metrics: true` and the Prometheus reporter,
 every worker node gets a separate allocated `--metrics-port` (6800 and up on each

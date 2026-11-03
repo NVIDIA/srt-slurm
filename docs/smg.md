@@ -17,6 +17,12 @@ Upstream references below are pinned to SMG
 | Prefill/decode | `sglang` | `smg launch --pd-disaggregation --prefill <url> <bootstrap-port> --decode <url>` |
 | Prefill/decode | `vllm` with `grpc: true` and `connector: nixl` | `smg launch --pd-disaggregation --prefill grpc://<host:port> ... --decode grpc://<host:port>` |
 
+TokenSpeed uses its matching `tokenspeed-smg` build and the TokenSpeed-specific
+ZMQ protocol, which supports remote workers over TCP and prefill/decode serving.
+See the pinned [TokenSpeed handshake and bootstrap contracts](tokenspeed.md#smg)
+for this transport; general ZMQ tables describing local `ipc://` sockets do not
+describe that serving mode.
+
 SMG detects each HTTP worker's engine itself (`/v1/models` `owned_by`, then `/version`
 and `/server_info`) and reads the served model name from the worker
 ([`detect_backend.rs`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/workflow/steps/local/detect_backend.rs#L182-L191),
@@ -136,9 +142,11 @@ and [`examples/sglang/smg-disagg.yaml`](https://github.com/NVIDIA/srt-slurm/blob
   for a startup worker to register, and a large model can load for longer, so srtctl
   waits for every advertised worker's `/health` to answer 200 (a gRPC worker: its port to
   accept connections) before it starts SMG.
-- **Readiness.** srtctl polls SMG's `GET /workers` and waits until
-  `stats.prefill_count`, `stats.decode_count` and `stats.regular_count` cover the
-  expected workers; aggregated workers count as `regular`
+- **Readiness.** srtctl polls SMG's `GET /workers` and counts only entries whose
+  `is_healthy` is `true`, grouped by `worker_type`, until they cover the expected
+  prefill/decode or aggregate workers. Aggregated workers count as `regular`.
+  SMG's `stats` includes pending registrations and cannot establish readiness
+  for headless ZMQ engines before their handshakes finish
   ([route](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/server.rs#L993),
   [response](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/worker/service.rs#L204-L241)).
 - **Metrics.** SMG serves Prometheus on its own listener. srtctl passes

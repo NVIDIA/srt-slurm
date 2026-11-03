@@ -10,6 +10,7 @@ probe with getattr or hasattr.
 """
 
 import re
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,9 @@ def test_optional_features_read_as_absent_by_default(backend_cls):
     assert backend.get_failover_environment(_process(), "12345") == {}
     assert backend.get_srun_config().sequential_node_start == 0
     assert all(not backend.is_grpc_mode(mode) for mode in ("prefill", "decode", "agg"))
+    process = _process()
+    assert backend.router_worker_address(process, "gateway") == (process.node, process.http_port)
+    assert backend.router_worker_address(replace(process, http_port=0), "gateway") is None
 
 
 def test_vllm_grpc_role_arg_selects_grpc_mode():
@@ -62,6 +66,8 @@ def test_vllm_grpc_role_arg_selects_grpc_mode():
     backend = VLLMBackend(roles={"prefill": RoleConfig(args={"grpc": True}), "decode": RoleConfig(args={})})
     assert backend.is_grpc_mode("prefill")
     assert not backend.is_grpc_mode("decode")
+    assert backend.direct_worker_scheme("prefill") == "grpc"
+    assert backend.direct_worker_scheme("decode") == "http"
 
 
 def test_sglang_mooncake_env_reaches_workers_through_the_protocol():

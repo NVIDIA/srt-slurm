@@ -13,6 +13,7 @@ from srtctl.frontends.static_router import RouterWorker, StaticRouterFrontend, s
 from srtctl.ports import VLLM_DISCOVERY_PORT
 
 if TYPE_CHECKING:
+    from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Process
 
 
@@ -256,6 +257,7 @@ class VLLMRouterFrontend(StaticRouterFrontend):
         config: Any,
         backend: Any,
         backend_processes: list[Process],
+        runtime: RuntimeContext | None = None,
     ) -> list[str]:
         """Derive topology- and health-related Router arguments."""
         frontend_args = config.frontend.args or {}

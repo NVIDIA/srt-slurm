@@ -120,7 +120,9 @@ class TileRTRouterFrontend(StaticRouterFrontend):
             str(port),
         ]
 
-    def get_managed_frontend_args(self, config: Any, backend: Any, backend_processes: list[Process]) -> list[str]:
+    def get_managed_frontend_args(
+        self, config: Any, backend: Any, backend_processes: list[Process], runtime: RuntimeContext | None = None
+    ) -> list[str]:
         _reject_router_args(config.frontend.args)
         return []
 

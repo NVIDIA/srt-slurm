@@ -655,14 +655,18 @@ class RuntimeContext:
         )
 
     @property
-    def worker_model_arg(self) -> str:
-        """Model path passed to the serving worker: the staged node-local path
-        when model staging is enabled, else the "/model" mount (or the HF id)."""
+    def shared_model_arg(self) -> str:
+        """Shared container model path or HF ID, also available to gateway tokenizers."""
         if self.is_hf_model:
             return self.hf_snapshot_path or str(self.model_path)
-        if self.staged_model_path is not None:
-            return str(self.staged_model_path)
         return str(self.container_model_path or "/model")
+
+    @property
+    def worker_model_arg(self) -> str:
+        """Worker model path, using node-local staging when enabled for a local model."""
+        if not self.is_hf_model and self.staged_model_path is not None:
+            return str(self.staged_model_path)
+        return self.shared_model_arg
 
     def format_string(self, template: str, **extra_kwargs) -> str:
         """Format a template string with runtime values.

@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import shlex
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 import tomli
@@ -18,6 +20,7 @@ from marshmallow import ValidationError
 
 from srtctl.backends import TokenSpeedBackend
 from srtctl.core.config import resolve_config_with_defaults
+from srtctl.core.health import wait_for_model
 from srtctl.core.schema import SrtConfig
 from srtctl.core.topology import NodePortAllocator
 from srtctl.frontends import SMGFrontend
@@ -186,6 +189,147 @@ def test_smg_runs_headless_engines_on_gateway_zmq_sockets(tmp_path: Path) -> Non
     assert metrics_urls.issubset(set(benchmark["env_to_set"]["AIPERF_SERVER_METRICS_URLS"].split(",")))
     telemetry = tomli.loads((tmp_path / "outputs/4243/logs/tachometer_config.toml").read_text())
     assert metrics_urls.issubset({endpoint["url"] for endpoint in telemetry["endpoints"]})
+
+
+def test_smg_connection_addresses_preserve_physical_worker_topology() -> None:
+    config = _load(_recipe(frontend={"type": "smg", "enable_multiple_frontends": False}))
+    nodes = ["node-01", "node-02", "node-03"]
+    processes = config.worker_processes(config.allocate_worker_endpoints(nodes), port_allocator=NodePortAllocator())
+    original = [(process.node, process.http_port) for process in processes]
+    ips = {"node-01": "10.0.0.1", "node-02": "10.0.0.2", "node-03": "10.0.0.3"}
+    with patch("srtctl.frontends.static_router.get_hostname_ip", side_effect=lambda node, *_: ips[node]):
+        workers = SMGFrontend().collect_workers(config.backend, processes, frontend_node=nodes[0])
+    assert [worker.url for worker in workers] == [
+        f"tcp://10.0.0.1:{process.tokenspeed_zmq_port}" for process in processes if process.is_leader
+    ]
+    assert len(workers) == 3
+    assert all(worker.bootstrap_port is None for worker in workers)
+    assert [(process.node, process.http_port) for process in processes] == original
+    assert all(process.http_port == 0 for process in processes)
+    assert processes[-1].node == "node-03"
+
+
+def test_direct_launch_does_not_implicitly_select_zmq() -> None:
+    """Launch ownership and URL transport are independent parts of the frontend contract."""
+    config = _load(_recipe(roles={"agg": {"nodes": 1, "workers": 1}}))
+    endpoints = config.allocate_worker_endpoints(["node-01"])
+    with patch(
+        "srtctl.frontends.get_frontend",
+        return_value=SimpleNamespace(worker_launch="direct", worker_scheme=lambda *_: None),
+    ):
+        processes = config.backend.endpoints_to_processes(endpoints, port_allocator=NodePortAllocator())
+    assert all(process.tokenspeed_zmq_port is None for process in processes)
+
+
+@pytest.mark.parametrize("disaggregated", [False, True])
+def test_smg_benchmark_waits_for_pending_and_partially_ready_workers(
+    tmp_path: Path, monkeypatch, disaggregated: bool
+) -> None:
+    from srtctl.cli.mixins import benchmark_stage
+
+    original_wait_for_model = benchmark_stage.wait_for_model
+    roles = (
+        {"prefill": {"nodes": 1, "workers": 1, "gpus": 1}, "decode": {"nodes": "colocate", "workers": 1, "gpus": 1}}
+        if disaggregated
+        else {"agg": {"nodes": 1, "workers": 2, "gpus": 1}}
+    )
+    path = tmp_path / "recipe.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            _recipe(
+                frontend={"type": "smg", "enable_multiple_frontends": False},
+                roles=roles,
+                health_check={"max_attempts": 5, "interval_seconds": 1},
+            )
+        )
+    )
+    launches: list[dict[str, Any]] = []
+    polls: list[list[dict[str, Any]]] = []
+    kinds = ["prefill", "decode"] if disaggregated else ["regular", "regular"]
+
+    def workers_response(url: str, **kwargs: Any) -> SimpleNamespace:
+        assert url.endswith("/workers")
+        assert not any(launch["command"] == ["bash", "-lc", "echo done"] for launch in launches)
+        ready_count = min(len(polls), len(kinds))
+        workers = [{"worker_type": kind, "is_healthy": index < ready_count} for index, kind in enumerate(kinds)]
+        polls.append(workers)
+        body = {"workers": workers, "stats": {f"{kind}_count": kinds.count(kind) for kind in set(kinds)}}
+        return SimpleNamespace(status_code=200, json=lambda: body)
+
+    def record_launch(launch: dict[str, Any]) -> None:
+        if launch.get("step_name") == "smg_0":
+            # Keep fake cluster infrastructure but exercise the real readiness loop.
+            # mock_infrastructure restores this attribute when the run exits.
+            benchmark_stage.wait_for_model = wait_for_model
+        if launch["command"] == ["bash", "-lc", "echo done"]:
+            assert len(polls) == 3
+            assert all(worker["is_healthy"] for worker in polls[-1])
+        launches.append(launch)
+
+    monkeypatch.setattr("srtctl.core.health.requests.get", workers_response)
+    assert (
+        run_mock_sweep(
+            config_path=path,
+            output_dir=tmp_path / "outputs/4247",
+            job_id="4247",
+            options=MockOptions(
+                child_duration_s=0.05, phase_pause_s=0.01, nodelist=("node-01",), on_srun=record_launch
+            ),
+        )
+        == 0
+    )
+    assert len(polls) == 3
+    assert benchmark_stage.wait_for_model is original_wait_for_model
+    assert any(launch["command"] == ["bash", "-lc", "echo done"] for launch in launches)
+
+
+@pytest.mark.parametrize("hf_snapshot", [False, True])
+@pytest.mark.parametrize("stage_weights", [False, True])
+def test_smg_uses_resolved_shared_model_mount(tmp_path: Path, hf_snapshot: bool, stage_weights: bool) -> None:
+    cache_root = tmp_path / "models--org--model"
+    model_dir = cache_root / "snapshots/revision" if hf_snapshot else tmp_path / "model"
+    model_dir.mkdir(parents=True)
+    if hf_snapshot:
+        (cache_root / "blobs").mkdir()
+        (cache_root / "blobs/config-digest").write_text("{}")
+        (model_dir / "config.json").symlink_to("../../blobs/config-digest")
+    else:
+        (model_dir / "config.json").write_text("{}")
+    model = {"path": str(model_dir), "container": "tokenspeed", "precision": "bf16"}
+    stage_dir = tmp_path / "node-local/staged"
+    if stage_weights:
+        stage_dir.parent.mkdir()
+        model["stage_dir"] = str(stage_dir)
+    path = tmp_path / "recipe.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            _recipe(
+                model=model,
+                frontend={"type": "smg", "enable_multiple_frontends": False},
+                roles={"agg": {"nodes": 1, "workers": 1, "gpus": 1}},
+            )
+        )
+    )
+    launches: list[dict[str, Any]] = []
+    assert (
+        run_mock_sweep(
+            config_path=path,
+            output_dir=tmp_path / "outputs/4248",
+            job_id="4248",
+            options=MockOptions(
+                child_duration_s=0.05, phase_pause_s=0.01, nodelist=("node-01",), on_srun=launches.append
+            ),
+        )
+        == 0
+    )
+    router = next(launch for launch in launches if launch.get("step_name") == "smg_0")
+    worker = next(launch for launch in launches if "tokenspeed.cli" in launch["command"])
+    shared_path = "/srtctl-model-cache/snapshots/revision" if hf_snapshot else "/model"
+    assert _flag(router["command"], "--model") == shared_path
+    assert _flag(worker["command"], "--model") == (str(stage_dir / model_dir.name) if stage_weights else shared_path)
+    assert router["container_mounts"][cache_root.resolve() if hf_snapshot else model_dir.resolve()] == Path(
+        "/srtctl-model-cache" if hf_snapshot else "/model"
+    )
 
 
 @pytest.mark.parametrize("nodes,workers,gpus", [(1, 2, 1), (2, 1, 16)])

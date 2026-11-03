@@ -84,6 +84,19 @@ class TokenSpeedBackend(Backend):
         """Each headless process exports the metrics of its local ranks, including followers."""
         return process.tokenspeed_metrics_port is not None
 
+    def direct_worker_scheme(self, mode: WorkerMode) -> str:
+        """Headless engines dial the gateway's TCP ZMQ handshake."""
+        return "tcp"
+
+    def router_worker_address(self, process: Process, frontend_node: str | None = None) -> tuple[str, int] | None:
+        if process.tokenspeed_zmq_port is None:
+            return super().router_worker_address(process, frontend_node)
+        if not process.is_leader:
+            return None
+        if frontend_node is None:
+            raise ValueError("TokenSpeed ZMQ worker URLs require the frontend listener node")
+        return frontend_node, process.tokenspeed_zmq_port
+
     def get_served_model_name(self, default: str) -> str:
         """A role's ``served-model-name``, else ``default``; srtctl always passes the result."""
         for mode in ("prefill", "agg", "decode"):
@@ -131,15 +144,15 @@ class TokenSpeedBackend(Backend):
     ) -> list[Process]:
         """Each process gets its own ``--port``; each endpoint a rendezvous block on its leader node.
 
-        A direct endpoint's routable port names the handshake SMG binds on the
-        frontend node. Each worker node has a separate optional metrics listener.
+        ZMQ handshakes belong to the gateway, so headless workers have no HTTP
+        port. Each worker node has a separate optional metrics listener.
         """
         if dynamo_sidecar:
             raise ValueError("TokenSpeed does not support Dynamo sidecars")
         from srtctl.core.topology import endpoints_to_processes, port_allocator_for
         from srtctl.frontends import get_frontend
 
-        direct = get_frontend(frontend_type).worker_launch == "direct"
+        frontend = get_frontend(frontend_type)
         allocator = port_allocator_for(port_allocator, base_sys_port)
         processes = endpoints_to_processes(endpoints, port_allocator=allocator)
         dist_init_ports = {
@@ -149,7 +162,9 @@ class TokenSpeedBackend(Backend):
             for endpoint in endpoints
         }
         zmq_ports = {
-            (endpoint.mode, endpoint.index): allocator.next(TOKENSPEED_ZMQ_PORTS) for endpoint in endpoints if direct
+            (endpoint.mode, endpoint.index): allocator.next(TOKENSPEED_ZMQ_PORTS)
+            for endpoint in endpoints
+            if frontend.worker_scheme(self, endpoint.mode) == "tcp"
         }
         result = []
         for process in processes:
@@ -158,14 +173,14 @@ class TokenSpeedBackend(Backend):
             zmq_port = zmq_ports.get(key)
             metrics_port = (
                 allocator.next(TOKENSPEED_METRICS_PORTS, process.node)
-                if direct and self.prometheus_enabled(process.endpoint_mode)
+                if zmq_port is not None and self.prometheus_enabled(process.endpoint_mode)
                 else None
             )
             result.append(
                 replace(
                     process,
                     tokenspeed_port=port,
-                    http_port=zmq_port if zmq_port is not None and process.http_port > 0 else process.http_port,
+                    http_port=0 if zmq_port is not None else process.http_port,
                     tokenspeed_zmq_port=zmq_port,
                     tokenspeed_metrics_port=metrics_port,
                     dist_init_port=dist_init_ports[key],
@@ -197,8 +212,8 @@ class TokenSpeedBackend(Backend):
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
         leader_ip = get_hostname_ip(endpoint_nodes[0], runtime.network_interface)
         frontend = get_frontend(frontend_type)
-        direct_workers = frontend.worker_launch == "direct"
-        entrypoint = ["tokenspeed.cli", "serve", "--headless"] if direct_workers else ["dynamo.tokenspeed"]
+        zmq_workers = frontend.worker_scheme(self, mode) == "tcp"
+        entrypoint = ["tokenspeed.cli", "serve", "--headless"] if zmq_workers else ["dynamo.tokenspeed"]
         cmd = [
             *(nsys_prefix or []),
             "python3",
@@ -224,7 +239,7 @@ class TokenSpeedBackend(Backend):
             cmd.extend(["--disaggregation-mode", mode])
         if mode == "prefill" and process.bootstrap_port is not None:
             cmd.extend(["--disaggregation-bootstrap-port", str(process.bootstrap_port)])
-        if direct_workers:
+        if zmq_workers:
             if process.tokenspeed_zmq_port is None:
                 raise ValueError("build the topology with TokenSpeedBackend.endpoints_to_processes")
             cmd.extend(

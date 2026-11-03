@@ -11,7 +11,6 @@ itself, so the static-router base covers launch, readiness, and worker shape for
 every backend.
 """
 
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from srtctl.backends.tokenspeed import TokenSpeedBackend
@@ -20,10 +19,7 @@ from srtctl.frontends.static_router import StaticRouterFrontend, setup_script_pr
 from srtctl.ports import SMG_METRICS_PORT
 
 if TYPE_CHECKING:
-    import threading
-
-    from srtctl.backends.base import WorkerMode
-    from srtctl.core.processes import ManagedProcess
+    from srtctl.core.health import WorkerHealthResult
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Process
 
@@ -65,13 +61,22 @@ class SMGFrontend(StaticRouterFrontend):
         if prefill.type == "vllm" and not (prefill.is_grpc_mode("prefill") and decode.is_grpc_mode("decode")):
             raise ValueError("frontend.type: smg runs vLLM prefill/decode only over gRPC; set grpc: true in both roles")
 
-    def worker_scheme(self, backend: Any, mode: "WorkerMode") -> str:
-        """TokenSpeed dials SMG's TCP handshake; other engines retain their HTTP/gRPC APIs."""
-        return "tcp" if isinstance(backend, TokenSpeedBackend) else super().worker_scheme(backend, mode)
-
     def worker_bootstrap_port(self, backend: Any, process: "Process") -> int | None:
         """ZMQ engines declare their actual P/D bootstrap host and port in the handshake."""
-        return None if isinstance(backend, TokenSpeedBackend) else super().worker_bootstrap_port(backend, process)
+        return (
+            None
+            if self.worker_scheme(backend, process.endpoint_mode) == "tcp"
+            else super().worker_bootstrap_port(backend, process)
+        )
+
+    def parse_health(self, response_json: dict, expected_prefill: int, expected_decode: int) -> "WorkerHealthResult":
+        """Pending registrations count in SMG's stats, but only healthy workers can serve traffic."""
+        workers = [worker for worker in response_json.get("workers", []) if worker.get("is_healthy") is True]
+        stats = {
+            f"{kind}_count": sum(worker.get("worker_type") == kind for worker in workers)
+            for kind in ("prefill", "decode", "regular")
+        }
+        return super().parse_health({"stats": stats}, expected_prefill, expected_decode)
 
     def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:
         """Headless TokenSpeed serves each node's metrics independently of the gateway."""
@@ -89,21 +94,6 @@ class SMGFrontend(StaticRouterFrontend):
             return None
         return super().profiling_control_port(process, config, runtime)
 
-    def start_frontends(
-        self,
-        topology: Any,
-        runtime: "RuntimeContext",
-        config: Any,
-        backend: Any,
-        backend_processes: "list[Process]",
-        stop_event: "threading.Event | None" = None,
-    ) -> "list[ManagedProcess]":
-        if isinstance(backend, TokenSpeedBackend):
-            # Only the router's URL view moves: SMG binds these sockets; workers and
-            # metrics retain their actual nodes in the orchestrator's process topology.
-            backend_processes = [replace(process, node=runtime.nodes.head) for process in backend_processes]
-        return super().start_frontends(topology, runtime, config, backend, backend_processes, stop_event)
-
     def frontend_metrics_port(self, frontend_args: dict[str, Any] | None) -> int | None:
         """SMG serves Prometheus on its own listener, not on the routing port."""
         return SMG_METRICS_PORT
@@ -117,6 +107,7 @@ class SMGFrontend(StaticRouterFrontend):
         config: Any,
         backend: Any,
         backend_processes: "list[Process]",
+        runtime: "RuntimeContext | None" = None,
     ) -> list[str]:
         """Bind SMG's Prometheus listener on srtctl's port instead of upstream's default."""
         normalized = {str(key).replace("_", "-"): value for key, value in (config.frontend.args or {}).items()}
@@ -124,13 +115,11 @@ class SMGFrontend(StaticRouterFrontend):
             raise ValueError("frontend.args.prometheus-port is managed by srtctl for smg")
         managed = ["--prometheus-port", str(SMG_METRICS_PORT)]
         if isinstance(backend, TokenSpeedBackend):
-            model_path = config.model.path
-            # The router reads the shared mount, even when worker weights are staged node-locally.
-            model = (
-                normalized.get("model")
-                or config.model.hf_snapshot_path
-                or (model_path.removeprefix("hf:") if model_path.startswith("hf:") else "/model")
-            )
+            model = normalized.get("model")
+            if model is None:
+                if runtime is None:
+                    raise ValueError("SMG model arguments require the resolved runtime model path")
+                model = runtime.shared_model_arg
             if "backend" not in normalized:
                 managed.extend(["--backend", "tokenspeed"])
             if "model" not in normalized:

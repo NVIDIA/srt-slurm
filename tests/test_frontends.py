@@ -7,13 +7,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
 
+from srtctl.backends import SGLangBackend
 from srtctl.core.health import WorkerHealthResult
-from srtctl.core.schema import ObservabilityConfig
+from srtctl.core.schema import ObservabilityConfig, RoleConfig
 from srtctl.frontends import (
     DynamoFrontend,
     SGLangFrontend,
@@ -300,7 +302,7 @@ class TestFrontendProperties:
             result = DynamoFrontend().probe_ready("node0", 8000, 1, 1, None)
         return requested, result
 
-    _DYNAMO_INSTANCES = [
+    _DYNAMO_INSTANCES: ClassVar[list[dict[str, str]]] = [
         {"component": "prefill", "endpoint": "generate"},
         {"component": "tensorrt_llm", "endpoint": "generate"},
     ]
@@ -610,9 +612,8 @@ class TestSGLangGrpcScheme:
             topology=MockWorkerCounts(num_agg=2),
         )
 
-        # Mock backend without gRPC
-        backend = MagicMock()
-        backend.is_grpc_mode.return_value = False
+        # Native backend without gRPC.
+        backend = SGLangBackend()
 
         # Mock runtime
         runtime = MagicMock()
@@ -651,11 +652,7 @@ class TestSGLangGrpcScheme:
             topology=MockWorkerCounts(num_agg=1),
         )
 
-        # Mock SGLangBackend backend with gRPC enabled
-        from srtctl.backends.sglang import SGLangBackend
-
-        backend = MagicMock(spec=SGLangBackend)
-        backend.is_grpc_mode.side_effect = lambda mode: mode == "agg"
+        backend = SGLangBackend(roles={"agg": RoleConfig(args={"grpc-mode": True})})
 
         # Mock runtime
         runtime = MagicMock()
@@ -692,8 +689,7 @@ class TestSGLangGrpcScheme:
             topology=MockWorkerCounts(num_prefill=1, num_decode=2),
         )
 
-        backend = MagicMock()
-        backend.is_grpc_mode.return_value = False
+        backend = SGLangBackend()
 
         runtime = MagicMock()
         runtime.network_interface = "eth0"
@@ -736,8 +732,7 @@ class TestSGLangGrpcScheme:
             topology=MockWorkerCounts(num_agg=2),
         )
 
-        backend = MagicMock()
-        backend.is_grpc_mode.return_value = False
+        backend = SGLangBackend()
 
         runtime = MagicMock()
         runtime.log_dir = MagicMock()
@@ -782,8 +777,7 @@ class TestFrontendEnvHandling:
             topology=MockWorkerCounts(num_agg=1),
         )
 
-        backend = MagicMock()
-        backend.is_grpc_mode.return_value = False
+        backend = SGLangBackend()
 
         runtime = MagicMock()
         runtime.log_dir = MagicMock()
@@ -817,8 +811,7 @@ class TestFrontendEnvHandling:
             frontend=MockFrontendConfig(),
             topology=MockWorkerCounts(num_agg=1),
         )
-        backend = MagicMock()
-        backend.is_grpc_mode.return_value = False
+        backend = SGLangBackend()
         runtime = MagicMock()
         runtime.log_dir = MagicMock()
         runtime.log_dir.__truediv__ = lambda self, x: f"/logs/{x}"
@@ -853,8 +846,7 @@ class TestFrontendEnvHandling:
             topology=MockWorkerCounts(num_agg=1),
         )
 
-        backend = MagicMock()
-        backend.is_grpc_mode.return_value = False
+        backend = SGLangBackend()
 
         runtime = MagicMock()
         runtime.log_dir = MagicMock()
@@ -888,8 +880,7 @@ class TestFrontendEnvHandling:
             topology=MockWorkerCounts(num_agg=1),
         )
 
-        backend = MagicMock()
-        backend.is_grpc_mode.return_value = False
+        backend = SGLangBackend()
 
         runtime = MagicMock()
         runtime.log_dir = MagicMock()
@@ -926,8 +917,7 @@ class TestNumaBind:
             frontend=MockFrontendConfig(numa_bind=True),
             topology=MockWorkerCounts(num_agg=1),
         )
-        backend = MagicMock()
-        backend.is_grpc_mode.return_value = False
+        backend = SGLangBackend()
         runtime = MagicMock()
         runtime.log_dir = MagicMock()
         runtime.log_dir.__truediv__ = lambda self, x: f"/logs/{x}"
@@ -952,8 +942,7 @@ class TestNumaBind:
             frontend=MockFrontendConfig(),
             topology=MockWorkerCounts(num_agg=1),
         )
-        backend = MagicMock()
-        backend.is_grpc_mode.return_value = False
+        backend = SGLangBackend()
         runtime = MagicMock()
         runtime.log_dir = MagicMock()
         runtime.log_dir.__truediv__ = lambda self, x: f"/logs/{x}"

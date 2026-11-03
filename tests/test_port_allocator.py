@@ -20,6 +20,7 @@ from srtctl.core.topology import NodePortAllocator, Process
 from srtctl.ports import (
     BOOTSTRAP_PORTS,
     DIST_INIT_PORTS,
+    FRONTEND_PUBLIC_PORT,
     HTTP_PORTS,
     KV_EVENTS_PORTS,
     MORIIO_HANDSHAKE_PORTS,
@@ -28,6 +29,7 @@ from srtctl.ports import (
     NIXL_PORTS,
     PROXY_PORTS,
     SIDECAR_GRPC_PORTS,
+    SMG_METRICS_PORT,
     SYS_PORTS,
     TOKENSPEED_METRICS_PORTS,
     TOKENSPEED_PORTS,
@@ -184,6 +186,15 @@ def test_example_topologies_bind_no_port_twice(recipe: Path):
     zmq_by_endpoint = {(p.endpoint_mode, p.endpoint_index): p.tokenspeed_zmq_port for p in processes}
     zmq_ports = [port for port in zmq_by_endpoint.values() if port is not None]
     assert len(zmq_ports) == len(set(zmq_ports)), f"{recipe}: TokenSpeed handshakes repeat on the gateway"
+    if zmq_ports:
+        # The synthetic allocation starts at node-0, the required SMG head placement.
+        # Compare across port kinds and include the router's own listeners.
+        gateway_node = "node-0"
+        gateway_ports = {FRONTEND_PUBLIC_PORT, SMG_METRICS_PORT}
+        gateway_ports.update(port for node, _kind, port in per_node if node == gateway_node)
+        gateway_ports.update(port for node, port in dist_init_by_leader if node == gateway_node)
+        collisions = set(zmq_ports).intersection(gateway_ports)
+        assert not collisions, f"{recipe}: gateway ZMQ ports collide with head-node listeners: {collisions}"
 
 
 @pytest.mark.parametrize(
