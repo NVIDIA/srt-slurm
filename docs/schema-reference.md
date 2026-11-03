@@ -476,8 +476,8 @@ Per-node RDMA NIC traffic capture (``srtctl.core.nic_traffic``).
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool \| None | `None` | ``None`` (the default) captures when the job spans more than one node; ``true`` forces capture on a single node; ``false`` opts out. Independent of ``observability.enabled`` and ``telemetry.enabled``. |
-| `sample_interval_seconds` | float | `1.0` | Seconds between counter reads on each node. |
-| `storage_subdir` | str | `'nic_traffic'` | Directory below the run log directory for the per-node samples, the merged ``nic_traffic.csv`` and ``nic_manifest.json``. Must not overlap another capture directory. |
+| `sample_interval_seconds` | float | `1.0` | Seconds between counter reads on each node; the window peak is the highest rate over one such interval. |
+| `storage_subdir` | str | `'nic_traffic'` | Directory below the run log directory for the per-node samples, the merged ``nic_traffic.csv``, ``nic_manifest.json`` and the per-window ``nic_traffic_summary.csv``. Must not overlap another capture directory. |
 
 ### TelemetryExporterConfig
 
