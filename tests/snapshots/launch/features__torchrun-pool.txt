@@ -1,6 +1,6 @@
 # examples/features/torchrun-pool.yaml
 # exit_code: 0
-# srun calls: 2
+# srun calls: 3
 
 ## service_train_node-01
 nodelist: node-01
@@ -37,3 +37,12 @@ env_to_set:
 use_bash_wrapper: True
 command: |
     torchrun --nnodes=2 --nproc-per-node=8 --node-rank=1 --master-addr=127.0.0.1 --master-port=29500 /demo/train.py
+
+## telemetry_nic_traffic
+nodes: 2
+ntasks: 2
+nodelist: node-01 node-02
+output: <output>/logs/telemetry_nic_traffic.%N.out
+use_bash_wrapper: False
+command: |
+    <python> -m srtctl.core.nic_traffic --output-dir <output>/logs/nic_traffic/nodes --ready-dir <output>/logs/nic_traffic/ready --interval-seconds 1.0

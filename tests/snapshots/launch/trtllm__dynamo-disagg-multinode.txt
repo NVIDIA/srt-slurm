@@ -1,6 +1,6 @@
 # examples/trtllm/dynamo-disagg-multinode.yaml
 # exit_code: 0
-# srun calls: 17
+# srun calls: 18
 
 ## service_etcd
 nodelist: node-01
@@ -279,6 +279,15 @@ srun_export_env:
 use_bash_wrapper: False
 command: |
     /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## telemetry_nic_traffic
+nodes: 5
+ntasks: 5
+nodelist: node-01 node-02 node-03 node-04 node-05
+output: <output>/logs/telemetry_nic_traffic.%N.out
+use_bash_wrapper: False
+command: |
+    <python> -m srtctl.core.nic_traffic --output-dir <output>/logs/nic_traffic/nodes --ready-dir <output>/logs/nic_traffic/ready --interval-seconds 1.0
 
 ## tachometer
 nodelist: node-01
