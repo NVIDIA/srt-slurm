@@ -103,6 +103,7 @@ class TestValidateSetup:
         (tmp_path / "configs").mkdir()
         (tmp_path / "configs" / "nats-server").touch()
         (tmp_path / "configs" / "etcd").touch()
+        (tmp_path / "configs" / "otelcol-contrib").touch(mode=0o755)
         (tmp_path / "bin").mkdir()
         (tmp_path / "bin" / "uv").touch()
         (tmp_path / "bin" / "tachometer-scraper").touch()

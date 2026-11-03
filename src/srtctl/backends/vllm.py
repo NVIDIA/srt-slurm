@@ -395,6 +395,8 @@ class VLLMBackend(Backend):
         "VLLM_NVTX_SCOPES_FOR_PROFILING": "1",
         "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
     }
+    # vllm/vllm-openai images carry no Nsight Systems; mount one and set nsys_binary.
+    upstream_image_has_nsys: ClassVar[bool] = False
 
     def find_dp_modes(self) -> list[tuple[str, dict[str, Any]]]:
         """Return the roles whose configured data-parallel size is greater than one, with their args."""

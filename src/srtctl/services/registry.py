@@ -185,6 +185,10 @@ class ServiceKind:
         """A reason not to launch this service in this job (a missing host binary); None to launch."""
         return None
 
+    def setup_problem(self, service: ServiceConfig, srtctl_source: Path) -> str | None:
+        """What ``make setup`` left out that this service needs, checked at submit before the allocation."""
+        return None
+
     def readiness(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> ServiceReadinessConfig | None:
         """A per-instance readiness probe when the recipe writes none.
 

@@ -19,7 +19,9 @@ uses Dynamo's native `dynamo.request_lifecycle` instrumentation (Dynamo PR
 must include it. The default lifecycle mode is Dynamo's `core` mode.
 
 `make setup ARCH=<compute_arch>` installs the pinned, checksum-verified
-`otelcol-contrib` host binary. A missing binary fails startup with a setup hint.
+`otelcol-contrib` host binary. `srtctl apply` refuses a job whose collector binary is
+missing or not executable before it asks for an allocation, naming
+`make otel-collector-download ARCH=<compute_arch>`.
 An air-gapped installation can set `services[name: otel-collector].options.binary`
 to a shared executable; `options.port` changes both its listener and the automatic
 endpoint. `srtctl dry-run` shows the implied collector regardless of the analytics

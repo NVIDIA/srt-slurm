@@ -11,6 +11,7 @@ acknowledgment. No benchmark or GPU-framework imports are needed here.
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import json
 import os
@@ -177,6 +178,14 @@ def worker(spec: dict[str, Any], command: list[str]) -> int:
     except OSError as exc:
         write_json(root / "failed" / f"{participant}.json", {"error": str(exc)})
         print(f"[srtctl] nsys launch failed: {exc}", file=sys.stderr, flush=True)
+        if isinstance(exc, (FileNotFoundError, PermissionError)) or exc.errno == errno.ENOEXEC:
+            print(
+                f"[srtctl] {nsys!r} is not runnable in this container. Images without Nsight Systems "
+                "(for example upstream vLLM) need an nsys on mounted storage: set nsys_binary in "
+                "srtslurm.yaml or SRTCTL_NSYS_BIN.",
+                file=sys.stderr,
+                flush=True,
+            )
         return 1
     try:
         # The application child proves launch has initialized the named session.
