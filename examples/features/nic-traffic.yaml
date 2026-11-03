@@ -1,0 +1,61 @@
+# RDMA NIC traffic capture on a two-node SGLang prefill/decode job.
+#
+# Prefill and decode each get a node of their own, so every KV cache transfer
+# crosses the network (SGLang's default mooncake backend, over RDMA). A job
+# that spans more than one node captures NIC traffic with no configuration;
+# the block below spells out the defaults. After the run, read
+# <log_dir>/nic_traffic/nic_traffic_summary.csv for each concurrency's mean and
+# peak Gbit/s per NIC and per node. See docs/nic-traffic.md.
+#
+# Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-nic-traffic"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+frontend:
+  type: sglang-router
+  enable_multiple_frontends: false
+
+engine: sglang
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      context-length: 4096
+  decode:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      context-length: 4096
+
+observability:
+  nic_traffic:
+    # Unset (the default) captures on multi-node jobs; false opts out, true forces a single-node job.
+    sample_interval_seconds: 1.0
+    storage_subdir: nic_traffic
+
+benchmark:
+  type: "sa-bench"
+  isl: 1024
+  osl: 128
+  concurrencies: "4x16"
