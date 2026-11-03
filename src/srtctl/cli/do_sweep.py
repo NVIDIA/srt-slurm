@@ -36,7 +36,7 @@ from srtctl.cli.mixins import (
     TelemetryStageMixin,
     WorkerStageMixin,
 )
-from srtctl.core.config import load_config
+from srtctl.core.config import container_runtime, load_config
 from srtctl.core.health import wait_for_port
 from srtctl.core.lockfile import write_lockfile
 from srtctl.core.processes import (
@@ -47,7 +47,7 @@ from srtctl.core.processes import (
 from srtctl.core.resource_snapshot import record_resource_snapshot
 from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import SrtConfig, container_creation_env
-from srtctl.core.slurm import get_slurm_job_id, resolve_container_name, start_srun_process
+from srtctl.core.slurm import ContainerName, get_slurm_job_id, resolve_container_name, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, LogStreamer, StatusReporter, tachometer_outbox
 from srtctl.core.supervisor import WORKER_RESTARTS_FILENAME
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
@@ -206,21 +206,27 @@ class SweepOrchestrator(
         for node, mode in targets:
             image = self._worker_container_image(mode) if mode else str(self.runtime.container_image)
             options = self._worker_srun_options(mode) if mode else self.runtime.srun_options
-            resolved = resolve_container_name(
-                image,
-                reuse_container=self.runtime.reuse_container,
-                srun_options=options,
-                srun_export_env=container_creation_env(self.config),
-                job_id=str(self.runtime.job_id),
+            # Under container_runtime host a shell joins the job's sandbox with no options.
+            host_mode = container_runtime() == "host"
+            resolved = (
+                ContainerName(None)
+                if host_mode
+                else resolve_container_name(
+                    image,
+                    reuse_container=self.runtime.reuse_container,
+                    srun_options=options,
+                    srun_export_env=container_creation_env(self.config),
+                    job_id=str(self.runtime.job_id),
+                )
             )
-            key = (node, image, resolved.name)
+            key = (node, "" if host_mode else image, resolved.name)
             if key in seen:
                 continue
             seen.add(key)
-            args = [f"--container-image={image}"]
+            args = [] if host_mode else [f"--container-image={image}"]
             if resolved.name:
                 args.append(f"--container-name={resolved.name}")
-            if self.runtime.container_mounts:
+            if self.runtime.container_mounts and not host_mode:
                 mounts = ",".join(f"{src}:{dst}" for src, dst in self.runtime.container_mounts.items())
                 args.append(f"--container-mounts={mounts}")
             logger.info("")

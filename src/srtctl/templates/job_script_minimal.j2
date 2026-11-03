@@ -117,6 +117,12 @@ echo "Runtime config: ${OUTPUT_DIR}/{{ runtime_config_filename }}"
 
 # Set source directory for container mounts (/configs)
 export SRTCTL_SOURCE_DIR="${SRTCTL_SOURCE}"
+{% if container_runtime == "host" %}
+
+# The job runs inside one sandbox built from the recipe's image and every step
+# inherits it, so the orchestrator passes no container option to srun.
+export SRTCTL_CONTAINER_RUNTIME="host"
+{% endif %}
 
 {% for key, value in config_environment.items() %}
 export {{ key }}={{ value }}

@@ -815,6 +815,7 @@ Top-level keys of `srtslurm.yaml`. Recipes inherit these defaults and resolve al
 | `default_sbatch_directives` | dict[str, str] \| None | `None` | Extra `#SBATCH --key=value` lines added to every job; a recipe's `sbatch_directives` wins per key. |
 | `default_health_check` | dict[str, int] \| None | `None` | `health_check` block (`max_attempts`, `interval_seconds`) used when a recipe has none. |
 | `default_reuse_container` | bool | `False` | Default for recipe `reuse_container`; explicit true or false in the recipe wins. |
+| `container_runtime` | one of `'pyxis'`, `'host'` | `'pyxis'` | `pyxis` (default) passes --container-image and the mounts to every srun. `host` passes none of them: the job already runs inside one sandbox built from the recipe's image, which binds /model, /configs, /logs and the other mount points, and every step inherits it. |
 | `srtctl_root` | str \| None | `None` | srtctl checkout on the shared filesystem that compute nodes mount at /srtctl-src. Default: this checkout. |
 | `output_dir` | str \| None | `None` | Custom output directory for job logs |
 | `model_paths` | dict[str, str] \| None | `None` | Alias -> path map; a recipe's `model.path` may name an alias instead of a path. |

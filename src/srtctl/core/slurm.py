@@ -579,6 +579,43 @@ def resolve_container_name(
     )
 
 
+# Launch arguments that only mean something to pyxis. Under ``container_runtime: host``
+# the job already runs inside one container built from the recipe's image and every
+# step inherits it, so each of these is dropped before srun is built.
+_CONTAINER_LAUNCH_ARGUMENTS = {
+    "container_image": None,
+    "container_mounts": None,
+    "reuse_container": False,
+    "container_prepare_nodes": None,
+}
+
+
+def effective_launch(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Return srun launch keyword arguments as the launcher honours them.
+
+    Under pyxis they come back unchanged. Under ``container_runtime: host`` the
+    image, the mounts, the shared-rootfs reuse and every ``container-*`` or
+    ``no-container-*`` srun option fall away, and nothing else moves. Only keys
+    present in ``kwargs`` are touched. ``start_srun_process`` applies this to
+    its own arguments and the mock orchestrator applies it to what it records,
+    so a launch snapshot shows the launch as the cluster sees it.
+    """
+    from .config import container_runtime
+
+    if container_runtime() != "host":
+        return kwargs
+    launch = dict(kwargs)
+    for key, value in _CONTAINER_LAUNCH_ARGUMENTS.items():
+        if key in launch:
+            launch[key] = value
+    options = launch.get("srun_options")
+    if options:
+        launch["srun_options"] = {
+            key: value for key, value in options.items() if not key.startswith(("container-", "no-container-"))
+        }
+    return launch
+
+
 def start_srun_process(
     command: list[str],
     *,
@@ -655,6 +692,27 @@ def start_srun_process(
             env_to_set={"NATS_SERVER": "nats://node1:4222"},
         )
     """
+    launch = effective_launch(
+        {
+            "container_image": container_image,
+            "container_mounts": container_mounts,
+            "reuse_container": reuse_container,
+            "container_prepare_nodes": container_prepare_nodes,
+            "srun_options": srun_options,
+        }
+    )
+    if container_image and launch["container_image"] is None:
+        logger.debug(
+            "container_runtime host: %s runs in the job's own container, not in %s",
+            step_name or command[0],
+            container_image,
+        )
+    container_image = launch["container_image"]
+    container_mounts = launch["container_mounts"]
+    reuse_container = launch["reuse_container"]
+    container_prepare_nodes = launch["container_prepare_nodes"]
+    srun_options = launch["srun_options"]
+
     srun_cmd = ["srun"]
 
     # ensures srun runs in the same job context

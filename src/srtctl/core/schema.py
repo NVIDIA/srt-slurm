@@ -93,6 +93,10 @@ def _dataclass_default(item: dataclasses.Field) -> Any:
 # Local copies of srtctl.core.power.contract values so that loading a config
 # never imports the power package; equality is pinned by tests.
 _BENCHMARK_TYPE_SA_BENCH = "sa-bench"
+# How a step reaches its container: pyxis passes the image and the mounts to every
+# srun; host passes none of them because the job already runs inside one sandbox
+# built from the recipe's image, which binds the logical mount points itself.
+CONTAINER_RUNTIMES = ("pyxis", "host")
 _DCGM_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
 _CPU_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
 _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS = 1.0
@@ -415,6 +419,15 @@ class ClusterConfig:
     default_health_check: dict[str, int] | None = None
     # Default for recipe `reuse_container`; explicit true or false in the recipe wins.
     default_reuse_container: bool = False
+    # `pyxis` (default) passes --container-image and the mounts to every srun. `host` passes
+    # none of them: the job already runs inside one sandbox built from the recipe's image,
+    # which binds /model, /configs, /logs and the other mount points, and every step inherits it.
+    container_runtime: str = field(
+        default="pyxis",
+        metadata={
+            "marshmallow_field": fields.String(load_default="pyxis", validate=validate.OneOf(CONTAINER_RUNTIMES))
+        },
+    )
     # srtctl checkout on the shared filesystem that compute nodes mount at /srtctl-src. Default: this checkout.
     srtctl_root: str | None = None
     output_dir: str | None = None  # Custom output directory for job logs
