@@ -70,6 +70,7 @@ class TestFrontendRegistry:
         assert list_frontend_types() == [
             "atomesh",
             "dynamo",
+            "infera",
             "llm-d",
             "none",
             "sglang",
@@ -92,6 +93,7 @@ class TestFrontendRegistry:
         ("frontend_type", "launch", "agg_port", "pd_port", "expands"),
         [
             ("dynamo", "dynamo", "allocated", "allocated", False),
+            ("infera", "direct", "allocated", "allocated", False),
             ("sglang", "direct", "public", "public", False),
             ("sglang-router", "direct", "allocated", "allocated", False),
             ("trtllm_serve", "direct", "public", "allocated", False),
@@ -113,6 +115,7 @@ class TestFrontendRegistry:
         [
             # metrics/endpoint: ports for (agg leader, agg follower, routed decode pool, prefill leader)
             ("dynamo", "/metrics", (7500, 7501, 7501, 7502), (7500, None, None, 7502), [], 7500),
+            ("infera", "/metrics", (6100, None, None, 6100), (6100, None, None, 6100), [], 6100),
             ("vllm", "/metrics", (8000, None, None, None), (8000, None, None, 8000), ["n0"], 7500),
             ("sglang", "/metrics", (8000, None, None, None), (8000, None, None, 8000), ["n0"], 7500),
             ("sglang-router", "/metrics", (6100, None, None, 6100), (6100, None, None, 6100), [], 7500),
@@ -224,7 +227,7 @@ class TestFrontendRegistry:
         from srtctl.core.schema import FrontendConfig, ResourceConfig, RoleConfig, SrtConfig
 
         with pytest.raises(
-            ValidationError, match="Unknown frontend.type 'toy-router'.*Available: atomesh, dynamo, llm-d, none"
+            ValidationError, match="Unknown frontend.type 'toy-router'.*Available: atomesh, dynamo, infera, llm-d, none"
         ):
             SrtConfig(
                 name="toy",

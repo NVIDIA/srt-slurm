@@ -10,6 +10,7 @@ importing it from here is what makes ``frontend.type: <type>`` resolvable.
 
 Supported frontend types:
 - dynamo: Dynamo frontend with NATS/etcd communication
+- infera: Infera router discovering self-registering SGLang workers through etcd
 - llm-d: llm-d Endpoint Picker behind Envoy, with the P/D sidecar on decode workers
 - sglang: Direct sglang.launch_server for a single aggregate worker (no router)
 - sglang-router: SGLang Model Gateway router in front of static workers
@@ -30,6 +31,7 @@ from srtctl.frontends.base import (
 )
 from srtctl.frontends.dynamic_frontend import DynamicFrontend
 from srtctl.frontends.dynamo import DynamoFrontend
+from srtctl.frontends.infera import InferaFrontend
 from srtctl.frontends.llm_d import LLMDFrontend
 from srtctl.frontends.sglang import SGLangRouterFrontend
 from srtctl.frontends.sglang_direct import SGLangFrontend
@@ -45,6 +47,7 @@ __all__ = [
     "DynamicFrontend",
     "DynamoFrontend",
     "Frontend",
+    "InferaFrontend",
     "LLMDFrontend",
     "SGLangFrontend",
     "SGLangRouterFrontend",
