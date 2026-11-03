@@ -34,8 +34,13 @@ def allocate_worker_endpoints(config: SrtConfig, nodes: Sequence[str]) -> list[E
     """Allocate once for the job; retain the original engine packer without overrides."""
     topology = config.topology
     allocate = config.backend.allocate_endpoints
-    if config.has_role_backends:
-        allocate = partial(allocate_endpoints, allow_prefill_decode_colocation=topology.colocated_decode)
+    if config.has_role_backends or (topology.colocated_decode and topology.infers_nodes):
+        allocate = partial(
+            allocate_endpoints,
+            allow_prefill_decode_colocation=topology.colocated_decode,
+            pack_multinode_workers=not config.has_role_backends
+            and config.backend.get_srun_config().launch_per_endpoint,
+        )
     return allocate(
         num_prefill=topology.num_prefill,
         num_decode=topology.num_decode,

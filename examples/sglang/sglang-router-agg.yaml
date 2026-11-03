@@ -29,7 +29,6 @@ frontend:
 engine: sglang
 roles:
   agg:
-    nodes: 1
     workers: 2
     gpus: 1
     env:

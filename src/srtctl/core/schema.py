@@ -22,7 +22,7 @@ import shlex
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import field
 from enum import Enum
-from functools import cached_property
+from functools import cached_property, partial
 from pathlib import Path, PurePosixPath
 from typing import (
     TYPE_CHECKING,
@@ -840,7 +840,8 @@ class RoleConfig(RoleSettings):
     ``extra_args`` / ``kv_events`` / ``mooncake_store_config`` from them.
     """
 
-    # Nodes reserved for this role. `colocate` (decode only) reserves none and packs the
+    # Nodes reserved for this role. Omit to derive from explicit `workers` and `gpus`.
+    # `colocate` (decode only) reserves none and packs the
     # decode workers onto the prefill nodes' free GPUs; `gpus` is then required on both
     # roles and the loader rejects a split that does not fit.
     nodes: int | Literal["colocate"] | None = None
@@ -972,6 +973,75 @@ class Topology:
     roles: Mapping[str, RoleConfig]
     gpus_per_node: int
     het_jobs: bool | None = None
+    spread_workers: bool = False
+    backend: BackendConfig | None = None
+
+    @classmethod
+    def from_recipe(cls, recipe: Mapping[str, Any], *, gpus_per_node: int) -> "Topology":
+        """Read worker allocation without requiring model or benchmark settings."""
+        resources = ResourceConfig.Schema().load({"gpus_per_node": gpus_per_node, **(recipe.get("resources") or {})})
+        roles = {name: RoleConfig.Schema().load(spec) for name, spec in (recipe.get("roles") or {}).items()}
+        if set(roles) - set(ROLE_NAMES):
+            raise ValueError(f"Unknown worker roles: {sorted(set(roles) - set(ROLE_NAMES))}")
+        engine = BackendConfigField(allow_none=True, reject_per_role_keys=True).deserialize(recipe.get("engine"))
+        backend = (
+            None
+            if any(role.engine is not None for role in roles.values())
+            else _bind_roles(engine or SGLangBackend(), roles)
+        )
+        return cls(roles, resources.gpus_per_node, resources.het_jobs, resources.spread_workers, backend)
+
+    @property
+    def infers_nodes(self) -> bool:
+        """Whether a role supplies its worker shape instead of a node reservation."""
+        return any(
+            spec.nodes is None and spec.workers is not None and spec.gpus is not None for spec in self.roles.values()
+        )
+
+    @cached_property
+    def inferred_nodes(self) -> dict[str, int]:
+        """Count the nodes used by the same allocator that assigns worker GPUs."""
+        from srtctl.core.topology import allocate_endpoints
+
+        if self.gpus_per_node <= 0:
+            raise ValueError("gpus_per_node must be positive")
+        for role, spec in self.roles.items():
+            if spec.nodes is None and (spec.workers is None or spec.gpus is None):
+                raise ValueError(f"roles.{role}: deriving nodes requires explicit workers and gpus")
+        counts = {role: self.workers(role) for role in ROLE_NAMES}
+        sizes = {role: self.gpus_per_worker(role) for role in ROLE_NAMES}
+        for role, count in counts.items():
+            if count < 0 or (count and sizes[role] <= 0):
+                raise ValueError(f"roles.{role}: workers and gpus must be positive")
+        upper_bound = sum(
+            counts[role] * ((sizes[role] + self.gpus_per_node - 1) // self.gpus_per_node) for role in ROLE_NAMES
+        )
+        allocate = self.backend.allocate_endpoints if self.backend is not None else allocate_endpoints
+        if self.colocated_decode:
+            allocate = partial(
+                allocate_endpoints,
+                allow_prefill_decode_colocation=True,
+                pack_multinode_workers=self.backend is not None and self.backend.get_srun_config().launch_per_endpoint,
+            )
+        endpoints = allocate(
+            num_prefill=counts["prefill"],
+            num_decode=counts["decode"],
+            num_agg=counts["agg"],
+            gpus_per_prefill=sizes["prefill"],
+            gpus_per_decode=sizes["decode"],
+            gpus_per_agg=sizes["agg"],
+            gpus_per_node=self.gpus_per_node,
+            available_nodes=[str(index) for index in range(upper_bound)],
+            spread_workers=self.spread_workers,
+            gpu_indices_by_mode=self.gpu_indices_by_mode,
+        )
+        used: set[str] = set()
+        nodes = dict.fromkeys(ROLE_NAMES, 0)
+        for endpoint in endpoints:
+            role = "prefill" if endpoint.mode == "decode" and self.colocated_decode else endpoint.mode
+            nodes[role] += len(set(endpoint.nodes) - used)
+            used.update(endpoint.nodes)
+        return nodes
 
     def role(self, name: str) -> RoleConfig | None:
         return self.roles.get(name)
@@ -979,7 +1049,11 @@ class Topology:
     def nodes(self, name: str) -> int | None:
         """Nodes the role reserves (``0`` for a colocated decode), None when the role is absent or unsized."""
         spec = self.roles.get(name)
-        return None if spec is None else spec.node_count
+        if spec is None:
+            return None
+        if spec.nodes is None and spec.workers is not None and spec.gpus is not None:
+            return self.inferred_nodes[name]
+        return spec.node_count
 
     def workers(self, name: str) -> int:
         spec = self.roles.get(name)
@@ -2911,7 +2985,13 @@ class SrtConfig:
     @cached_property
     def topology(self) -> Topology:
         """The worker layout: every per-role count, derived once from ``roles`` and ``resources``."""
-        return Topology(roles=self.roles, gpus_per_node=self.resources.gpus_per_node, het_jobs=self.resources.het_jobs)
+        return Topology(
+            roles=self.roles,
+            gpus_per_node=self.resources.gpus_per_node,
+            het_jobs=self.resources.het_jobs,
+            spread_workers=self.resources.spread_workers,
+            backend=None if self.has_role_backends else self.backend,
+        )
 
     @cached_property
     def role_backends(self) -> dict[str, BackendConfig]:
@@ -4162,7 +4242,7 @@ class SrtConfig:
     def _engine_total_nodes(self) -> int:
         """Worker node count of the engine roles, adjusted for backend-specific packing."""
         topology = self.topology
-        if self.has_role_backends:
+        if self.has_role_backends or topology.infers_nodes:
             return topology.total_nodes
         if isinstance(self.backend, VLLMBackend) and self.backend.should_colocate_prefill_decode(
             num_prefill=topology.num_prefill,

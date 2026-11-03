@@ -441,7 +441,10 @@ def allocate_endpoints(
             if pack_multinode_workers:
                 if gpus_per_worker <= 0:
                     raise ValueError("GPUs per worker must be positive")
-                if gpus_per_worker <= gpus_per_node and gpu_offset + gpus_per_worker > gpus_per_node:
+                if gpu_offset and (
+                    gpus_per_worker % gpus_per_node == 0
+                    or (gpus_per_worker <= gpus_per_node and gpu_offset + gpus_per_worker > gpus_per_node)
+                ):
                     node_idx += 1
                     gpu_offset = 0
                 worker_nodes = []
@@ -475,6 +478,9 @@ def allocate_endpoints(
                     node_idx += 1
                     gpu_offset = 0
             elif nodes_per_worker >= 1 and gpus_per_worker >= gpus_per_node:
+                if gpu_offset:
+                    node_idx += 1
+                    gpu_offset = 0
                 # Multi-node or full-node worker. When gpus_per_worker is not a
                 # multiple of gpus_per_node, leave GPUs idle so every node of
                 # this worker sees the same count (required by --nnodes).

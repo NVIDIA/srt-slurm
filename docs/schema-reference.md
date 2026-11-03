@@ -103,7 +103,7 @@ One worker role of the recipe: `roles.prefill`, `roles.decode`, or `roles.agg`.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `nodes` | int \| one of `'colocate'` \| None | `None` | Nodes reserved for this role. `colocate` (decode only) reserves none and packs the decode workers onto the prefill nodes' free GPUs; `gpus` is then required on both roles and the loader rejects a split that does not fit. |
+| `nodes` | int \| one of `'colocate'` \| None | `None` | Nodes reserved for this role. Omit to derive from explicit `workers` and `gpus`. `colocate` (decode only) reserves none and packs the decode workers onto the prefill nodes' free GPUs; `gpus` is then required on both roles and the loader rejects a split that does not fit. |
 | `workers` | int \| None | `None` | Number of workers of this role. |
 | `gpus` | int \| None | `None` | GPUs per worker. Defaults to `nodes * gpus_per_node // workers`; required when decode colocates. |
 | `gpu_indices` | list[int] \| list[list[int]] \| None | `None` | The node's GPU layout for this role's partial-node workers, when they must not take the first contiguous GPUs: one list is the physical GPUs of the single worker on each node (`[0, 2]` puts a TP2 worker on one GPU per socket of a 4-GPU node); a list of lists is the GPUs of each worker slot on a node (`[[0, 2], [1, 3]]` runs two such workers per node). Every list has `gpus` distinct entries below `resources.gpus_per_node`, the lists do not overlap, and workers fill the slots in order before moving to the next node. The device mask, vLLM `--device-ids`, the Mooncake device map and the NUMA binding follow it. |

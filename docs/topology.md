@@ -50,6 +50,17 @@ Fields: [RoleConfig](schema-reference.md#roleconfig). `args` takes any flag the 
 
 `env` and `args` are ordinary YAML mappings. Nothing needs JSON or inline `{}` syntax. Boolean flags are `flag-name: true`.
 
+**Node counts**: when `workers` and `gpus` are explicit, omit `nodes` to let srtctl size the allocation using its worker allocator. For example, three four-GPU workers on eight-GPU nodes reserve two nodes. `resources.spread_workers: true` instead reserves three. Explicit numeric `nodes` remain reservations and are not reduced. With `decode.nodes: colocate`, an omitted prefill node count includes room for both roles. GPU-index layouts and the selected engine's allocation rules are respected.
+
+```yaml
+resources:
+  gpus_per_node: 8
+roles:
+  agg:
+    workers: 3
+    gpus: 4
+```
+
 **GPUs per worker**: `gpus` is `(nodes * gpus_per_node) / workers` when omitted. Set it explicitly when a role should not fill its nodes, when several workers share a node, or whenever it makes the recipe self-describing. `resources.spread_workers: true` puts each partial-node worker on its own node instead of packing them.
 
 **Which GPUs a partial-node worker uses**: a partial-node worker takes the first `gpus` GPUs of its node (`0,1` for a 2-GPU worker), packed after any worker already on that node. `gpu_indices` names the physical GPUs instead, for layouts the packing cannot produce, such as one GPU per socket:

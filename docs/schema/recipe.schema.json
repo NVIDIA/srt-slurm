@@ -2474,7 +2474,7 @@
               "type": "null"
             }
           ],
-          "description": "Nodes reserved for this role. `colocate` (decode only) reserves none and packs the decode workers onto the prefill nodes' free GPUs; `gpus` is then required on both roles and the loader rejects a split that does not fit.",
+          "description": "Nodes reserved for this role. Omit to derive from explicit `workers` and `gpus`. `colocate` (decode only) reserves none and packs the decode workers onto the prefill nodes' free GPUs; `gpus` is then required on both roles and the loader rejects a split that does not fit.",
           "default": null
         },
         "workers": {
