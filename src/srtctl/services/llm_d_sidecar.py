@@ -4,15 +4,16 @@
 
 """``type: llm-d-sidecar``: llm-d's P/D sidecar in front of every routable decode worker.
 
-The llm-d frontend implies this service for P/D jobs. The sidecar calls the
-prefill worker named in ``x-prefiller-host-port``, then passes the returned
-``kv_transfer_params`` to its local vLLM, which pulls the prefill KV cache.
-It listens on ``Process.proxy_port`` and forwards other routes, including
-``/metrics``, to the worker's HTTP port.
+The llm-d frontend implies this service for P/D jobs. For vLLM (`nixlv2`), the
+sidecar calls the prefill worker named in ``x-prefiller-host-port`` and passes the
+returned ``kv_transfer_params`` to its local vLLM, which pulls the prefill KV cache.
+For SGLang (`sglang`), it coordinates bootstrap metadata and dispatches concurrent
+prefill and decode requests. It listens on ``Process.proxy_port`` and forwards other
+routes, including ``/metrics``, to the worker's HTTP port.
 
-Upstream: llm-d-router ``cmd/pd-sidecar`` and ``pkg/sidecar/proxy`` at v0.10.0
+Upstream: llm-d-router ``cmd/pd-sidecar`` and ``pkg/sidecar/proxy``
 (https://github.com/llm-d/llm-d-router/tree/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/sidecar/proxy).
-Its ``GET /health`` is independent of vLLM, allowing it to start before workers.
+Its ``GET /health`` is independent of the worker, allowing it to start before workers.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from marshmallow import ValidationError
 
+from srtctl.ports import SGLANG_BOOTSTRAP_PORT_BASE
 from srtctl.services.config import HttpProbe, ServiceReadinessConfig
 from srtctl.services.registry import ServiceKind, ServiceLaunchContext, register_service
 
@@ -31,10 +33,11 @@ if TYPE_CHECKING:
 
 LLM_D_SIDECAR_TYPE = "llm-d-sidecar"
 
-# The sidecar's --kv-connector protocol for the vLLM connector class the decode workers run.
+# The sidecar's --kv-connector protocol per engine type and decode connector / transfer backend.
 # Upstream's table of protocols: pkg/sidecar/proxy/options.go (supportedKVConnectors).
-SIDECAR_KV_CONNECTORS: dict[str, str] = {
-    "NixlConnector": "nixlv2",
+SIDECAR_KV_CONNECTORS: dict[str, dict[str, str]] = {
+    "vllm": {"NixlConnector": "nixlv2"},
+    "sglang": {"nixl": "sglang"},
 }
 
 # Argv shown by dry-run, where there is no worker to read the ports from.
@@ -45,18 +48,30 @@ _MANAGED_FLAGS = frozenset({"--port", "--model-server-port", "--kv-connector", "
 def sidecar_kv_connector(backend: Any) -> str:
     """Select the decode connector's sidecar protocol, or raise ``ValueError``.
 
-    For ``MultiConnector``, use the first supported wrapped connector.
+    For vLLM ``MultiConnector``, use the first supported wrapped connector.
     """
+    from srtctl.backends.sglang import SGLangBackend
     from srtctl.backends.vllm import VLLMBackend
 
-    # Only vLLM's KV-transfer protocol is supported.
-    connectors = backend.kv_connector_classes("decode") if isinstance(backend, VLLMBackend) else ()
-    protocol = next((SIDECAR_KV_CONNECTORS[name] for name in connectors if name in SIDECAR_KV_CONNECTORS), None)
+    if isinstance(backend, VLLMBackend):
+        connectors = backend.kv_connector_classes("decode")
+    elif isinstance(backend, SGLangBackend):
+        config = {key.replace("_", "-"): value for key, value in backend.get_config_for_mode("decode").items()}
+        transfer = config.get("disaggregation-transfer-backend")
+        connectors = (str(transfer),) if transfer else ()
+    else:
+        connectors = ()
+    backend_connectors = SIDECAR_KV_CONNECTORS.get(backend.type, {})
+    protocol = next((backend_connectors[name] for name in connectors if name in backend_connectors), None)
     if protocol is None:
-        supported = ", ".join(f"{name} ({protocol})" for name, protocol in SIDECAR_KV_CONNECTORS.items())
+        supported = (
+            ", ".join(f"{name} ({proto})" for name, proto in backend_connectors.items())
+            if backend_connectors
+            else "none"
+        )
         raise ValueError(
             f"the llm-d P/D sidecar has no protocol for the {backend.type} decode KV connector "
-            f"{' > '.join(connectors) or None!r}; supported (vLLM, alone or in a MultiConnector): {supported}"
+            f"{' > '.join(connectors) or None!r}; supported for {backend.type}: {supported}"
         )
     return protocol
 
@@ -100,6 +115,18 @@ class LLMDSidecarService(ServiceKind):
     def container_fallback(self, config: SrtConfig) -> str | None:
         """Use the frontend image, which also contains ``pd-sidecar``."""
         return config.frontend.container_image
+
+    def default_environment(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> dict[str, str]:
+        from srtctl.backends.sglang import SGLangBackend
+
+        if (
+            ctx.config is not None
+            and ctx.process is not None
+            and ctx.config.topology.num_prefill > 0
+            and isinstance(ctx.config.backend_for_role("prefill"), SGLangBackend)
+        ):
+            return {"SGLANG_BOOTSTRAP_PORT": str(SGLANG_BOOTSTRAP_PORT_BASE)}
+        return {}
 
     def attaches_to(self, process: Process) -> bool:
         return process.proxy_port is not None
