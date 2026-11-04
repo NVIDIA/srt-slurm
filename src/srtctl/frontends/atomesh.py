@@ -38,6 +38,7 @@ class AtomeshFrontend(StaticRouterFrontend):
         config: Any,
         backend: Any,
         backend_processes: list[Process],
+        runtime: RuntimeContext | None = None,
     ) -> list[str]:
         normalized = {str(key).replace("_", "-") for key in (config.frontend.args or {})}
         if "backend" in normalized:

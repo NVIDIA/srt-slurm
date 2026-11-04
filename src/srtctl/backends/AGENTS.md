@@ -20,6 +20,7 @@ Rules for `src/srtctl/backends/`. Every consumer asks a backend through `Backend
    - `get_served_model_name(default)` - Defaults to the supplied model name
    - `prometheus_metrics_path` - Defaults to `/metrics`; where the engine's own HTTP server serves Prometheus text (trtllm-serve overrides it with `/prometheus/metrics`)
    - `is_grpc_mode(mode)` - Defaults to `False`; override when the mode's workers serve gRPC (static routers advertise `grpc://` from it)
+   - `direct_worker_scheme(mode)` / `router_worker_address(process, frontend_node)` - Default to HTTP/gRPC and a positive worker HTTP port on `process.node`; override for a transport whose listener belongs to the gateway. Static routers consume this address without changing physical worker topology. `Frontend.worker_scheme` selects URL transport independently of `worker_launch`.
    - `runs_dynamo_sidecar(process, endpoint_processes)` / `sidecar_engine_metrics_port(process, endpoint_processes)` - Default to `False` / `None`; in Dynamo sidecar mode, whether the process runs a sidecar (and so serves runtime metrics on its system port) and the allocated port its native engine serves Prometheus on. Answer them from the same helpers the sidecar command builder uses; `core/telemetry.py:sidecar_worker_metrics_targets` turns them into the Tachometer and AIPerf targets (`docs/sidecars.md#metrics`)
    - `nvtx_environment` - Defaults to `{}`; the worker environment the automatic nsys preset (`observability.nsys`) sets so the engine emits its own NVTX ranges and nsys can follow the processes that emit them
    - `fatal_log_patterns(mode)` - Defaults to `()`; override for launchers that survive engine failure
@@ -30,7 +31,7 @@ Rules for `src/srtctl/backends/`. Every consumer asks a backend through `Backend
 - **ATOM**: Native ROCm servers behind AToMesh, with one Slurm node per logical worker and allocator-owned Mooncake handshake ports
 - **SGLang**: Per-process srun launching, supports prefill/decode/aggregated modes
 - **TileRT**: Decode workers behind `tilert-router`, paired with an explicit prefill engine and image.
-- **TokenSpeed**: `dynamo.tokenspeed` workers behind the Dynamo frontend, or the gRPC engine `smg_grpc_servicer.tokenspeed` behind SMG (`is_grpc_mode` is always true), aggregated or prefill/decode; allocator-owned `--port` scan base and a dist-init block sized for its control-plane cluster
+- **TokenSpeed**: `dynamo.tokenspeed` workers behind the Dynamo frontend, or `tokenspeed.cli serve --headless` dialing SMG over TCP ZMQ, aggregated or prefill/decode; allocator-owned gateway handshake, per-node metrics, `--port` scan base and a dist-init block sized for its control-plane cluster
 - **TRTLLM**: MPI-style launching (one srun per endpoint with all nodes), prefill/decode only
 - **vLLM**: Per-process srun launching, prefill/decode/aggregated, `per_node` DP; `frontend_type` selects Dynamo registration or a direct `vllm serve` server, and `_CONNECTOR_MAP` owns the KV connector table
 

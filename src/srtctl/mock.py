@@ -145,6 +145,8 @@ class MockOptions:
     nodelist: tuple[str, ...] = ("mock-node-01",)
     # Fake IP returned for every hostname lookup.
     hostname_ip: str = "127.0.0.1"
+    # Optional distinct addresses for tests of traffic between different nodes.
+    hostname_ips: dict[str, str] = field(default_factory=dict)
     # Called with the keyword arguments of every srun launch, before the fake child starts.
     on_srun: Callable[[dict[str, Any]], None] | None = None
     # End a `benchmark.type: manual` hold at its first poll instead of serving until Ctrl+C.
@@ -243,8 +245,8 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
     def _fake_wait_for_model(*_args, **_kwargs) -> bool:
         return True
 
-    def _fake_hostname_ip(*_args, **_kwargs) -> str:
-        return options.hostname_ip
+    def _fake_hostname_ip(hostname: str, *_args, **_kwargs) -> str:
+        return options.hostname_ips.get(hostname, options.hostname_ip)
 
     def _fake_nodelist() -> list[str]:
         return list(options.nodelist)

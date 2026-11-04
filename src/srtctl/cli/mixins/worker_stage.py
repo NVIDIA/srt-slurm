@@ -95,6 +95,11 @@ class WorkerStageMixin:
     config: "SrtConfig"
     runtime: "RuntimeContext"
 
+    @property
+    def worker_runtime(self) -> RuntimeContext:
+        """Runtime context passed to backend command builders."""
+        return self.runtime
+
     def _worker_container_image(self, mode: WorkerMode) -> str:
         return (
             self.config.worker_container_for_role(mode)
@@ -379,7 +384,7 @@ class WorkerStageMixin:
         cmd = backend.build_worker_command(
             process=process,
             endpoint_processes=endpoint_processes,
-            runtime=self.runtime,
+            runtime=self.worker_runtime,
             frontend_type=self.config.frontend.type,
             nsys_prefix=nsys_prefix,
             dump_config_path=config_dump,
@@ -595,7 +600,7 @@ class WorkerStageMixin:
         cmd = backend.build_worker_command(
             process=leader,
             endpoint_processes=endpoint_processes,
-            runtime=self.runtime,
+            runtime=self.worker_runtime,
             frontend_type=self.config.frontend.type,
             nsys_prefix=nsys_prefix,
             dump_config_path=config_dump,

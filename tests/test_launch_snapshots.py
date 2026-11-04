@@ -82,6 +82,19 @@ def test_every_runnable_example_runs_to_completion():
         assert header[1] == "# exit_code: 0", f"{recipe.relative_to(REPO_ROOT)} fails under the mock orchestrator"
 
 
+@pytest.mark.parametrize("home", ["/root", "/home/snapshot-user"])
+@pytest.mark.parametrize(
+    "example,literal",
+    [("sglang/dynamo-agg.yaml", "${HOME:-/root}"), ("miles/qwen3-4b-grpo.yaml", "cd /root/miles")],
+)
+def test_snapshot_preserves_container_home_paths(monkeypatch, home: str, example: str, literal: str) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path(home)))
+    recipe = REPO_ROOT / "examples" / example
+    actual = render_launch_plan(recipe)
+    assert literal in actual
+    assert actual == snapshot_path(recipe).read_text()
+
+
 def test_no_orphan_snapshots():
     expected = {snapshot_path(r) for r in RECIPES}
     orphans = sorted(p.name for p in SNAPSHOT_DIR.glob("*.txt") if p not in expected)
