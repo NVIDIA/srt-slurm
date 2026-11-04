@@ -120,8 +120,10 @@ export SRTCTL_SOURCE_DIR="${SRTCTL_SOURCE}"
 {% if container_runtime == "host" %}
 
 # The job runs inside one sandbox built from the recipe's image and every step
-# inherits it, so the orchestrator passes no container option to srun.
+# inherits it, so the orchestrator passes no container option to srun. The
+# image's own uv cache is read-only in there, so uv caches beside the compute venv.
 export SRTCTL_CONTAINER_RUNTIME="host"
+export UV_CACHE_DIR="${SRTCTL_SOURCE}/.uv-cache-compute"
 {% endif %}
 
 {% for key, value in config_environment.items() %}
