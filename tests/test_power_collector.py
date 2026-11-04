@@ -22,6 +22,7 @@ from srtctl.core.power.contract import MANIFEST_FILENAME, SAMPLES_FILENAME, WIND
 from srtctl.core.power.diagnostics import ScrapeDiagnostics
 from srtctl.core.power.identity import WorkerGpuIdentity, WorkerIdentityProof
 from srtctl.core.power.manifest import ExpectedWindow
+from srtctl.core.power.mapping import DCGM_POWER_MAPPING
 from srtctl.core.power.samples import SampleRow, read_samples
 from srtctl.core.power.session import (
     PowerEndpoint,
@@ -35,6 +36,7 @@ from srtctl.core.power.validate_artifacts import validate_power_artifacts
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.schema import TelemetryExporterConfig
 from srtctl.core.topology import Process
+from tests.test_power_mapping import AMD, _amd_body
 
 GPUS_PER_NODE = 4
 
@@ -896,12 +898,19 @@ class TestPublication:
         )
         assert report.ok is True, report.failures
 
-    @pytest.mark.parametrize("case", ["matching", "index_mismatch", "no_record", "failed"])
+    @pytest.mark.parametrize("case", ["matching", "amd_matching", "index_mismatch", "no_record", "failed"])
     def test_partly_used_node_publishes_only_with_matching_worker_identity(self, tmp_path, exporters, case):
-        """A B300 run using four of eight GPUs: the rows stay, publication needs the worker record."""
-        a = exporters(_body("a", count=8))
+        """A B300 or MI355X run using four of eight GPUs: the rows stay, publication needs the worker record."""
+        amd = case == "amd_matching"
+        a = exporters(_amd_body(8) if amd else _body("a", count=8))
         process = _processes()[0]
-        session = _session(tmp_path, _endpoints(("node-a", a.url)), processes=[process], sample_interval_seconds=0.2)
+        session = _session(
+            tmp_path,
+            _endpoints(("node-a", a.url)),
+            processes=[process],
+            sample_interval_seconds=0.2,
+            mapping=AMD if amd else DCGM_POWER_MAPPING,
+        )
         session.initialize()
         assert session.start_and_wait_for_readiness()
         shift = 4 if case == "index_mismatch" else 0
@@ -910,7 +919,7 @@ class TestPublication:
             assignment=DeviceAssignment.from_process(process),
             step_name="agg_0",
             step_id="1.0",
-            gpu_uuids=tuple(f"GPU-a{index + shift}" for index in range(GPUS_PER_NODE)),
+            gpu_uuids=tuple(f"{'SN' if amd else 'GPU-a'}{index + shift}" for index in range(GPUS_PER_NODE)),
         )
         if case == "failed":
             session.record_worker_identity(WorkerIdentityProof(100.0, error="worker step listing unavailable"))
@@ -924,8 +933,8 @@ class TestPublication:
         outcome = session.stop_and_finalize()
         report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
 
-        assert outcome.publication_valid is (case == "matching")
-        assert report.ok is (case == "matching"), report.failures
+        assert outcome.publication_valid is (case in ("matching", "amd_matching"))
+        assert report.ok is (case in ("matching", "amd_matching")), report.failures
         assert not any("recomputed" in f or "disk-derived reason_codes mismatch" in f for f in report.failures)
         rows, _ = read_samples(session.samples_path)
         assert {row.gpu_index for row in rows if row.hostname == "node-a"} == set(range(8))
@@ -933,58 +942,12 @@ class TestPublication:
             outcome.reason_codes
             == {
                 "matching": (),
+                "amd_matching": (),
                 "index_mismatch": (Reason.UNEXPECTED_DEVICE, Reason.WORKER_GPU_UUID_MISMATCH),
                 "no_record": (Reason.UNEXPECTED_DEVICE,),
                 "failed": (Reason.UNEXPECTED_DEVICE, Reason.WORKER_IDENTITY_INVALID),
             }[case]
         )
-
-    def test_partly_used_amd_node_publishes_with_serial_worker_identity(self, tmp_path, exporters):
-        """An MI325X run using four of eight GPUs: the kfd probe's board serials excuse the idle four."""
-        body = "\n".join(
-            f'gpu_power_usage{{gpu_id="{index}",serial_number="PCB079220-{index:04d}"}} {500 + index}'
-            for index in range(8)
-        )
-        process = _processes()[0]
-        session = _session(
-            tmp_path,
-            _endpoints(("node-a", exporters(body).url)),
-            processes=[process],
-            sample_interval_seconds=0.2,
-            mapping=TelemetryExporterConfig.Schema()
-            .load(
-                {
-                    "container_image": "amd-exporter",
-                    "port": 5000,
-                    "command": "/home/amd/tools/entrypoint.sh",
-                    "kind": "custom",
-                    "worker_gpu_probe": "kfd",
-                    "gpu_labels": {"index": "gpu_id", "identity": "serial_number"},
-                    "gpu_metrics": {"power": {"metric": "gpu_power_usage", "scope": "amd_board"}},
-                }
-            )
-            .power_mapping,
-        )
-        session.initialize()
-        assert session.start_and_wait_for_readiness()
-        worker = WorkerGpuIdentity(
-            hostname="node-a",
-            assignment=DeviceAssignment.from_process(process),
-            step_name="agg_0",
-            step_id="1.0",
-            gpu_uuids=tuple(f"PCB079220-{index:04d}" for index in range(GPUS_PER_NODE)),
-        )
-        session.record_worker_identity(WorkerIdentityProof(100.0, workers=(worker,)))
-
-        start = time.time()
-        time.sleep(0.6)
-        end = time.time()
-        self._write_window_and_result(session, start, end)
-        outcome = session.stop_and_finalize()
-        report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
-
-        assert outcome.publication_valid is True, outcome.reason_codes
-        assert report.ok is True, report.failures
 
     def test_unverified_clock_sync_blocks_publication_without_failing_best_effort(self, tmp_path, exporters):
         """Identical to the covered case except the orchestrator reported an unsynced node.
