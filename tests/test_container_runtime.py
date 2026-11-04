@@ -14,6 +14,7 @@ from marshmallow import ValidationError
 
 from srtctl.core import config as config_module
 from srtctl.core.config import CONTAINER_RUNTIME_ENV, container_runtime
+from srtctl.core.runtime import resolve_container_image
 from srtctl.core.schema import ClusterConfig
 from srtctl.core.slurm import start_srun_process
 
@@ -253,3 +254,16 @@ def test_example_cluster_file_documents_the_key():
     text = Path(__file__).resolve().parent.parent.joinpath("srtslurm.yaml.example").read_text()
     assert "# container_runtime: host" in text
     assert yaml.safe_load(text.replace("# container_runtime: host", "container_runtime: host")) is not None
+
+
+class TestContainerImageUnderHostRuntime:
+    def test_the_pyxis_image_path_need_not_exist_where_no_step_opens_it(self, tmp_path):
+        missing = tmp_path / "vllm-runtime.sqsh"
+        with pytest.raises(FileNotFoundError):
+            resolve_container_image(str(missing))
+        assert resolve_container_image(str(missing), must_exist=False) == missing
+
+    def test_a_registry_image_is_returned_as_is_either_way(self):
+        image = "nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.4.2"
+        assert resolve_container_image(image) == Path(image)
+        assert resolve_container_image(image, must_exist=False) == Path(image)

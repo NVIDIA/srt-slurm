@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from srtctl.core.power.contract import CONTAINER_LOG_DIR
 from srtctl.ports import FRONTEND_PUBLIC_PORT
 
-from .config import get_srtslurm_setting
+from .config import container_runtime, get_srtslurm_setting
 from .slurm import (
     DEFAULT_CONTAINER_PREPARE_TIMEOUT_SECONDS,
     get_hostname_ip,
@@ -338,15 +338,17 @@ def resolve_model_path(path: str) -> tuple[Path, bool]:
     return model_path, False
 
 
-def resolve_container_image(image: str) -> Path:
+def resolve_container_image(image: str, *, must_exist: bool = True) -> Path:
     """Resolve ``model.container`` into a path or a registry image name.
 
     Only file-like values (starting with "/" or "./") are validated; registry
     names such as "nvcr.io/nvidia/pytorch:23.12" are returned as-is, wrapped in
-    a Path for type compatibility with the rest of the runtime.
+    a Path for type compatibility with the rest of the runtime. Under
+    ``container_runtime: host`` the job already runs inside its container and
+    no step opens the image, so ``must_exist=False`` records the path unchecked.
     """
     container_image_str = os.path.expandvars(image)
-    if not container_image_str.startswith(("/", "./")):
+    if not container_image_str.startswith(("/", "./")) or not must_exist:
         return Path(container_image_str)
 
     container_image = Path(container_image_str).resolve()
@@ -497,7 +499,7 @@ class RuntimeContext:
         log_dir.mkdir(parents=True, exist_ok=True)
 
         model_path, is_hf_model = resolve_model_path(config.model.path)
-        container_image = resolve_container_image(config.model.container)
+        container_image = resolve_container_image(config.model.container, must_exist=container_runtime() != "host")
 
         # Build container mounts
         container_mounts: dict[Path, Path] = {
