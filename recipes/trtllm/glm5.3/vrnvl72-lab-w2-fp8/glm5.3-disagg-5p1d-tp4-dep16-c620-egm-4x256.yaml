@@ -7,8 +7,8 @@
 # Dynamo from local wheels on the GLM-5.3 Rubin image and the local AgentX client.
 # Model, image and wheel paths are explicit; configure cluster settings in srtslurm.yaml.
 # EGM/NVLink four-provider variant of the BTK Mooncake pool; preserves paths and tuning,
-# except four async-load workers on 4GiB of staging (BTK: two on 2GiB) and a 300s
-# object lease (BTK: 60s).
+# except four async-load workers (BTK: two), a 300s object lease (BTK: 60s) and KV pages
+# copied directly between the GPU and the pool (BTK: through 2GiB of pinned host staging).
 # Requires an ARM64 CUDA 13 Mooncake wheel containing
 # db195f7f7cad61a0a3c3141b8ecf6ca399a54fca or its upstream equivalent,
 # built with USE_VRAM_SEGMENT=OFF (the default); see README.md#egm-over-nvlink.
@@ -318,15 +318,17 @@ services:
       global_segment_size: 0
       local_buffer_size: 64MiB
       transfer_batch_size: 512
-      # Only pinned CPU staging slots are registered with Mooncake. NVLink
-      # copies these host payloads directly to/from the providers' host DRAM;
-      # TRT-LLM still copies active inference KV between GPU and local slots.
-      stage_through_host: true
-      # BTK runs two async-load workers on 2GiB. FP8 KV loads (p50 4.7GiB, p90 14.7GiB)
-      # queued 1.5-2.6s behind them, so run four; staging is split evenly across workers,
-      # so 4GiB keeps 1GiB (346 FP8 pages) per worker.
+      # Prefill workers register their GPU KV pools with Mooncake, so NVLink copies
+      # pages directly between the providers' host DRAM and the KV cache. BTK stages
+      # through pinned host slots, which its RDMA transport needs without GPUDirect;
+      # staged EGM loads here peaked near 13GiB/s per prefill rank.
+      stage_through_host: false
+      # Used only when TRTLLM_MOONCAKE_STORE_STAGE_THROUGH_HOST=1 in roles.prefill.env
+      # restores staging: 4GiB keeps 1GiB (346 FP8 pages) per load worker.
       staging_buffer_bytes: 4GiB
       async_load: true
+      # BTK runs two async-load workers. FP8 KV loads (p50 4.7GiB, p90 14.7GiB)
+      # queued 1.5-2.6s behind them, so run four.
       async_load_workers: 4
       role: both
       model_key: GLM-5.3
