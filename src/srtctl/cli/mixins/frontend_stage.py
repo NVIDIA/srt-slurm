@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.processes import ManagedProcess
+from srtctl.core.schema import ObservabilityMode
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.frontends import get_frontend
 from srtctl.ports import FRONTEND_INTERNAL_PORT, FRONTEND_PUBLIC_PORT
@@ -217,7 +218,7 @@ class FrontendStageMixin:
             logger.info("frontend.type none: no frontend layer (services-only job)")
             return []
         logger.info("Starting frontend layer")
-        if self.config.frontend.type == "dynamo" and self.config.observability.enabled:
+        if self.config.frontend.type == "dynamo" and self.config.observability.mode is ObservabilityMode.FULL:
             trace_path = (self.config.frontend.env or {}).get("DYN_REQUEST_TRACE_FILE_PATH")
             logger.info(
                 "Observability enabled: Dynamo request tracing is on (DYN_REQUEST_TRACE=1; request-end gzip JSONL: %s)",

@@ -65,14 +65,14 @@ The setup will:
 
 The scraper binaries are attached to srt-slurm GitHub releases for `x86_64` and `aarch64`. `make setup` downloads the matching asset from the latest release and verifies its SHA-256 checksum. Run `make tachometer-scraper` to build the vendored source instead.
 
-After setup, the existing Python observability capture needs only:
+After setup, Tachometer collects by default; the full analytics capture needs only:
 
 ```yaml
 observability:
-  enabled: true
+  enabled: full
 ```
 
-Add `tachometer: {enabled: true}` under `observability` when parsed Parquet output is also needed. See [Observability](observability.md#observability) for optional DCGM and node exporter collection.
+See [Observability](observability.md#observability) for the `default`, `full` and `minimal` modes and for the DCGM, node and process exporters.
 
 ## Configure srtslurm.yaml
 

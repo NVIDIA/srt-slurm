@@ -219,6 +219,7 @@ frontend:
     DYN_LOGGING_JSONL: 'false'
     OTEL_EXPORT_ENABLED: 'false'
     HOME: /tmp
+    DYN_LOG: info
 observability:
   enabled: false
 benchmark:

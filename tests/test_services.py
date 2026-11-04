@@ -660,27 +660,87 @@ def test_service_config_direct_construction() -> None:
         ServiceConfig(name="x", command=["python", ""])
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-def test_dynamo_lifecycle_defaults_reach_frontend_and_workers(tmp_path, enabled):
+def _dynamo_launch_envs(config: SrtConfig, tmp_path: Path) -> list[dict[str, str]]:
+    """Frontend env as launched, then the prefill and decode worker env defaults."""
     from types import SimpleNamespace
 
     from srtctl.frontends.dynamo import DynamoFrontend
 
-    head = DISAGG_HEAD.replace("observability:\n", f"observability:\n  enabled: {str(enabled).lower()}\n")
-    config = _load("", head=head)
     orchestrator = _orchestrator(config, tmp_path)
-    runtime = orchestrator.runtime
     topology = SimpleNamespace(frontend_nodes=["node0"], frontend_port=8180)
     with patch("srtctl.frontends.dynamo.start_srun_process", return_value=_proc()) as launch:
-        DynamoFrontend().start_frontends(topology, runtime, config, config.backend, [])
+        DynamoFrontend().start_frontends(topology, orchestrator.runtime, config, config.backend, [])
     envs = [launch.call_args.kwargs["env_to_set"]]
     for mode in ("prefill", "decode"):
         envs.append(orchestrator._worker_environment_defaults(SimpleNamespace(endpoint_mode=mode, sys_port=8081)))
+    return envs
+
+
+@pytest.mark.parametrize("enabled", ["default", "true", "full"])
+def test_dynamo_lifecycle_defaults_reach_frontend_and_workers(tmp_path, enabled):
+    head = DISAGG_HEAD.replace("observability:\n", f"observability:\n  enabled: {enabled}\n")
+    config = _load("", head=head)
+    envs = _dynamo_launch_envs(config, tmp_path)
     for env, component in zip(envs, ("frontend", "prefill", "decode"), strict=True):
         assert env["DYN_LIFECYCLE_TRACE_ENABLED"] == "1"
         assert env["OTEL_EXPORT_ENABLED"] == "1"
         assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://10.0.0.10:4317"
         assert env["OTEL_SERVICE_NAME"] == f"dynamo-{component}"
+    assert envs[1]["DYN_LOG"] == "info,dynamo_runtime::pipeline::network::ingress::push_handler=warn"
+
+
+@pytest.mark.parametrize("enabled", ["false", "minimal"])
+def test_minimal_observability_drops_lifecycle_tracing_and_quiets_dynamo_logs(tmp_path, enabled):
+    head = DISAGG_HEAD.replace("observability:\n", f"observability:\n  enabled: {enabled}\n")
+    config = _load("", head=head)
+    assert "otel-collector" not in dict(_names(config))
+    for env in _dynamo_launch_envs(config, tmp_path):
+        assert not any("OTEL" in key or "LIFECYCLE" in key for key in env)
+        assert env["DYN_LOG"] == "warn"
+
+
+def test_minimal_observability_keeps_a_declared_collector_and_its_env(tmp_path):
+    head = DISAGG_HEAD.replace("observability:\n", "observability:\n  enabled: minimal\n")
+    config = _load("services:\n  - name: otel-collector\n    type: otel-collector\n", head=head)
+    assert "otel-collector" in dict(_names(config))
+    for env in _dynamo_launch_envs(config, tmp_path):
+        assert env["DYN_LIFECYCLE_TRACE_ENABLED"] == "1"
+
+
+def test_recipe_dyn_log_wins_over_minimal_mode(tmp_path):
+    head = DISAGG_HEAD.replace("observability:\n", "observability:\n  enabled: minimal\n")
+    head = (
+        head.replace("  prefill:\n", "  prefill:\n    env:\n      DYN_LOG: info\n")
+        + "frontend:\n  env:\n    DYN_LOG: debug\n"
+    )
+    config = _load("", head=head)
+    assert _dynamo_launch_envs(config, tmp_path)[0]["DYN_LOG"] == "debug"
+    orchestrator = _orchestrator(config, tmp_path)
+    prefill = next(p for p in orchestrator.backend_processes if p.endpoint_mode == "prefill")
+    with (
+        patch("srtctl.cli.mixins.worker_stage.get_hostname_ip", return_value="10.0.0.11"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=_proc()) as srun,
+    ):
+        orchestrator.start_worker(prefill, [prefill])
+    assert srun.call_args.kwargs["env_to_set"]["DYN_LOG"] == "info"
+
+
+def test_minimal_mode_external_otel_export_carries_lifecycle_spans(tmp_path):
+    from srtctl.core.schema import build_otel_env
+
+    endpoint = "http://10.9.9.9:4317"
+    head = DISAGG_HEAD.replace(
+        "observability:\n", f"observability:\n  enabled: minimal\n  enable_otel: true\n  otel_endpoint: {endpoint}\n"
+    )
+    config = _load("", head=head)
+    assert "otel-collector" not in dict(_names(config))
+    frontend_env = _dynamo_launch_envs(config, tmp_path)[0]
+    assert frontend_env["DYN_LIFECYCLE_TRACE_ENABLED"] == "1"
+    assert frontend_env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == endpoint
+    assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in frontend_env  # no local collector to point at
+    assert build_otel_env(config.observability, "decode")["DYN_LIFECYCLE_TRACE_ENABLED"] == "1"
+    default = _load("", head=head.replace("enabled: minimal", "enabled: default"))
+    assert "DYN_LIFECYCLE_TRACE_ENABLED" not in build_otel_env(default.observability, "decode")
 
 
 def test_direct_stack_does_not_receive_lifecycle_defaults(tmp_path):
@@ -717,7 +777,8 @@ def test_otel_collector_launch_writes_dsight_input_and_survives_worker_shutdown(
     assert collector["receivers"]["otlp"]["protocols"]["grpc"]["endpoint"] == "0.0.0.0:14317"
     from srtctl.services.otel import lifecycle_otel_env
 
-    assert lifecycle_otel_env(config.services, "10.0.0.10", "decode")["OTEL_EXPORTER_OTLP_ENDPOINT"].endswith(":14317")
+    env = lifecycle_otel_env(config.services, "10.0.0.10", "decode", implied=True)
+    assert env["OTEL_EXPORTER_OTLP_ENDPOINT"].endswith(":14317")
 
 
 def test_otel_collector_missing_binary_fails_with_setup_hint(tmp_path):
@@ -731,7 +792,7 @@ def test_explicit_otel_service_opt_out_removes_default_environment():
 
     config = _load("services:\n  - name: otel-collector\n    type: otel-collector\n    enabled: false\n")
     assert "otel-collector" not in dict(_names(config))
-    assert lifecycle_otel_env(config.services, "10.0.0.10", "frontend") == {}
+    assert lifecycle_otel_env(config.services, "10.0.0.10", "frontend", implied=True) == {}
 
 
 # --- implicit services ------------------------------------------------------------

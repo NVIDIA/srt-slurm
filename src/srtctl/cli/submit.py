@@ -74,12 +74,14 @@ from srtctl.core.image_bake import (
 )
 from srtctl.core.lockfile import load_lockfile_fingerprints
 from srtctl.core.runtime import Nodes, resolve_local_model_mount, resolve_model_path
-from srtctl.core.schema import SrtConfig, installs_dynamo
+from srtctl.core.schema import ObservabilityMode, SrtConfig, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
+from srtctl.frontends import FRONTEND_NONE, get_frontend
 from srtctl.frontends.dynamo import ROUTER_POLICY_CONFIG_CONTAINER_PATH
 from srtctl.ports import FRONTEND_PUBLIC_PORT, MOONCAKE_MASTER_PORT
 from srtctl.runtime_scripts.dynamo_wheels import arch_from_binary, detect_target_arch
+from srtctl.services.otel import lifecycle_otel_env
 from srtctl.status_server.server import add_arguments as add_status_server_arguments
 from srtctl.status_server.server import serve as serve_status_server
 
@@ -665,7 +667,7 @@ def show_config_details(config: SrtConfig) -> None:
     show_extensions = (
         config.benchmark.type == "custom"
         or config.benchmark.container_image
-        or config.observability.enabled
+        or config.observability.mode is not ObservabilityMode.DEFAULT
         or config.observability.tachometer.enabled
         or config.telemetry.enabled
         or mooncake_cfg is not None
@@ -726,7 +728,21 @@ def show_config_details(config: SrtConfig) -> None:
                             target,
                         )
 
-        if config.observability.enabled:
+        observability_mode = config.observability.mode
+        if observability_mode is not ObservabilityMode.DEFAULT:
+            details.add_row("observability", "mode", observability_mode.value)
+        if observability_mode is ObservabilityMode.MINIMAL:
+            if not config.observability.tachometer_enabled:
+                details.add_row("observability", "tachometer", "off")
+            if config.frontend.type != FRONTEND_NONE and get_frontend(config.frontend.type).worker_launch == "dynamo":
+                traced = lifecycle_otel_env(
+                    config.services, "<head>", "frontend", implied=config.observability.lifecycle_tracing
+                )
+                details.add_row("observability", "lifecycle tracing", "on (declared collector)" if traced else "off")
+                details.add_row(
+                    "observability", "DYN_LOG default", f"{config.observability.dynamo_log} (recipe env wins)"
+                )
+        if observability_mode is ObservabilityMode.FULL:
             settings = config.observability.nsys
             state = (
                 "enabled"
@@ -892,6 +908,7 @@ def validate_setup(srtctl_source: Path, config: SrtConfig | None = None) -> None
 
     cpu-power-exporter is only required by recipes that configure
     telemetry.cpu_power_exporter; every other recipe submits without it.
+    The Tachometer scraper is not required by a recipe whose Tachometer is off.
     """
     missing = []
 
@@ -902,7 +919,8 @@ def validate_setup(srtctl_source: Path, config: SrtConfig | None = None) -> None
         missing.append("configs/etcd")
     if not (srtctl_source / "bin" / "uv").exists():
         missing.append("bin/uv (compute-arch uv)")
-    if not (srtctl_source / "bin" / "tachometer-scraper").exists():
+    tachometer_needed = config is None or config.observability.tachometer_enabled
+    if tachometer_needed and not (srtctl_source / "bin" / "tachometer-scraper").exists():
         missing.append("bin/tachometer-scraper (compute-arch Tachometer scraper)")
     cpu_power_enabled = (
         config is not None and config.telemetry.enabled and config.telemetry.cpu_power_exporter is not None
@@ -925,7 +943,7 @@ def validate_setup(srtctl_source: Path, config: SrtConfig | None = None) -> None
     # Optional: the default process exporter is host-native and skipped at launch
     # (with a warning in the sweep log) when its binary is absent. Surface that at
     # submit time so the gap is not discovered after the run.
-    if not (configs_dir / "process-exporter").exists():
+    if tachometer_needed and not (configs_dir / "process-exporter").exists():
         console.print(
             "[yellow]WARNING:[/] configs/process-exporter not found; Tachometer will run without per-process/"
             "per-thread CPU telemetry. Re-run [bold]make setup ARCH=<compute_arch>[/] to install it."

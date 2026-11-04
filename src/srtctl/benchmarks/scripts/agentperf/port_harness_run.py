@@ -266,6 +266,9 @@ def parse_job_log(run_dir: Path, prov: Provenance) -> dict:
                 # The harness's infra script exported HOME=/tmp unconditionally
                 # (the image HOME is read-only); carry that for the frontend.
                 env.setdefault("HOME", "/tmp")
+                # The ported recipe keeps observability.enabled: false (minimal), whose
+                # frontend DYN_LOG default is warn; pin the harness's default 'info'.
+                env.setdefault("DYN_LOG", "info")
                 out["frontend_env"] = env
                 prov.add("frontend.env", "job.log frontend srun line --export list")
     out["topology"] = {
