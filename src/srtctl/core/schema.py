@@ -1700,11 +1700,10 @@ class TelemetryExporterConfig:
     # GPU power telemetry: per-GPU metrics to record; unset means DCGM.
     gpu_metrics: GpuMetricsConfig | None = None
     # GPU power telemetry: the bare-host probe that proves which GPUs each worker holds,
-    # so idle GPUs on a partly used node can be excused. It must report the value
-    # `gpu_labels.identity` carries: `nvidia-smi` the NVML UUID, `kfd` the PCI
-    # `serial_number` (the AMD device-metrics-exporter's `serial_number` label).
+    # so idle GPUs on a partly used node can be excused. `kfd` reports the PCI
+    # `serial_number`, the identity the AMD device-metrics-exporter labels.
     # A `kind: dcgm` exporter always uses `nvidia-smi`; unset on `kind: custom` means no probe.
-    worker_gpu_probe: Literal["nvidia-smi", "kfd"] | None = None
+    worker_gpu_probe: Literal["kfd"] | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 

@@ -202,9 +202,9 @@ For any `kind: custom` exporter:
 - `gpu_labels.identity` must be unique per physical GPU. GPUs that share one
   (compute partitions, for example) fail device validation (`gpu_uuid_changed`),
   as MIG instances do on NVIDIA.
-- `worker_gpu_probe` lets a partly used node publish: name the probe whose
-  identity is `gpu_labels.identity` (`kfd` for this exporter's `serial_number`).
-  A wrong pairing fails closed as `worker_gpu_uuid_mismatch`.
+- `worker_gpu_probe: kfd` lets a partly used node publish. It reports the PCI
+  `serial_number`, so `gpu_labels.identity` must be `serial_number`; any other
+  identity fails closed as `worker_gpu_uuid_mismatch`.
 
 ## Artifacts
 
@@ -227,10 +227,10 @@ worker is still `unexpected_device`.
 
 Idle GPUs on a worker node are excused only by `worker_identity_proof`: once the
 server is healthy, one bare-host step per worker node joins `scontrol listpids`
-with the exporter's `worker_gpu_probe` to record the GPU identities each worker
-step holds, since the plan's visible-devices numbering and the exporter's
-device index are otherwise joined on index alone. `nvidia-smi` (always used by
-`kind: dcgm`) reads `--query-compute-apps` UUIDs. `kfd` reads
+with a GPU probe to record the GPU identities each worker step holds, since the
+plan's visible-devices numbering and the exporter's device index are otherwise
+joined on index alone. DCGM exporters use `nvidia-smi --query-compute-apps`
+UUIDs. `worker_gpu_probe: kfd` reads
 `/sys/class/kfd/kfd/proc/<pid>/vram_<gpu id>` and the GPU's PCI `serial_number`:
 every `/dev/kfd` process maps every GPU on the node regardless of
 `ROCR_VISIBLE_DEVICES`, so a process holds only the GPUs where it has VRAM
