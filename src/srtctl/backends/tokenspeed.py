@@ -242,10 +242,12 @@ class TokenSpeedBackend(Backend):
         if zmq_workers:
             if process.tokenspeed_zmq_port is None:
                 raise ValueError("build the topology with TokenSpeedBackend.endpoints_to_processes")
+            if runtime.frontend_node is None:
+                raise ValueError("TokenSpeed ZMQ workers require the resolved frontend listener node")
             cmd.extend(
                 [
                     "--data-parallel-address",
-                    runtime.head_node_ip,
+                    get_hostname_ip(runtime.frontend_node, runtime.network_interface),
                     "--data-parallel-rpc-port",
                     str(process.tokenspeed_zmq_port),
                     "--zmq-engine-index",

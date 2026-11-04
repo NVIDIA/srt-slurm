@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import shlex
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -19,10 +20,12 @@ import yaml
 from marshmallow import ValidationError
 
 from srtctl.backends import TokenSpeedBackend
+from srtctl.cli.do_sweep import SweepOrchestrator
+from srtctl.cli.mixins.frontend_stage import FrontendTopology
 from srtctl.core.config import resolve_config_with_defaults
 from srtctl.core.health import wait_for_model
-from srtctl.core.schema import SrtConfig
-from srtctl.core.topology import NodePortAllocator
+from srtctl.core.schema import RoleConfig, SrtConfig
+from srtctl.core.topology import NodePortAllocator, Process
 from srtctl.frontends import SMGFrontend
 from srtctl.mock import MockOptions, run_mock_sweep
 
@@ -78,6 +81,78 @@ def _flag(command: list[str], flag: str) -> str | None:
     return command[command.index(flag) + 1] if flag in command else None
 
 
+@pytest.fixture
+def smg_worker() -> tuple[TokenSpeedBackend, Process, SimpleNamespace]:
+    config = _load(
+        _recipe(
+            frontend={"type": "smg", "enable_multiple_frontends": False},
+            roles={"agg": {"nodes": 1, "workers": 1}},
+        )
+    )
+    process = config.worker_processes(
+        config.allocate_worker_endpoints(["node-01"]), port_allocator=NodePortAllocator()
+    )[0]
+    runtime = SimpleNamespace(
+        network_interface="ib0",
+        frontend_node="node-02",
+        head_node_ip="10.0.0.1",
+        worker_model_arg="Qwen/Qwen3-0.6B",
+        model_path=Path("Qwen/Qwen3-0.6B"),
+    )
+    return config.backend, process, runtime
+
+
+def test_smg_worker_uses_frontend_listener_on_cluster_interface(smg_worker) -> None:
+    backend, process, runtime = smg_worker
+    with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.2") as resolve:
+        command = backend.build_worker_command(process, [process], runtime, frontend_type="smg")
+
+    assert _flag(command, "--data-parallel-address") == "10.0.0.2"
+    resolve.assert_any_call("node-02", "ib0")
+
+
+@pytest.mark.parametrize("port", ["tokenspeed_port", "dist_init_port", "tokenspeed_zmq_port"])
+def test_worker_command_requires_allocated_ports(smg_worker, port: str) -> None:
+    backend, process, runtime = smg_worker
+    process = replace(process, **{port: None})
+    with (
+        patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        pytest.raises(ValueError, match="build the topology with TokenSpeedBackend.endpoints_to_processes"),
+    ):
+        backend.build_worker_command(process, [process], runtime, frontend_type="smg")
+
+
+def test_smg_worker_command_requires_resolved_frontend_node(smg_worker) -> None:
+    backend, process, runtime = smg_worker
+    runtime.frontend_node = None
+    with (
+        patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        pytest.raises(ValueError, match="require the resolved frontend listener node"),
+    ):
+        backend.build_worker_command(process, [process], runtime, frontend_type="smg")
+
+
+def test_smg_worker_urls_require_frontend_listener_node(smg_worker) -> None:
+    backend, process, _ = smg_worker
+    with pytest.raises(ValueError, match="require the frontend listener node"):
+        SMGFrontend().collect_workers(backend, [process])
+
+
+def test_worker_command_rejects_empty_metrics_reporters(smg_worker) -> None:
+    backend, process, runtime = smg_worker
+    backend = replace(backend, roles={"agg": RoleConfig(args={"metrics-reporters": []})})
+    with (
+        patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        pytest.raises(ValueError, match="metrics-reporters must contain at least one reporter"),
+    ):
+        backend.build_worker_command(process, [process], runtime, frontend_type="smg")
+
+
+def test_tokenspeed_rejects_dynamo_sidecars_at_allocation() -> None:
+    with pytest.raises(ValueError, match="TokenSpeed does not support Dynamo sidecars"):
+        TokenSpeedBackend().endpoints_to_processes([], dynamo_sidecar=True)
+
+
 def test_mock_orchestrator_launches_dynamo_tokenspeed_workers(tmp_path: Path) -> None:
     """Multi-node prefill, two decode workers on one node: allocator ports, rendezvous and P/D flags."""
     config_path = tmp_path / "recipe.yaml"
@@ -123,7 +198,8 @@ def test_mock_orchestrator_launches_dynamo_tokenspeed_workers(tmp_path: Path) ->
     assert _flag(decode_0, "--dist-init-addr") != _flag(decode_1, "--dist-init-addr")
 
 
-def test_smg_runs_headless_engines_on_gateway_zmq_sockets(tmp_path: Path) -> None:
+@pytest.mark.parametrize("gateway_node", ["node-01", "node-02"])
+def test_smg_runs_headless_engines_on_gateway_zmq_sockets(tmp_path: Path, gateway_node: str) -> None:
     """Remote and colocated P/D workers dial distinct gateway sockets and export local metrics."""
     recipe = _recipe(frontend={"type": "smg", "enable_multiple_frontends": False}, dynamo={"install": False})
     for role in recipe["roles"].values():
@@ -133,18 +209,21 @@ def test_smg_runs_headless_engines_on_gateway_zmq_sockets(tmp_path: Path) -> Non
     config_path.write_text(yaml.safe_dump(recipe))
     launches: list[dict[str, Any]] = []
 
-    exit_code = run_mock_sweep(
-        config_path=config_path,
-        output_dir=tmp_path / "outputs" / "4243",
-        job_id="4243",
-        options=MockOptions(
-            child_duration_s=0.05,
-            phase_pause_s=0.01,
-            nodelist=("node-01", "node-02", "node-03"),
-            hostname_ips={"node-01": "10.0.0.1", "node-02": "10.0.0.2", "node-03": "10.0.0.3"},
-            on_srun=launches.append,
-        ),
-    )
+    # Exercise the resolved topology independently of today's head-only validation rule.
+    topology = FrontendTopology(None, [gateway_node], 8000, 8000)
+    with patch.object(SweepOrchestrator, "_compute_frontend_topology", return_value=topology):
+        exit_code = run_mock_sweep(
+            config_path=config_path,
+            output_dir=tmp_path / "outputs" / "4243",
+            job_id="4243",
+            options=MockOptions(
+                child_duration_s=0.05,
+                phase_pause_s=0.01,
+                nodelist=("node-01", "node-02", "node-03"),
+                hostname_ips={"node-01": "10.0.0.1", "node-02": "10.0.0.2", "node-03": "10.0.0.3"},
+                on_srun=launches.append,
+            ),
+        )
 
     assert exit_code == 0
     commands = [shlex.split(" ".join(launch["command"])) for launch in launches]
@@ -157,6 +236,9 @@ def test_smg_runs_headless_engines_on_gateway_zmq_sockets(tmp_path: Path) -> Non
     assert all(cmd[:5] == ["python3", "-m", "tokenspeed.cli", "serve", "--headless"] for cmd in workers.values())
 
     router = next(cmd for cmd in commands if cmd[:2] == ["smg", "launch"])
+    assert next(launch for launch in launches if launch["command"][:2] == ["smg", "launch"])["nodelist"] == [
+        gateway_node
+    ]
     prefill = workers["prefill_0_node-01"]
     prefill_url = f"tcp://{_flag(prefill, '--data-parallel-address')}:{_flag(prefill, '--data-parallel-rpc-port')}"
     assert router[router.index("--prefill") + 1 : router.index("--prefill") + 3] == [prefill_url, "--decode"]
@@ -415,13 +497,18 @@ def test_smg_allocates_only_enabled_engine_metrics(args: dict, expected: bool) -
         assert len(set(ports)) == 2
 
 
-def test_smg_preserves_explicit_model_and_tokenizer() -> None:
+@pytest.mark.parametrize("override_tokenizer", [False, True])
+def test_smg_preserves_explicit_model_and_tokenizer(override_tokenizer: bool) -> None:
     config = _load(
         _recipe(
             frontend={
                 "type": "smg",
                 "enable_multiple_frontends": False,
-                "args": {"model": "router-model", "tokenizer_path": "/custom-tokenizer", "backend": "tokenspeed"},
+                "args": {
+                    "model": "router-model",
+                    "backend": "tokenspeed",
+                    **({"tokenizer_path": "/custom-tokenizer"} if override_tokenizer else {}),
+                },
             },
             roles={
                 "agg": {
@@ -437,9 +524,15 @@ def test_smg_preserves_explicit_model_and_tokenizer() -> None:
         config.frontend.args
     )
     assert _flag(args, "--model") == "router-model"
-    assert _flag(args, "--tokenizer-path") == "/custom-tokenizer"
+    assert _flag(args, "--tokenizer-path") == ("/custom-tokenizer" if override_tokenizer else "/engine-tokenizer")
     assert _flag(args, "--model-alias") == "served=router-model"
     assert args.count("--model") == args.count("--tokenizer-path") == args.count("--backend") == 1
+
+
+def test_smg_requires_runtime_to_resolve_default_model() -> None:
+    config = _load(_recipe(frontend={"type": "smg", "enable_multiple_frontends": False}))
+    with pytest.raises(ValueError, match="require the resolved runtime model path"):
+        SMGFrontend().get_managed_frontend_args(config, config.backend, [])
 
 
 def test_mooncake_master_service_points_the_l3_store_at_it(tmp_path: Path) -> None:

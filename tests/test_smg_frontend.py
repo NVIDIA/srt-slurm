@@ -273,6 +273,28 @@ def test_grpc_workers_are_not_scraped() -> None:
     assert SMGFrontend().worker_metrics_path(backend, "decode") is None
 
 
+@pytest.mark.parametrize("zmq", [False, True])
+@pytest.mark.parametrize("node_rank", [0, 1])
+def test_worker_http_endpoints_and_metrics_follow_transport(zmq: bool, node_rank: int) -> None:
+    """ZMQ metrics exist on every rank; HTTP serving and profiling stay on native workers."""
+    process = Process(
+        "node0",
+        frozenset({0}),
+        7500,
+        0 if zmq or node_rank else 6100,
+        "agg",
+        0,
+        node_rank=node_rank,
+        tokenspeed_zmq_port=31000 if zmq else None,
+        tokenspeed_metrics_port=35000 if zmq else None,
+    )
+    frontend = SMGFrontend()
+    http_port = 6100 if not zmq and node_rank == 0 else None
+    assert frontend.worker_metrics_port(process, None) == (35000 if zmq else http_port)
+    assert frontend.worker_endpoint_port(process, None, None) == http_port
+    assert frontend.profiling_control_port(process, None, None) == http_port
+
+
 def test_trtllm_example_launches_smg_in_front_of_trtllm_serve() -> None:
     """Each trtllm-serve worker binds its allocated port; SMG owns the public one."""
     path = EXAMPLES_DIR / "trtllm/smg-agg.yaml"
