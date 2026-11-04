@@ -2057,6 +2057,7 @@ class TestCpuPowerHostCollectorLaunch:
 
         assert harness.start_cpu_power_host_telemetry(registry) is not None
         mock_srun.assert_not_called()
+        assert harness.power_telemetry_blocks_benchmark()
         assert harness.finalize_cpu_power_host_telemetry(0) == 1
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
