@@ -1337,12 +1337,14 @@ def submit_with_orchestrator(
                 job_output_dir = srtctl_source / "outputs" / job_id
         job_output_dir.mkdir(parents=True, exist_ok=True)
 
-        shutil.copy(source_config_path or config_path, job_output_dir / "config.yaml")
+        # Contents only: a share mounted with fixed modes (SMB/CIFS) refuses the chmod
+        # shutil.copy does, and sbatch has already accepted the job at this point.
+        shutil.copyfile(source_config_path or config_path, job_output_dir / "config.yaml")
         if source_config_path:
             assert resolved_runtime_config_text is not None
             runtime_config_path = job_output_dir / runtime_config_filename
             runtime_config_path.write_text(resolved_runtime_config_text)
-        shutil.copy(script_path, job_output_dir / "sbatch_script.sh")
+        shutil.copyfile(script_path, job_output_dir / "sbatch_script.sh")
         git_sources = git_snapshot_sources_from_extra_mounts(config)
         if git_sources:
             write_git_state_snapshot(job_output_dir / GIT_STATE_FILENAME, git_sources)
