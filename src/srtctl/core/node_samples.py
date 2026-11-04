@@ -3,8 +3,8 @@
 
 """Per-node CSVs and readiness markers written by bare-host collectors.
 
-A host collector (``cpu_power``) runs once per node and
-writes ``<nodes_dir>/<host>.csv`` plus ``<ready_dir>/<host>.ready.json`` or
+A host collector (``cpu_power``) runs once per node and writes
+``<nodes_dir>/<host>.csv`` plus ``<ready_dir>/<host>.ready.json`` or
 ``<host>.error.json``. The head node reads the markers to learn which nodes
 started and merges the CSVs into one file at teardown.
 """
@@ -19,9 +19,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-READY_SUFFIX = ".ready.json"
-ERROR_SUFFIX = ".error.json"
-
 
 @dataclass(frozen=True)
 class NodeMarkers:
@@ -32,13 +29,13 @@ class NodeMarkers:
 
 
 def read_node_markers(ready_dir: Path) -> NodeMarkers:
-    ready = frozenset(path.name.removesuffix(READY_SUFFIX) for path in ready_dir.glob(f"*{READY_SUFFIX}"))
+    ready = frozenset(path.name.removesuffix(".ready.json") for path in ready_dir.glob("*.ready.json"))
     errors: dict[str, str] = {}
-    for path in sorted(ready_dir.glob(f"*{ERROR_SUFFIX}")):
+    for path in sorted(ready_dir.glob("*.error.json")):
         message = ""
         with contextlib.suppress(OSError, json.JSONDecodeError, AttributeError):
             message = str(json.loads(path.read_text()).get("error", ""))
-        errors[path.name.removesuffix(ERROR_SUFFIX)] = message
+        errors[path.name.removesuffix(".error.json")] = message
     return NodeMarkers(ready=ready, errors=errors)
 
 
