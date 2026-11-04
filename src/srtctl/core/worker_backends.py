@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import replace
-from functools import partial
 from typing import TYPE_CHECKING
 
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints
@@ -35,7 +34,7 @@ def allocate_worker_endpoints(config: SrtConfig, nodes: Sequence[str]) -> list[E
     topology = config.topology
     allocate = config.backend.allocate_endpoints
     if config.has_role_backends:
-        allocate = partial(allocate_endpoints, allow_prefill_decode_colocation=topology.colocated_decode)
+        allocate = allocate_endpoints
     return allocate(
         num_prefill=topology.num_prefill,
         num_decode=topology.num_decode,
@@ -47,6 +46,8 @@ def allocate_worker_endpoints(config: SrtConfig, nodes: Sequence[str]) -> list[E
         available_nodes=nodes,
         spread_workers=config.resources.spread_workers,
         gpu_indices_by_mode=topology.gpu_indices_by_mode,
+        allow_prefill_decode_colocation=config.resources.pack_prefill_decode
+        or (config.has_role_backends and topology.colocated_decode),
     )
 
 

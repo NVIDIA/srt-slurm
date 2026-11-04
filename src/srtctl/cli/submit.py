@@ -654,6 +654,9 @@ def show_config_details(config: SrtConfig) -> None:
         elif source is not None and source.wheel:
             console.print(f"[dim]dynamo source:[/] staged wheel ai-dynamo=={source.wheel}")
 
+    if config.resources.pack_prefill_decode:
+        console.print(f"[bold cyan]Prefill/decode packing:[/] shared pool, {config.engine_node_count} worker node(s)")
+
     # --- nodes: who owns what (engine roles, service pools) ---
     if config.pool_services:
         console.print("[bold cyan]Nodes:[/]")
@@ -988,6 +991,8 @@ def generate_minimal_sbatch_script(
         infra_dedicated=config.infra_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
+    if het_components is not None and config.resources.pack_prefill_decode:
+        raise ValueError("resources.pack_prefill_decode requires resources.het_jobs: false")
     if het_components is not None and config.role_backends:
         raise ValueError("Role engine overrides require resources.het_jobs: false")
     if het_components is not None and (config.frontend.placement.dedicated or config.benchmark.placement.dedicated):

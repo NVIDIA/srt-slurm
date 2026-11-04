@@ -129,6 +129,22 @@ def test_default_restart_policy_keeps_dry_run_unchanged(capsys):
     assert "restart=" not in capsys.readouterr().out
 
 
+def test_prefill_decode_packing_and_node_count_are_visible(capsys):
+    config = _make_config(
+        {
+            "resources": {"gpus_per_node": 4, "pack_prefill_decode": True},
+            "roles": {"prefill": {"gpus": 2}, "decode": {"nodes": 2, "workers": 3, "gpus": 2}},
+        }
+    )
+    show_config_details(config)
+    assert "Prefill/decode packing: shared pool, 2 worker node(s)" in " ".join(capsys.readouterr().out.split())
+
+
+def test_prefill_decode_packing_is_opt_in(capsys):
+    show_config_details(_make_config())
+    assert "Prefill/decode packing:" not in capsys.readouterr().out
+
+
 def test_container_reuse_is_visible_when_enabled(capsys):
     config = _make_config({"reuse_container": True})
     assert config.reuse_container is True

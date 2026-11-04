@@ -245,11 +245,14 @@ class Backend(ABC):
         available_nodes: Sequence[str],
         spread_workers: bool = False,
         gpu_indices_by_mode: Mapping[WorkerMode, Sequence[frozenset[int]]] | None = None,
+        allow_prefill_decode_colocation: bool = False,
     ) -> list["Endpoint"]:
         """Allocate logical endpoints based on resource requirements.
 
         ``gpu_indices_by_mode`` carries ``roles.<role>.gpu_indices``: the physical
         GPU set of each worker slot on a node of that mode.
+        ``allow_prefill_decode_colocation`` lets decode use the last prefill
+        node's spare GPUs before continuing onto further nodes.
         """
         raise NotImplementedError
 
