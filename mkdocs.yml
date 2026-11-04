@@ -100,6 +100,7 @@ nav:
       - Observability and Telemetry: observability.md
       - Profiling: profiling.md
       - Per-run Performance Analysis: perf-analysis.md
+      - RDMA NIC Traffic: nic-traffic.md
       - Power:
           - GPU Power Telemetry: power-telemetry.md
           - CPU Power Telemetry: cpu-power-telemetry.md

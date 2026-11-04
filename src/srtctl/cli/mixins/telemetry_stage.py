@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from srtctl.core.cpu_power_session import CpuPowerSessionSettings as CpuPowerHostSessionSettings
 from srtctl.core.cpu_power_session import CpuPowerTelemetrySession
 from srtctl.core.git_state import head_commit
+from srtctl.core.nic_traffic_session import NicTrafficSession, NicTrafficSessionSettings
 from srtctl.core.power.contract import Reason
 from srtctl.core.power.cpu_session import CpuPowerCollector, CpuPowerSessionSettings
 from srtctl.core.power.identity import WORKER_PROBE_SCRIPTS, WorkerGpuIdentity, WorkerIdentityProof, parse_node_probe
@@ -46,6 +47,8 @@ logger = logging.getLogger(__name__)
 
 # Time tachometer gets after SIGTERM to compact its in-memory arrow rows to parquet.
 TACHOMETER_STEP_NAME = "tachometer"
+
+NIC_TRAFFIC_STEP_NAME = "telemetry_nic_traffic"
 
 # Lowest DCGM sampling interval measured at parity with no telemetry on GB300
 # decode (A/F chain); 100ms measured ~2% ITL p50 overhead. Sampling faster than
@@ -83,6 +86,7 @@ class TelemetryStageMixin:
 
     config: SrtConfig
     runtime: RuntimeContext
+    _nic_traffic_session: NicTrafficSession | None = None
 
     @property
     def backend_processes(self) -> list[Process]:
@@ -131,25 +135,14 @@ class TelemetryStageMixin:
         partial launch stays reachable by the outer cleanup path.
         """
         cmd_str = resolve_exporter_command(exporter_config, default_command_template)
-
-        if self.runtime.nodes.het:
-            groups: dict[int, list[str]] = {}
-            for node in nodelist:
-                g = self.runtime.nodes.het_group_for(node)
-                if g is None:
-                    raise RuntimeError(f"node {node!r} not in any het component")
-                groups.setdefault(g, []).append(node)
-            chunks = sorted(groups.items())
-        else:
-            chunks = [(-1, nodelist)]  # sentinel: no --het-group
+        chunks = self._het_chunks(nodelist)
 
         # Host-native exporters (``binary`` set) run straight on the node: no
         # container image, no mounts -- the command already carries host paths.
         host_native = bool(exporter_config.binary)
         managed: list[ManagedProcess] = []
-        for group_id, nodes in chunks:
-            het_group = group_id if group_id >= 0 else None
-            chunk_log = log_file if len(chunks) == 1 else log_file.with_suffix(f".g{group_id}.out")
+        for het_group, nodes in chunks:
+            chunk_log = log_file if len(chunks) == 1 else log_file.with_suffix(f".g{het_group}.out")
             proc = start_srun_process(
                 command=shlex.split(cmd_str),
                 nodes=len(nodes),
@@ -164,7 +157,7 @@ class TelemetryStageMixin:
                 het_group=het_group,
                 use_bash_wrapper=use_bash_wrapper,
             )
-            chunk_name = name if len(chunks) == 1 else f"{name}_g{group_id}"
+            chunk_name = name if len(chunks) == 1 else f"{name}_g{het_group}"
             process = ManagedProcess(
                 name=chunk_name,
                 popen=proc,
@@ -176,6 +169,70 @@ class TelemetryStageMixin:
                 on_started(process)
             managed.append(process)
         return managed
+
+    def _het_chunks(self, nodes: list[str]) -> list[tuple[int | None, list[str]]]:
+        """Split ``nodes`` into one ``(het_group, nodes)`` srun per het component.
+
+        A single srun cannot span het components; outside a het job this is one
+        chunk with ``het_group=None``.
+
+        Raises:
+            RuntimeError: A node belongs to no het component.
+        """
+        if not self.runtime.nodes.het:
+            return [(None, nodes)]
+        groups: dict[int, list[str]] = {}
+        for node in nodes:
+            group = self.runtime.nodes.het_group_for(node)
+            if group is None:
+                raise RuntimeError(f"node {node!r} not in any het component")
+            groups.setdefault(group, []).append(node)
+        return [(group, chunk) for group, chunk in sorted(groups.items())]
+
+    def _start_host_collectors(
+        self,
+        *,
+        name: str,
+        command: list[str],
+        nodes: list[str],
+        registry: ProcessRegistry,
+        on_started: Callable[[ManagedProcess], None],
+        slurm_step: bool = False,
+    ) -> None:
+        """Run ``command`` once per node on the bare host, one srun per het component.
+
+        Each process is non-critical and registered before the next launch, so a
+        partial launch stays reachable by cleanup. ``slurm_step`` names the step
+        after the process, which lets ``terminate()`` deliver SIGTERM to the task
+        instead of the srun client (whose abort SIGKILLs it).
+        """
+        chunks = self._het_chunks(nodes)
+        for het_group, chunk in chunks:
+            suffix = "" if len(chunks) == 1 else f".g{het_group}"
+            chunk_name = name if len(chunks) == 1 else f"{name}_g{het_group}"
+            log_file = self.runtime.log_dir / f"{name}{suffix}.%N.out"
+            step_name = chunk_name if slurm_step else None
+            proc = start_srun_process(
+                command=command,
+                nodes=len(chunk),
+                ntasks=len(chunk),
+                nodelist=chunk,
+                output=str(log_file),
+                srun_options=self.runtime.srun_options,
+                het_group=het_group,
+                use_bash_wrapper=False,  # bare host, no container
+                step_name=step_name,
+            )
+            process = ManagedProcess(
+                name=chunk_name,
+                popen=proc,
+                log_file=log_file,
+                node=",".join(chunk),
+                critical=False,
+                step_name=step_name,
+            )
+            registry.add_process(process)
+            on_started(process)
 
     def start_power_telemetry(self, registry: ProcessRegistry) -> PowerTelemetrySession | None:
         """Start GPU power telemetry when it is enabled.
@@ -393,42 +450,13 @@ class TelemetryStageMixin:
                 )
 
         try:
-            if self.runtime.nodes.het:
-                groups: dict[int, list[str]] = {}
-                for node in worker_nodes:
-                    group_id = self.runtime.nodes.het_group_for(node)
-                    if group_id is None:
-                        raise RuntimeError(f"node {node!r} not in any het component")
-                    groups.setdefault(group_id, []).append(node)
-                chunks = sorted(groups.items())
-            else:
-                chunks = [(-1, worker_nodes)]
-
-            for group_id, nodes in chunks:
-                suffix = "" if len(chunks) == 1 else f".g{group_id}"
-                log_file = self.runtime.log_dir / f"telemetry_cpu_power_exporter{suffix}.%N.out"
-                proc = start_srun_process(
-                    command=exporter_command,
-                    nodes=len(nodes),
-                    ntasks=len(nodes),
-                    nodelist=nodes,
-                    output=str(log_file),
-                    srun_options=self.runtime.srun_options,
-                    het_group=group_id if group_id >= 0 else None,
-                    use_bash_wrapper=False,  # bare host, no container
-                )
-                name = (
-                    "telemetry_cpu_power_exporter" if len(chunks) == 1 else f"telemetry_cpu_power_exporter_g{group_id}"
-                )
-                process = ManagedProcess(
-                    name=name,
-                    popen=proc,
-                    log_file=log_file,
-                    node=",".join(nodes),
-                    critical=False,
-                )
-                registry.add_process(process)
-                collector.add_exporter(process)
+            self._start_host_collectors(
+                name="telemetry_cpu_power_exporter",
+                command=exporter_command,
+                nodes=worker_nodes,
+                registry=registry,
+                on_started=collector.add_exporter,
+            )
         except Exception:
             logger.exception("CPU power exporter launch failed")
             return collector
@@ -469,17 +497,6 @@ class TelemetryStageMixin:
         self._cpu_power_host_ready = False
         session.initialize()
 
-        if self.runtime.nodes.het:
-            groups: dict[int, list[str]] = {}
-            for node in worker_nodes:
-                group_id = self.runtime.nodes.het_group_for(node)
-                if group_id is None:
-                    raise RuntimeError(f"node {node!r} not in any het component")
-                groups.setdefault(group_id, []).append(node)
-            chunks = sorted(groups.items())
-        else:
-            chunks = [(-1, worker_nodes)]
-
         command = [
             sys.executable,
             "-m",
@@ -494,28 +511,13 @@ class TelemetryStageMixin:
             str(cpu_power.sample_interval_seconds),
         ]
         try:
-            for group_id, nodes in chunks:
-                suffix = "" if len(chunks) == 1 else f".g{group_id}"
-                log_file = self.runtime.log_dir / f"telemetry_cpu_power{suffix}.%N.out"
-                proc = start_srun_process(
-                    command=command,
-                    nodes=len(nodes),
-                    ntasks=len(nodes),
-                    nodelist=nodes,
-                    output=str(log_file),
-                    srun_options=self.runtime.srun_options,
-                    het_group=group_id if group_id >= 0 else None,
-                    use_bash_wrapper=False,  # bare host, no container
-                )
-                process = ManagedProcess(
-                    name="telemetry_cpu_power" if len(chunks) == 1 else f"telemetry_cpu_power_g{group_id}",
-                    popen=proc,
-                    log_file=log_file,
-                    node=",".join(nodes),
-                    critical=False,
-                )
-                registry.add_process(process)
-                session.add_process(process)
+            self._start_host_collectors(
+                name="telemetry_cpu_power",
+                command=command,
+                nodes=worker_nodes,
+                registry=registry,
+                on_started=session.add_process,
+            )
         except Exception:
             logger.exception("CPU power collector launch failed")
             return session
@@ -623,6 +625,72 @@ class TelemetryStageMixin:
             logger.error("telemetry.cpu_power.required is set and CPU power artifacts are not publishable")
             return 1
         return exit_code
+
+    def start_nic_traffic(self, registry: ProcessRegistry) -> NicTrafficSession | None:
+        """Start one RDMA NIC traffic sampler per node on the bare host.
+
+        Best-effort: any failure is logged and the run continues, and the
+        capture never decides whether the benchmark runs.
+        """
+        if not self.config.nic_traffic_enabled:
+            return None
+        nic_traffic = self.config.observability.nic_traffic
+        try:
+            session = NicTrafficSession(
+                NicTrafficSessionSettings(
+                    nic_dir=self.runtime.log_dir / nic_traffic.storage_subdir,
+                    job_id=self.runtime.job_id,
+                    run_name=self.runtime.run_name,
+                    nodes=tuple(self._telemetry_nodes()),
+                    sample_interval_seconds=nic_traffic.sample_interval_seconds,
+                    producer_git_commit=read_producer_commit(),
+                )
+            )
+            self._nic_traffic_session = session
+            session.initialize()
+            self._start_host_collectors(
+                name=NIC_TRAFFIC_STEP_NAME,
+                command=[
+                    sys.executable,
+                    "-m",
+                    "srtctl.core.nic_traffic",
+                    "--output-dir",
+                    str(session.samples_dir),
+                    "--ready-dir",
+                    str(session.ready_dir),
+                    "--interval-seconds",
+                    str(nic_traffic.sample_interval_seconds),
+                ],
+                nodes=list(session.settings.nodes),
+                registry=registry,
+                on_started=session.add_process,
+                slurm_step=True,
+            )
+        except Exception:
+            logger.exception("NIC traffic capture failed to start; continuing without it")
+            return self._nic_traffic_session
+        logger.info(
+            "NIC traffic capture started on %d node(s) (artifacts under %s)",
+            len(session.settings.nodes),
+            session.settings.nic_dir,
+        )
+        return session
+
+    def finalize_nic_traffic(self, *, interrupted: bool = False) -> None:
+        """Stop the samplers and merge their CSVs; never affects the exit code."""
+        session = self._nic_traffic_session
+        if session is None:
+            return
+        try:
+            outcome = session.stop_and_finalize(interrupted=interrupted)
+        except Exception:
+            logger.exception("NIC traffic finalization failed")
+            return
+        logger.info(
+            "NIC traffic: status=%s reasons=%s",
+            outcome.status,
+            ",".join(outcome.reason_codes) or "none",
+        )
 
     def _resolve_bundled_binary(self, name: str) -> str:
         """Resolve a bare binary name against the checkout's ``bin/``.

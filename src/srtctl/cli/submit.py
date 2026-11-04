@@ -667,6 +667,7 @@ def show_config_details(config: SrtConfig) -> None:
         or config.benchmark.container_image
         or config.observability.enabled
         or config.observability.tachometer.enabled
+        or config.nic_traffic_enabled
         or config.telemetry.enabled
         or mooncake_cfg is not None
         or config.profiling.enabled
@@ -784,6 +785,15 @@ def show_config_details(config: SrtConfig) -> None:
                 proc = tachometer.resolved_process_exporter
                 launch = f"host binary {proc.binary}" if proc.binary else proc.container_image
                 details.add_row("observability", "process_exporter", f"{launch} :{proc.port}")
+
+        if config.nic_traffic_enabled:
+            nic_traffic = config.observability.nic_traffic
+            details.add_row(
+                "observability",
+                "nic_traffic",
+                f"RDMA byte counters every {nic_traffic.sample_interval_seconds:g}s on each node's bare host "
+                f"-> <log_dir>/{nic_traffic.storage_subdir}",
+            )
 
         if config.telemetry.enabled:
             exporter = config.telemetry.dcgm_exporter

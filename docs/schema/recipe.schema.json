@@ -1520,6 +1520,35 @@
         "precision"
       ]
     },
+    "NicTrafficConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "``None`` (the default) captures when the job spans more than one node; ``true`` forces capture on a single node; ``false`` opts out. Independent of ``observability.enabled`` and ``telemetry.enabled``.",
+          "default": null
+        },
+        "sample_interval_seconds": {
+          "type": "number",
+          "description": "Seconds between counter reads on each node; the window peak is the highest rate over one such interval.",
+          "default": 1.0
+        },
+        "storage_subdir": {
+          "type": "string",
+          "description": "Directory below the run log directory for the per-node samples, the merged ``nic_traffic.csv``, ``nic_manifest.json`` and the per-window ``nic_traffic_summary.csv``. Must not overlap another capture directory.",
+          "default": "nic_traffic"
+        }
+      },
+      "description": "Per-node RDMA NIC traffic capture (``srtctl.core.nic_traffic``)."
+    },
     "NsysObservabilityConfig": {
       "type": "object",
       "additionalProperties": false,
@@ -1599,6 +1628,10 @@
         "nsys": {
           "$ref": "#/$defs/NsysObservabilityConfig",
           "description": "Automatic Nsight Systems capture, enabled with the master switch."
+        },
+        "nic_traffic": {
+          "$ref": "#/$defs/NicTrafficConfig",
+          "description": "Per-node RDMA NIC byte-counter capture. On for every multi-node job, independent of ``enabled``, unless ``nic_traffic.enabled: false`` (see :class:`NicTrafficConfig`)."
         }
       },
       "description": "Optional analytics capture and external OTEL export."

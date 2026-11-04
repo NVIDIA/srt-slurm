@@ -95,6 +95,7 @@ def _dataclass_default(item: dataclasses.Field) -> Any:
 _BENCHMARK_TYPE_SA_BENCH = "sa-bench"
 _DCGM_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
 _CPU_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
+_NIC_TRAFFIC_MAX_SAMPLE_GAP_SECONDS = 3.0
 _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS = 1.0
 
 
@@ -1890,6 +1891,49 @@ class NsysObservabilityConfig:
 
 
 @dataclass(frozen=True)
+class NicTrafficConfig:
+    """Per-node RDMA NIC traffic capture (``srtctl.core.nic_traffic``).
+
+    One sampler per node reads every RDMA port's cumulative transmit and
+    receive byte counters from sysfs on the bare host; the head node merges
+    them at teardown, and post-processing reports each concurrency window's
+    mean and peak Gbit/s per NIC and per node. Capture is best-effort: it
+    never fails or skips the benchmark. ``SrtConfig.nic_traffic_enabled``
+    resolves the switch.
+
+    Attributes:
+        enabled: ``None`` (the default) captures when the job spans more than
+            one node; ``true`` forces capture on a single node; ``false`` opts out.
+            Independent of ``observability.enabled`` and ``telemetry.enabled``.
+        sample_interval_seconds: Seconds between counter reads on each node; the
+            window peak is the highest rate over one such interval.
+        storage_subdir: Directory below the run log directory for the per-node
+            samples, the merged ``nic_traffic.csv``, ``nic_manifest.json`` and
+            the per-window ``nic_traffic_summary.csv``. Must not overlap another
+            capture directory.
+    """
+
+    enabled: bool | None = None
+    sample_interval_seconds: float = 1.0
+    storage_subdir: str = "nic_traffic"
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if not _is_finite_positive(self.sample_interval_seconds):
+            raise ValidationError("observability.nic_traffic.sample_interval_seconds must be finite and positive")
+        if self.sample_interval_seconds > _NIC_TRAFFIC_MAX_SAMPLE_GAP_SECONDS:
+            raise ValidationError(
+                f"observability.nic_traffic.sample_interval_seconds={self.sample_interval_seconds} exceeds the "
+                f"{_NIC_TRAFFIC_MAX_SAMPLE_GAP_SECONDS:g}s sample gap a window boundary may have"
+            )
+        if not _is_safe_relative_subpath(self.storage_subdir):
+            raise ValidationError(
+                "observability.nic_traffic.storage_subdir must be a safe relative path below the run log directory"
+            )
+
+
+@dataclass(frozen=True)
 class ObservabilityConfig:
     """Optional analytics capture and external OTEL export.
 
@@ -1949,6 +1993,9 @@ class ObservabilityConfig:
         tachometer: Native Tachometer capture configuration. Collects on every run,
             independent of ``enabled``, unless ``tachometer.enabled: false`` (see
             :class:`TachometerConfig`).
+        nic_traffic: Per-node RDMA NIC byte-counter capture. On for every
+            multi-node job, independent of ``enabled``, unless
+            ``nic_traffic.enabled: false`` (see :class:`NicTrafficConfig`).
 
     The retired ``scrape_metrics`` / ``scrape_interval_seconds`` /
     ``scrape_output`` knobs (the in-job RAW Prometheus scraper) are rejected
@@ -1961,6 +2008,7 @@ class ObservabilityConfig:
 
     tachometer: TachometerConfig = field(default_factory=TachometerConfig)
     nsys: NsysObservabilityConfig = field(default_factory=NsysObservabilityConfig)
+    nic_traffic: NicTrafficConfig = field(default_factory=NicTrafficConfig)
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -2895,6 +2943,7 @@ class SrtConfig:
         self._validate_profiling()
         self._validate_observability()
         self._validate_telemetry()
+        self._validate_nic_traffic()
         self._validate_mooncake_kv_store()
         self._validate_het_jobs()
         self._validate_colocated_decode()
@@ -4092,6 +4141,27 @@ class SrtConfig:
         self._validate_collector_budget()
         self._validate_cpu_power_exporter()
 
+    def _validate_nic_traffic(self) -> None:
+        """Keep the NIC traffic directory apart from every other capture directory.
+
+        Nested directories count as overlap: the power report treats any
+        ``samples.csv`` below a capture directory as power, and window files
+        are read from ``<telemetry.storage_subdir>/windows/``.
+        """
+        nic_dir = PurePosixPath(self.observability.nic_traffic.storage_subdir)
+        others = {
+            "observability.tachometer.storage_subdir": self.observability.tachometer.storage_subdir,
+            "telemetry.storage_subdir": self.telemetry.storage_subdir,
+            "telemetry.cpu_power.storage_subdir": self.telemetry.cpu_power.storage_subdir,
+        }
+        for name, value in others.items():
+            other = PurePosixPath(value)
+            if nic_dir == other or nic_dir in other.parents or other in nic_dir.parents:
+                raise ValidationError(
+                    f"observability.nic_traffic.storage_subdir={nic_dir} overlaps {name}={other}; "
+                    "use a directory of its own"
+                )
+
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":
         """Load a recipe file without cluster defaults (``load_config`` applies them).
@@ -4158,6 +4228,16 @@ class SrtConfig:
     def total_nodes(self) -> int:
         """Node count of the job: the engine roles' nodes plus every service pool, at least one."""
         return (self.engine_node_count + (self.services_node_count or 0)) or 1
+
+    @property
+    def nic_traffic_enabled(self) -> bool:
+        """Resolved ``observability.nic_traffic.enabled``: unset captures when the job spans more than one node.
+
+        RDMA traffic between nodes (KV cache transfer, collectives) is what the
+        capture is for, so a single-node job opts in explicitly.
+        """
+        enabled = self.observability.nic_traffic.enabled
+        return self.total_nodes > 1 if enabled is None else enabled
 
     def _engine_total_nodes(self) -> int:
         """Worker node count of the engine roles, adjusted for backend-specific packing."""
