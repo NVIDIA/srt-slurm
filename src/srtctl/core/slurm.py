@@ -12,6 +12,7 @@ This module consolidates all SLURM-related functionality:
 - Container utilities: get_container_mounts_str
 """
 
+import functools
 import hashlib
 import logging
 import os
@@ -366,12 +367,16 @@ def shrink_job_allocation(job_id: str, keep: str, *, timeout: float = 30.0) -> A
 # ============================================================================
 
 
+@functools.cache
 def get_hostname_ip(hostname: str, network_interface: str | None = None) -> str:
     """Resolve hostname to routable IP address.
 
     Uses multiple resolution strategies:
     1. If inside a SLURM job, use srun to get the real IP from the target node
     2. Fall back to socket.gethostbyname() (may return loopback on some systems)
+
+    Cached for the process: a node's address does not change within a job, and every
+    worker, scrape target and benchmark setting on a node asks for it again.
 
     Args:
         hostname: Node hostname to resolve

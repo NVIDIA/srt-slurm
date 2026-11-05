@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from srtctl.core.ip_utils import get_node_ip
+from srtctl.core.slurm import get_hostname_ip
 
 
 def test_get_node_ip_ignores_srun_step_created_output(tmp_path, monkeypatch):
@@ -17,7 +18,8 @@ def test_get_node_ip_ignores_srun_step_created_output(tmp_path, monkeypatch):
 
     fake_srun = fake_bin / "srun"
     fake_srun.write_text(
-        "#!/bin/bash\necho 'srun: Step created for StepId=2279904.27' >&2\necho '10.109.25.246'\n",
+        f'#!/bin/bash\necho "$*" > {tmp_path}/args\n'
+        "echo 'srun: Step created for StepId=2279904.27' >&2\necho '10.109.25.246'\n",
         encoding="ascii",
     )
     fake_srun.chmod(0o755)
@@ -27,6 +29,24 @@ def test_get_node_ip_ignores_srun_step_created_output(tmp_path, monkeypatch):
     ip = get_node_ip("nvl72156-T15", slurm_job_id="2279904")
 
     assert ip == "10.109.25.246"
+    # the workers hold every CPU and GPU of the node: without --overlap the step waits for them until it times out
+    assert "--overlap" in (tmp_path / "args").read_text().split()
+
+
+def test_get_hostname_ip_resolves_each_node_once(monkeypatch):
+    """Every worker, scrape target and benchmark setting on a node asks for its address: one lookup serves them all,
+    including the DNS fallback after a failed srun lookup."""
+    monkeypatch.setenv("SLURM_JOB_ID", "2279904")
+    get_hostname_ip.cache_clear()
+    with (
+        patch(
+            "srtctl.core.slurm.get_node_ip", side_effect=lambda node, *_: "10.0.0.1" if node == "a" else None
+        ) as srun,
+        patch("srtctl.core.slurm.socket.gethostbyname", return_value="10.0.0.2") as dns,
+    ):
+        assert [get_hostname_ip(node) for node in ("a", "b", "a", "b")] == ["10.0.0.1", "10.0.0.2"] * 2
+    get_hostname_ip.cache_clear()
+    assert srun.call_count == 2 and dns.call_count == 1
 
 
 def test_runtime_resolves_control_plane_ips_on_cluster_interface(tmp_path):
