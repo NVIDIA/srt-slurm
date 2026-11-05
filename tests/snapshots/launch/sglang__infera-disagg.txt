@@ -38,7 +38,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python3 -m infera.engine.sglang --discovery-backend etcd --etcd-endpoint http://127.0.0.1:2379 --advertise-host 127.0.0.1 --request-transport http --kv-event-transport zmq --kv-events off --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17500 --enable-metrics --disaggregation-mode prefill --skip-server-warmup --disaggregation-bootstrap-port 7200 --kv-events-config '{"publisher": "zmq", "topic": "kv-events", "endpoint": "tcp://*:3000"}' --context-length 4096 --mem-fraction-static 0.5 --page-size 64 --tensor-parallel-size 1
+    env INFERA_READINESS_PORT=7500 python3 -m infera.engine.sglang --discovery-backend etcd --etcd-endpoint http://127.0.0.1:2379 --advertise-host 127.0.0.1 --request-transport http --kv-event-transport zmq --kv-events off --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17500 --enable-metrics --disaggregation-mode prefill --skip-server-warmup --disaggregation-bootstrap-port 7200 --kv-events-config '{"publisher": "zmq", "topic": "kv-events", "endpoint": "tcp://*:3000"}' --context-length 4096 --mem-fraction-static 0.5 --page-size 64 --tensor-parallel-size 1
 
 ## decode_0_node-02
 nodelist: node-02
@@ -61,7 +61,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python3 -m infera.engine.sglang --discovery-backend etcd --etcd-endpoint http://127.0.0.1:2379 --advertise-host 127.0.0.1 --request-transport http --kv-event-transport zmq --kv-events off --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17501 --enable-metrics --disaggregation-mode decode --skip-server-warmup --context-length 4096 --mem-fraction-static 0.5 --page-size 64 --tensor-parallel-size 1
+    env INFERA_READINESS_PORT=7501 python3 -m infera.engine.sglang --discovery-backend etcd --etcd-endpoint http://127.0.0.1:2379 --advertise-host 127.0.0.1 --request-transport http --kv-event-transport zmq --kv-events off --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17501 --enable-metrics --disaggregation-mode decode --skip-server-warmup --context-length 4096 --mem-fraction-static 0.5 --page-size 64 --tensor-parallel-size 1
 
 ## infera_router_0
 nodelist: node-01

@@ -53,6 +53,8 @@ ROUTER_MANAGED_ARGS = frozenset(
 _ROLE_BY_DISAGG_MODE = {"prefill": "prefill", "decode": "decode", "mixed": "decode"}
 # Infera's registering launcher for each engine this frontend pairs with.
 WORKER_LAUNCHERS = {"sglang": "infera.engine.sglang"}
+# The launcher's readiness listener port; unset, it binds a fixed default.
+READINESS_PORT_ENV = "INFERA_READINESS_PORT"
 
 
 def etcd_endpoint(runtime: RuntimeContext) -> str:
@@ -122,12 +124,17 @@ class InferaFrontend(DynamicFrontend):
     def direct_worker_launcher(self, backend: Any, process: Process, runtime: RuntimeContext) -> list[str] | None:
         """Start the engine through Infera's launcher so the worker registers itself in etcd.
 
-        The KV-events port is the allocator's: when the role publishes KV events
-        the backend passes ``--kv-events-config`` with it, and the launcher
-        advertises that endpoint. Infera's own KV probe plane, which the router
-        does not read, stays off so the worker opens no unallocated listener.
+        Every listener the launcher opens is the allocator's. The KV-events port:
+        when the role publishes KV events the backend passes ``--kv-events-config``
+        with it, and the launcher advertises that endpoint. The readiness port,
+        which the launcher opens once the worker is registered (srtctl itself
+        reads readiness from the router): the process's system port, unused
+        otherwise without Dynamo. Infera's own KV probe plane, which the router
+        does not read, stays off.
         """
         command = [
+            "env",
+            f"{READINESS_PORT_ENV}={process.sys_port}",
             "python3",
             "-m",
             WORKER_LAUNCHERS[backend.type],

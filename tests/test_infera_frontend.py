@@ -130,6 +130,8 @@ def test_workers_launch_sglang_through_the_registering_wrapper() -> None:
     )
     cmd = _worker_command(backend, _process("node0", "prefill", kv_events_port=5560))
     assert cmd[: cmd.index("--model-path")] == [
+        "env",
+        "INFERA_READINESS_PORT=7500",
         "python3",
         "-m",
         "infera.engine.sglang",
@@ -153,6 +155,27 @@ def test_workers_launch_sglang_through_the_registering_wrapper() -> None:
     assert "--skip-server-warmup" in cmd
     assert "--request-plane" not in cmd
     assert "--no-enable-kv-events" not in cmd
+
+
+def test_co_located_workers_open_readiness_on_their_own_allocated_ports() -> None:
+    """Two prefill servers on one node (2P1D) must not both bind the launcher's default port."""
+    backend = SGLangBackend(roles={"prefill": RoleConfig(args={"tensor-parallel-size": 1})})
+    endpoints = backend.allocate_endpoints(
+        num_prefill=2,
+        num_decode=1,
+        num_agg=0,
+        gpus_per_prefill=4,
+        gpus_per_decode=8,
+        gpus_per_agg=0,
+        gpus_per_node=8,
+        available_nodes=["node0", "node1"],
+    )
+    processes = backend.endpoints_to_processes(endpoints)
+    prefills = [p for p in processes if p.endpoint_mode == "prefill"]
+    assert {p.node for p in prefills} == {"node0"}
+    readiness = {p.endpoint_index: _worker_command(backend, p)[1] for p in prefills}
+    assert readiness == {i: f"INFERA_READINESS_PORT={p.sys_port}" for i, p in enumerate(prefills)}
+    assert len({p.sys_port for p in processes}) == len(processes)
 
 
 def test_a_role_without_kv_events_registers_without_an_endpoint() -> None:
