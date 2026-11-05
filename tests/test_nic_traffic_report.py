@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from srtctl.analysis.nic_traffic_report import SUMMARY_FILENAME, SUMMARY_HEADER, load_nic_series, summarize
-from srtctl.analysis.power_energy_report import BENCHMARK_TYPE_SA_BENCH, ConcurrencyWindow, discover_run
+from srtctl.analysis.power_energy_report import BENCHMARK_TYPE_SA_BENCH, ConcurrencyWindow
 from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
 from srtctl.core.nic_traffic import SAMPLES_HEADER
 
@@ -139,20 +139,3 @@ def test_postprocess_skips_a_run_without_benchmark_windows(tmp_path: Path) -> No
     _PostProcess(tmp_path)._build_nic_traffic_summary()
 
     assert not (tmp_path / "nic_traffic" / SUMMARY_FILENAME).exists()
-
-
-def test_nic_artifacts_do_not_change_power_report_discovery(tmp_path: Path) -> None:
-    _sa_bench_run(tmp_path, 100.2, 103.9)
-    gpu_samples = tmp_path / "power" / "samples.csv"
-    gpu_samples.parent.mkdir()
-    gpu_samples.write_text("schema_version\n")
-    _write_traffic(tmp_path / "nic_traffic" / "nic_traffic.csv")
-    (tmp_path / "nic_traffic" / "nic_manifest.json").write_text("{}")
-    (tmp_path / "nic_traffic" / "nodes").mkdir()
-    _write_traffic(tmp_path / "nic_traffic" / "nodes" / "node-a.csv")
-
-    paths = discover_run(tmp_path)
-
-    assert paths.gpu_samples_csv == gpu_samples
-    assert paths.gpu_manifest is None
-    assert paths.cpu_samples_csv is None

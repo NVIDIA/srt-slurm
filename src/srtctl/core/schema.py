@@ -64,6 +64,7 @@ from srtctl.core.formatting import (
 from srtctl.core.power.contract import (
     CONTAINER_LOG_DIR,
     GPU_UTIL_METRIC,
+    MAX_SAMPLE_GAP_SECONDS,
     SM_ACTIVE_METRIC,
     TEMPERATURE_METRIC,
     UTILIZATION_METRICS,
@@ -95,7 +96,6 @@ def _dataclass_default(item: dataclasses.Field) -> Any:
 _BENCHMARK_TYPE_SA_BENCH = "sa-bench"
 _DCGM_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
 _CPU_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
-_NIC_TRAFFIC_MAX_SAMPLE_GAP_SECONDS = 3.0
 _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS = 1.0
 
 
@@ -1922,10 +1922,10 @@ class NicTrafficConfig:
     def __post_init__(self) -> None:
         if not _is_finite_positive(self.sample_interval_seconds):
             raise ValidationError("observability.nic_traffic.sample_interval_seconds must be finite and positive")
-        if self.sample_interval_seconds > _NIC_TRAFFIC_MAX_SAMPLE_GAP_SECONDS:
+        if self.sample_interval_seconds > MAX_SAMPLE_GAP_SECONDS:
             raise ValidationError(
                 f"observability.nic_traffic.sample_interval_seconds={self.sample_interval_seconds} exceeds the "
-                f"{_NIC_TRAFFIC_MAX_SAMPLE_GAP_SECONDS:g}s sample gap a window boundary may have"
+                f"{MAX_SAMPLE_GAP_SECONDS:g}s sample gap a window boundary may have"
             )
         if not _is_safe_relative_subpath(self.storage_subdir):
             raise ValidationError(

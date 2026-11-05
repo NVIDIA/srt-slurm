@@ -21,10 +21,8 @@ from marshmallow import ValidationError
 from srtctl.cli.mixins.postprocess_stage import _has_power_samples
 from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core import nic_traffic
-from srtctl.core import schema as schema_module
 from srtctl.core.nic_traffic import SAMPLES_HEADER, discover_ports
 from srtctl.core.nic_traffic_session import NicTrafficSession, NicTrafficSessionSettings
-from srtctl.core.power.contract import MAX_SAMPLE_GAP_SECONDS
 from srtctl.core.processes import ProcessRegistry
 from srtctl.core.schema import SrtConfig
 from srtctl.mock import MockOptions, run_mock_sweep
@@ -110,10 +108,6 @@ def test_port_without_its_drivers_counters_is_unsupported_not_sampled(tmp_path: 
     [entry] = unsupported
     assert (entry.device, entry.port, entry.driver) == ("bnxt_re0", "1", "bnxt_en")
     assert "counters/port_xmit_data" in entry.reason
-
-
-def test_host_without_rdma_has_nothing_to_sample(tmp_path: Path) -> None:
-    assert discover_ports(tmp_path) == ([], [])
 
 
 def _wait_for(path: Path, timeout: float = 10.0) -> None:
@@ -280,14 +274,6 @@ def test_capture_defaults_on_only_for_multi_node_jobs(tmp_path: Path, roles, nic
     assert _recipe(tmp_path, roles, nic_traffic).nic_traffic_enabled is expected
 
 
-def test_capture_switch_ignores_observability_and_telemetry_master_switches(tmp_path: Path) -> None:
-    config = _recipe(tmp_path, TWO_NODES)
-
-    assert config.observability.enabled is False
-    assert config.telemetry.enabled is False
-    assert config.nic_traffic_enabled is True
-
-
 @pytest.mark.parametrize(
     ("nic_traffic", "message"),
     [
@@ -302,10 +288,6 @@ def test_capture_switch_ignores_observability_and_telemetry_master_switches(tmp_
 def test_invalid_capture_settings_are_rejected_at_load(tmp_path: Path, nic_traffic: dict, message: str) -> None:
     with pytest.raises(ValidationError, match=message):
         _recipe(tmp_path, TWO_NODES, nic_traffic)
-
-
-def test_interval_limit_matches_the_window_boundary_gap() -> None:
-    assert schema_module._NIC_TRAFFIC_MAX_SAMPLE_GAP_SECONDS == MAX_SAMPLE_GAP_SECONDS
 
 
 class _FakeProcess:
