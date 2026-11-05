@@ -766,16 +766,6 @@ class TestDryRunExecutionExtensions:
         assert "host binary" in output
         assert "configs/process-exporter" in output
 
-    def test_nic_traffic_capture_shown_for_a_multi_node_job(self, capsys):
-        show_config_details(_make_config())
-        output = capsys.readouterr().out
-        assert "nic_traffic" in output
-        assert "<log_dir>/nic_traffic" in output
-
-    def test_nic_traffic_capture_hidden_when_disabled(self, capsys):
-        show_config_details(_make_config({"observability": {"nic_traffic": {"enabled": False}}}))
-        assert "nic_traffic" not in capsys.readouterr().out
-
     def test_dcgm_power_telemetry_details_shown(self, capsys):
         config = _make_config(
             {

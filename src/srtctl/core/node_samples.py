@@ -3,10 +3,10 @@
 
 """Per-node CSVs and readiness markers written by bare-host collectors.
 
-A host collector (``cpu_power``, ``nic_traffic``) runs once per node and
-writes ``<nodes_dir>/<host>.csv`` plus ``<ready_dir>/<host>.ready.json`` or
-``<host>.error.json``. The head node reads the markers to learn which nodes
-started and merges the CSVs into one file at teardown.
+A host collector (``cpu_power``, ``nic_traffic``) runs once per node until
+SIGTERM and writes ``<nodes_dir>/<host>.csv`` plus ``<ready_dir>/<host>.ready.json``
+or ``<host>.error.json``. The head node reads the markers to learn which nodes
+started, then stops the collectors and merges the CSVs into one file.
 """
 
 from __future__ import annotations
@@ -14,10 +14,37 @@ from __future__ import annotations
 import contextlib
 import csv
 import json
-from collections.abc import Callable
+import os
+import signal
+import socket
+import threading
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from srtctl.core.processes import ManagedProcess
+
+
+def create_capture_dirs(*dirs: Path) -> None:
+    """Create ``dirs`` under a group-writable umask."""
+    os.umask(0o002)
+    for directory in dirs:
+        directory.mkdir(parents=True, exist_ok=True)
+
+
+def node_hostname() -> str:
+    """The Slurm node name, which the head node expects in every row and marker."""
+    return os.environ.get("SLURMD_NODENAME") or socket.gethostname().split(".", 1)[0]
+
+
+def stop_on_signals() -> threading.Event:
+    """An event that SIGTERM or SIGINT sets; the head node stops a collector with SIGTERM."""
+    stop = threading.Event()
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, lambda _signum, _frame: stop.set())
+    return stop
 
 
 @dataclass(frozen=True)
@@ -92,3 +119,30 @@ def merge_node_csvs(
         writer.writerow(header)
         writer.writerows(rows)
     return MergedNodeCsvs(row_count=len(rows), observed_nodes=tuple(sorted(observed)), malformed=malformed)
+
+
+@dataclass(frozen=True)
+class NodeCapture:
+    """The merged samples, plus the expected nodes with no rows and the processes that exited before the stop."""
+
+    merged: MergedNodeCsvs
+    missing_nodes: tuple[str, ...]
+    exited_processes: tuple[str, ...]
+
+
+def stop_and_merge(
+    processes: Sequence[ManagedProcess],
+    expected_nodes: Iterable[str],
+    nodes_dir: Path,
+    header: tuple[str, ...],
+    output: Path,
+    *,
+    sort_key: Callable[[list[str]], Any],
+) -> NodeCapture:
+    """Terminate ``processes``, then merge ``nodes_dir``'s CSVs into ``output``."""
+    exited = tuple(process.name for process in processes if not process.is_running)
+    for process in processes:
+        process.terminate()
+    merged = merge_node_csvs(nodes_dir, header, output, sort_key=sort_key)
+    missing = tuple(sorted(set(expected_nodes) - set(merged.observed_nodes)))
+    return NodeCapture(merged=merged, missing_nodes=missing, exited_processes=exited)

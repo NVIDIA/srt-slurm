@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import csv
 import json
+import signal
 import types
 from datetime import datetime
 from pathlib import Path
@@ -712,13 +713,13 @@ class _FakeReader(cpu_power.CpuPowerReader):
 
 def _run_collect_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reader: cpu_power.CpuPowerReader) -> Path:
     handlers: dict[int, object] = {}
-    monkeypatch.setattr(cpu_power.signal, "signal", lambda signum, handler: handlers.__setitem__(signum, handler))
+    monkeypatch.setattr(signal, "signal", lambda signum, handler: handlers.__setitem__(signum, handler))
     monkeypatch.setattr(cpu_power, "create_reader", lambda _source: reader)
     monkeypatch.setattr(cpu_power.os, "umask", lambda _mask: 0)
     monkeypatch.setenv("SLURMD_NODENAME", "node-a")
 
     def stop_after_first_sample(_seconds: float) -> None:
-        handlers[cpu_power.signal.SIGTERM](cpu_power.signal.SIGTERM, None)
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
 
     monkeypatch.setattr(cpu_power.time, "sleep", stop_after_first_sample)
     output_dir = tmp_path / "nodes"

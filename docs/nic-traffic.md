@@ -106,10 +106,10 @@ Each window has one `nic` row per covered NIC and one `node` row per host. A nod
 
 ## Running the Sampler by Hand
 
-The sampler imports only the Python standard library, so a copy of `src/srtctl/core/nic_traffic.py` runs on any node with `python3`. It samples until SIGTERM:
+The sampler runs from any srtctl install and samples until SIGTERM:
 
 ```bash
-timeout -s TERM 60 python3 nic_traffic.py --output-dir /tmp/nic --interval-seconds 1
+timeout -s TERM 60 python -m srtctl.core.nic_traffic --output-dir /tmp/nic --interval-seconds 1
 ```
 
 This writes `/tmp/nic/<host>.csv`, `<host>.metadata.json` and the ready or error marker. `--sysfs-root` points it at another sysfs tree; `--ready-dir` moves the marker.

@@ -5,13 +5,12 @@
 
 from __future__ import annotations
 
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from srtctl.core.cpu_power import SAMPLES_HEADER
-from srtctl.core.node_samples import merge_node_csvs, read_node_markers, read_node_metadata
+from srtctl.core.node_samples import create_capture_dirs, read_node_markers, read_node_metadata, stop_and_merge
 from srtctl.core.power.contract import atomic_write_json
 from srtctl.core.power.session import SessionOutcome
 from srtctl.core.processes import ManagedProcess
@@ -45,9 +44,7 @@ class CpuPowerTelemetrySession:
         self._ready_nodes: tuple[str, ...] = ()
 
     def initialize(self) -> None:
-        os.umask(0o002)
-        self.samples_dir.mkdir(parents=True, exist_ok=True)
-        self.ready_dir.mkdir(parents=True, exist_ok=True)
+        create_capture_dirs(self.samples_dir, self.ready_dir)
         self._write_manifest(status="starting", reasons=(), row_count=0, observed_nodes=())
 
     def add_process(self, process: ManagedProcess) -> None:
@@ -72,26 +69,26 @@ class CpuPowerTelemetrySession:
         return False
 
     def stop_and_finalize(self, *, interrupted: bool = False) -> SessionOutcome:
-        prematurely_exited = [process.name for process in self._processes if not process.is_running]
-        for process in self._processes:
-            process.terminate()
-        merged = merge_node_csvs(
+        capture = stop_and_merge(
+            self._processes,
+            self.settings.nodes,
             self.samples_dir,
             SAMPLES_HEADER,
             self.samples_path,
             sort_key=lambda row: (float(row[1]), row[3], row[5]),
         )
+        merged = capture.merged
         reasons: list[str] = []
         if interrupted:
             reasons.append("interrupted")
         if merged.malformed:
             reasons.append("cpu_samples_malformed")
-        missing = sorted(set(self.settings.nodes) - set(merged.observed_nodes))
+        missing = capture.missing_nodes
         if missing:
             reasons.append("cpu_node_samples_missing")
         if not merged.row_count:
             reasons.append("cpu_samples_empty")
-        failed_processes = prematurely_exited
+        failed_processes = capture.exited_processes
         if failed_processes:
             reasons.append("cpu_collector_failed")
         publication_valid = not reasons
@@ -101,8 +98,8 @@ class CpuPowerTelemetrySession:
             reasons=tuple(dict.fromkeys(reasons)),
             row_count=merged.row_count,
             observed_nodes=merged.observed_nodes,
-            missing_nodes=tuple(missing),
-            failed_processes=tuple(failed_processes),
+            missing_nodes=missing,
+            failed_processes=failed_processes,
         )
         return SessionOutcome(
             status=status,

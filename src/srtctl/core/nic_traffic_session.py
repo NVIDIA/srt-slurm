@@ -10,18 +10,28 @@ below the log directory as power evidence.
 
 from __future__ import annotations
 
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from srtctl.core.nic_traffic import SAMPLES_HEADER, SCHEMA_VERSION
-from srtctl.core.node_samples import merge_node_csvs, read_node_markers, read_node_metadata
+from srtctl.core.node_samples import (
+    MergedNodeCsvs,
+    NodeCapture,
+    create_capture_dirs,
+    read_node_markers,
+    read_node_metadata,
+    stop_and_merge,
+)
 from srtctl.core.power.contract import atomic_write_json
 from srtctl.core.processes import ManagedProcess
 
 TRAFFIC_FILENAME = "nic_traffic.csv"
 MANIFEST_FILENAME = "nic_manifest.json"
+
+_NOTHING_MERGED = NodeCapture(
+    merged=MergedNodeCsvs(row_count=0, observed_nodes=(), malformed=False), missing_nodes=(), exited_processes=()
+)
 
 
 @dataclass(frozen=True)
@@ -52,60 +62,45 @@ class NicTrafficSession:
         self._processes: list[ManagedProcess] = []
 
     def initialize(self) -> None:
-        os.umask(0o002)
-        self.samples_dir.mkdir(parents=True, exist_ok=True)
-        self.ready_dir.mkdir(parents=True, exist_ok=True)
-        self._write_manifest(status="running", reasons=(), row_count=0, observed_nodes=())
+        create_capture_dirs(self.samples_dir, self.ready_dir)
+        self._write_manifest(status="running")
 
     def add_process(self, process: ManagedProcess) -> None:
         self._processes.append(process)
 
     def stop_and_finalize(self, *, interrupted: bool = False) -> NicTrafficOutcome:
         """Stop the samplers, merge their CSVs into ``nic_traffic.csv`` and write the final manifest."""
-        exited_early = [process.name for process in self._processes if not process.is_running]
-        for process in self._processes:
-            process.terminate()
-        merged = merge_node_csvs(
+        capture = stop_and_merge(
+            self._processes,
+            self.settings.nodes,
             self.samples_dir,
             SAMPLES_HEADER,
             self.traffic_path,
             sort_key=lambda row: (float(row[0]), row[2], row[3], row[4]),
         )
-        markers = read_node_markers(self.ready_dir)
-        missing = tuple(sorted(set(self.settings.nodes) - set(merged.observed_nodes)))
-        reasons = [
+        node_errors = read_node_markers(self.ready_dir).errors
+        reasons = tuple(
             reason
             for reason, applies in (
                 ("interrupted", interrupted),
-                ("nic_counters_unavailable", bool(markers.errors)),
-                ("nic_node_samples_missing", bool(missing)),
-                ("nic_samples_malformed", merged.malformed),
-                ("nic_sampler_exited", bool(exited_early)),
+                ("nic_counters_unavailable", bool(node_errors)),
+                ("nic_node_samples_missing", bool(capture.missing_nodes)),
+                ("nic_samples_malformed", capture.merged.malformed),
+                ("nic_sampler_exited", bool(capture.exited_processes)),
             )
             if applies
-        ]
-        status = "incomplete" if reasons else "complete"
-        self._write_manifest(
-            status=status,
-            reasons=tuple(reasons),
-            row_count=merged.row_count,
-            observed_nodes=merged.observed_nodes,
-            missing_nodes=missing,
-            node_errors=markers.errors,
-            exited_processes=tuple(exited_early),
         )
-        return NicTrafficOutcome(status=status, reason_codes=tuple(reasons))
+        status = "incomplete" if reasons else "complete"
+        self._write_manifest(status=status, reasons=reasons, capture=capture, node_errors=node_errors)
+        return NicTrafficOutcome(status=status, reason_codes=reasons)
 
     def _write_manifest(
         self,
         *,
         status: str,
-        reasons: tuple[str, ...],
-        row_count: int,
-        observed_nodes: tuple[str, ...],
-        missing_nodes: tuple[str, ...] = (),
+        reasons: tuple[str, ...] = (),
+        capture: NodeCapture = _NOTHING_MERGED,
         node_errors: dict[str, str] | None = None,
-        exited_processes: tuple[str, ...] = (),
     ) -> None:
         atomic_write_json(
             self.manifest_path,
@@ -117,12 +112,12 @@ class NicTrafficSession:
                 "traffic_csv": TRAFFIC_FILENAME,
                 "sample_interval_seconds": self.settings.sample_interval_seconds,
                 "expected_nodes": list(self.settings.nodes),
-                "observed_nodes": list(observed_nodes),
-                "missing_nodes": list(missing_nodes),
+                "observed_nodes": list(capture.merged.observed_nodes),
+                "missing_nodes": list(capture.missing_nodes),
                 "node_errors": node_errors or {},
-                "sample_row_count": row_count,
+                "sample_row_count": capture.merged.row_count,
                 "reason_codes": list(reasons),
-                "exited_processes": list(exited_processes),
+                "exited_processes": list(capture.exited_processes),
                 "producer_git_commit": self.settings.producer_git_commit,
                 "nodes": read_node_metadata(self.samples_dir),
                 "updated_at_unix": time.time(),

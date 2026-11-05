@@ -8,11 +8,6 @@ sysfs once per interval and appends them, as raw cumulative bytes, to a
 per-node CSV. Rates are computed later, per benchmark window, by
 ``srtctl.analysis.nic_traffic_report``.
 
-It runs on the bare host and imports only the standard library, so it also
-runs as a copied file::
-
-    timeout -s TERM 30 python3 nic_traffic.py --output-dir /tmp/nic
-
 Which sysfs counter carries RDMA payload bytes depends on the driver; the
 ``COUNTER_SOURCES`` table names it per driver.
 """
@@ -21,15 +16,15 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import math
 import os
-import signal
-import socket
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from srtctl.core.node_samples import create_capture_dirs, node_hostname, stop_on_signals
+from srtctl.core.power.contract import atomic_write_json
 
 SCHEMA_VERSION = 2
 # timestamp_unix is the midpoint of that port's own counter reads; sample_seq
@@ -182,31 +177,11 @@ def discover_ports(sysfs_root: Path) -> tuple[list[RdmaPort], list[UnsupportedPo
     return ports, unsupported
 
 
-def node_hostname() -> str:
-    """The Slurm node name, which is what the head node expects in every row."""
-    return os.environ.get("SLURMD_NODENAME") or socket.gethostname().split(".", 1)[0]
-
-
-def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(temp, path)
-
-
 def collect(*, output_dir: Path, ready_dir: Path, interval_seconds: float, sysfs_root: Path) -> int:
     """Sample until SIGTERM/SIGINT into ``<output_dir>/<host>.csv`` and mark readiness in ``ready_dir``."""
-    os.umask(0o002)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    ready_dir.mkdir(parents=True, exist_ok=True)
+    create_capture_dirs(output_dir, ready_dir)
     hostname = node_hostname()
-    stop = False
-
-    def request_stop(_signum: int, _frame: Any) -> None:
-        nonlocal stop
-        stop = True
-
-    signal.signal(signal.SIGTERM, request_stop)
-    signal.signal(signal.SIGINT, request_stop)
+    stop = stop_on_signals()
 
     ports, unsupported = discover_ports(sysfs_root)
     metadata_path = output_dir / f"{hostname}.metadata.json"
@@ -219,9 +194,9 @@ def collect(*, output_dir: Path, ready_dir: Path, interval_seconds: float, sysfs
         "devices": [port.describe() for port in ports],
         "unsupported": [entry.describe() for entry in unsupported],
     }
-    _atomic_json(metadata_path, metadata)
+    atomic_write_json(metadata_path, metadata)
     if not ports:
-        _atomic_json(
+        atomic_write_json(
             ready_dir / f"{hostname}.error.json",
             {"hostname": hostname, "error": "no RDMA port with readable byte counters"},
         )
@@ -236,13 +211,13 @@ def collect(*, output_dir: Path, ready_dir: Path, interval_seconds: float, sysfs
         writer = csv.writer(handle)
         writer.writerow(SAMPLES_HEADER)
         handle.flush()
-        _atomic_json(
+        atomic_write_json(
             ready_dir / f"{hostname}.ready.json",
             {"hostname": hostname, "port_count": len(ports), "ready_at_unix": time.time()},
         )
         next_sample = time.monotonic()
         sample_seq = 0
-        while not stop:
+        while not stop.is_set():
             for port in ports:
                 # One ionic counter read can take ~100 ms, so a pass over many
                 # ports can last hundreds of ms; stamp each row at its own reads.
@@ -272,7 +247,7 @@ def collect(*, output_dir: Path, ready_dir: Path, interval_seconds: float, sysfs
             next_sample += interval_seconds
             time.sleep(max(0.0, next_sample - time.monotonic()))
     metadata.update({"ended_at_unix": time.time(), "sample_row_count": row_count, "read_failure_count": read_failures})
-    _atomic_json(metadata_path, metadata)
+    atomic_write_json(metadata_path, metadata)
     return 0
 
 

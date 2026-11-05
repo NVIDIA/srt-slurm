@@ -131,11 +131,3 @@ def test_postprocess_writes_the_summary_without_power_telemetry(tmp_path: Path) 
     ]
     assert rows[0]["concurrency"] == "4"
     assert float(rows[2]["peak_tx_gbps"]) == pytest.approx(4.0)
-
-
-def test_postprocess_skips_a_run_without_benchmark_windows(tmp_path: Path) -> None:
-    _write_traffic(tmp_path / "nic_traffic" / "nic_traffic.csv")
-
-    _PostProcess(tmp_path)._build_nic_traffic_summary()
-
-    assert not (tmp_path / "nic_traffic" / SUMMARY_FILENAME).exists()

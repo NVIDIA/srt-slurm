@@ -31,8 +31,6 @@ import json
 import logging
 import math
 import os
-import signal
-import socket
 import sys
 import time
 from abc import ABC, abstractmethod
@@ -40,6 +38,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from srtctl.core.node_samples import create_capture_dirs, node_hostname, stop_on_signals
 from srtctl.core.power.cpu_rails import (
     COMPONENT_RAIL_COLUMN_NAMES,
     COMPONENT_RAIL_KINDS,
@@ -665,18 +664,9 @@ def create_reader(source: str) -> CpuPowerReader:
 
 def collect(*, output_dir: Path, ready_dir: Path, source: str, interval_seconds: float) -> int:
     """Collect until SIGTERM/SIGINT and leave node-local auditable artifacts."""
-    os.umask(0o002)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    ready_dir.mkdir(parents=True, exist_ok=True)
-    hostname = os.environ.get("SLURMD_NODENAME") or socket.gethostname().split(".", 1)[0]
-    stop = False
-
-    def request_stop(_signum: int, _frame: Any) -> None:
-        nonlocal stop
-        stop = True
-
-    signal.signal(signal.SIGTERM, request_stop)
-    signal.signal(signal.SIGINT, request_stop)
+    create_capture_dirs(output_dir, ready_dir)
+    hostname = node_hostname()
+    stop = stop_on_signals()
 
     try:
         reader = create_reader(source)
@@ -707,7 +697,7 @@ def collect(*, output_dir: Path, ready_dir: Path, source: str, interval_seconds:
         handle.flush()
         _atomic_json(ready_path, {"hostname": hostname, "source": reader.source_name, "ready_at_unix": time.time()})
         next_sample = time.monotonic()
-        while not stop:
+        while not stop.is_set():
             timestamp = time.time()
             timestamp_local = format_local_timestamp(timestamp)
             try:

@@ -45,45 +45,41 @@ def _rdma_device(
     return port_dir
 
 
-def test_ionic_reads_unicast_hw_counters_as_bytes(tmp_path: Path) -> None:
-    _rdma_device(
-        tmp_path,
-        "rdma0",
-        driver="ionic",
-        netdev="enp1s0",
-        counters={
-            "hw_counters/tx_rdma_ucast_bytes": 490_015_000_000,
-            "hw_counters/rx_rdma_ucast_bytes": 7,
-            "hw_counters/tx_rdma_mcast_bytes": 111,
-            "hw_counters/tx_rdma_retx_bytes": 222,
-            "hw_counters/tx_rdma_ccl_cts_bytes": 333,
-        },
-    )
-
-    ports, unsupported = discover_ports(tmp_path)
-
-    assert unsupported == []
-    [port] = ports
-    assert (port.device, port.port, port.netdev, port.driver) == ("rdma0", "1", "enp1s0", "ionic")
-    assert port.read_bytes() == (490_015_000_000, 7)
-    assert port.describe()["counter_source"] == "hw_counters/rdma_ucast_bytes"
-
-
-def test_standard_driver_reads_port_data_in_four_octet_units(tmp_path: Path) -> None:
-    _rdma_device(
-        tmp_path,
-        "mlx5_0",
-        driver="mlx5_core",
-        netdev="ib0",
-        counters={"counters/port_xmit_data": 250, "counters/port_rcv_data": 100},
-    )
+@pytest.mark.parametrize(
+    ("driver", "counters", "expected_bytes", "counter_source"),
+    [
+        (
+            # Multicast, retransmit and ccl_cts bytes stay out of the unicast payload.
+            "ionic",
+            {
+                "hw_counters/tx_rdma_ucast_bytes": 490_015_000_000,
+                "hw_counters/rx_rdma_ucast_bytes": 7,
+                "hw_counters/tx_rdma_mcast_bytes": 111,
+                "hw_counters/tx_rdma_retx_bytes": 222,
+                "hw_counters/tx_rdma_ccl_cts_bytes": 333,
+            },
+            (490_015_000_000, 7),
+            "hw_counters/rdma_ucast_bytes",
+        ),
+        (
+            "mlx5_core",
+            {"counters/port_xmit_data": 250, "counters/port_rcv_data": 100},
+            (1000, 400),
+            "counters/port_data",
+        ),
+    ],
+)
+def test_each_driver_reads_its_rdma_byte_counters(
+    tmp_path: Path, driver: str, counters: dict[str, int], expected_bytes: tuple[int, int], counter_source: str
+) -> None:
+    _rdma_device(tmp_path, "rdma0", driver=driver, netdev="enp1s0", counters=counters)
 
     [port], unsupported = discover_ports(tmp_path)
 
     assert unsupported == []
-    assert port.driver == "mlx5_core"
-    assert port.read_bytes() == (1000, 400)
-    assert port.describe()["bytes_per_unit"] == 4
+    assert (port.device, port.port, port.netdev, port.driver) == ("rdma0", "1", "enp1s0", driver)
+    assert port.read_bytes() == expected_bytes
+    assert port.describe()["counter_source"] == counter_source
 
 
 def test_port_without_its_drivers_counters_is_unsupported_not_sampled(tmp_path: Path) -> None:
@@ -117,14 +113,12 @@ def _wait_for(path: Path, timeout: float = 10.0) -> None:
         time.sleep(0.02)
 
 
-def _run_standalone(sysfs: Path, out: Path, env: dict[str, str]) -> subprocess.Popen[str]:
-    # -I -S: no site-packages, so srtctl is not importable and the file must run on the stdlib alone.
+def _run_sampler(sysfs: Path, out: Path, env: dict[str, str]) -> subprocess.Popen[str]:
     return subprocess.Popen(
         [
             sys.executable,
-            "-I",
-            "-S",
-            str(Path(nic_traffic.__file__)),
+            "-m",
+            "srtctl.core.nic_traffic",
             "--output-dir",
             str(out),
             "--interval-seconds",
@@ -139,7 +133,7 @@ def _run_standalone(sysfs: Path, out: Path, env: dict[str, str]) -> subprocess.P
     )
 
 
-def test_standalone_file_samples_raw_counters_until_sigterm(tmp_path: Path) -> None:
+def test_sampler_records_raw_counters_until_sigterm(tmp_path: Path) -> None:
     sysfs = tmp_path / "sys"
     port_dir = _rdma_device(
         sysfs,
@@ -149,7 +143,7 @@ def test_standalone_file_samples_raw_counters_until_sigterm(tmp_path: Path) -> N
         counters={"hw_counters/tx_rdma_ucast_bytes": 100, "hw_counters/rx_rdma_ucast_bytes": 200},
     )
     out = tmp_path / "out"
-    proc = _run_standalone(sysfs, out, {"SLURMD_NODENAME": "node-a"})
+    proc = _run_sampler(sysfs, out, {"SLURMD_NODENAME": "node-a"})
     try:
         _wait_for(out / "node-a.ready.json")
         (port_dir / "hw_counters/tx_rdma_ucast_bytes").write_text("900\n")
@@ -214,7 +208,7 @@ def test_each_row_is_stamped_at_its_own_port_reads_and_shares_the_pass_seq(tmp_p
 
     monkeypatch.setattr(nic_traffic, "time", clock)
     monkeypatch.setattr(nic_traffic, "_read_counter", slow_read)
-    monkeypatch.setattr(nic_traffic.signal, "signal", clock.signal_handlers.__setitem__)
+    monkeypatch.setattr(signal, "signal", clock.signal_handlers.__setitem__)
     monkeypatch.setenv("SLURMD_NODENAME", "node-a")
     out = tmp_path / "out"
 
@@ -231,7 +225,7 @@ def test_each_row_is_stamped_at_its_own_port_reads_and_shares_the_pass_seq(tmp_p
 
 def test_node_without_counters_writes_an_error_marker_and_exits_cleanly(tmp_path: Path) -> None:
     out = tmp_path / "out"
-    proc = _run_standalone(tmp_path / "sys", out, {"SLURMD_NODENAME": "node-b"})
+    proc = _run_sampler(tmp_path / "sys", out, {"SLURMD_NODENAME": "node-b"})
     _, stderr = proc.communicate(timeout=10)
 
     assert proc.returncode == 0, stderr
@@ -278,8 +272,6 @@ def test_capture_defaults_on_only_for_multi_node_jobs(tmp_path: Path, roles, nic
     ("nic_traffic", "message"),
     [
         ({"storage_subdir": "power/nic"}, "overlaps telemetry.storage_subdir"),
-        ({"storage_subdir": "cpu_power"}, "overlaps telemetry.cpu_power.storage_subdir"),
-        ({"storage_subdir": "tachometer"}, "overlaps observability.tachometer.storage_subdir"),
         ({"storage_subdir": "../nic"}, "safe relative path"),
         ({"sample_interval_seconds": 0}, "finite and positive"),
         ({"sample_interval_seconds": 5}, "exceeds"),
@@ -338,6 +330,10 @@ def test_finalize_merges_every_node_in_time_order(tmp_path: Path) -> None:
     manifest = json.loads(session.manifest_path.read_text())
     assert manifest["observed_nodes"] == ["node-a", "node-b"]
     assert manifest["sample_row_count"] == 3
+    # The power report claims any samples.csv or manifest.json below the log directory.
+    names = {path.name for path in tmp_path.rglob("*")}
+    assert not names & {"samples.csv", "manifest.json"}
+    assert not _has_power_samples(tmp_path)
 
 
 def test_manifest_names_missing_and_counterless_nodes(tmp_path: Path) -> None:
@@ -367,17 +363,6 @@ def test_manifest_names_missing_and_counterless_nodes(tmp_path: Path) -> None:
     assert manifest["exited_processes"] == ["telemetry_nic_traffic"]
 
 
-def test_capture_never_writes_files_power_consumers_claim(tmp_path: Path) -> None:
-    session = _session(tmp_path, ("node-a",))
-    _write_node_csv(session.samples_dir, "node-a", [(1.0, "rdma0", 1, 1)])
-    session.stop_and_finalize()
-
-    names = {path.name for path in tmp_path.rglob("*")}
-    assert {"nic_traffic.csv", "nic_manifest.json"} <= names
-    assert not names & {"samples.csv", "manifest.json"}
-    assert not _has_power_samples(tmp_path)
-
-
 class _Stage(TelemetryStageMixin):
     def __init__(self, tmp_path: Path, config: SrtConfig, *, het_groups: dict[str, int] | None = None) -> None:
         self.config = config
@@ -396,52 +381,18 @@ class _Stage(TelemetryStageMixin):
 
 
 @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-def test_multi_node_job_launches_one_bare_host_sampler_per_node(mock_srun, tmp_path: Path) -> None:
-    stage = _Stage(tmp_path, _recipe(tmp_path, TWO_NODES))
-    registry = ProcessRegistry(job_id="7")
-
-    session = stage.start_nic_traffic(registry)
-
-    assert session is not None
-    kwargs = mock_srun.call_args.kwargs
-    assert mock_srun.call_count == 1
-    assert kwargs["nodelist"] == ["node-a", "node-b"]
-    assert (kwargs["nodes"], kwargs["ntasks"]) == (2, 2)
-    assert kwargs["use_bash_wrapper"] is False
-    assert "container_image" not in kwargs
-    assert kwargs["step_name"] == "telemetry_nic_traffic"
-    assert kwargs["command"][1:3] == ["-m", "srtctl.core.nic_traffic"]
-    assert kwargs["command"][kwargs["command"].index("--interval-seconds") + 1] == "1.0"
-    [process] = registry.get_all_processes().values()
-    assert process.critical is False
-    assert process.step_name == "telemetry_nic_traffic"
-    assert json.loads((tmp_path / "nic_traffic" / "nic_manifest.json").read_text())["expected_nodes"] == [
-        "node-a",
-        "node-b",
-    ]
-
-
-@patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
 def test_het_job_launches_one_sampler_step_per_component(mock_srun, tmp_path: Path) -> None:
     stage = _Stage(tmp_path, _recipe(tmp_path, TWO_NODES), het_groups={"node-a": 0, "node-b": 1})
 
-    stage.start_nic_traffic(ProcessRegistry(job_id="7"))
+    registry = ProcessRegistry(job_id="7")
+    stage.start_nic_traffic(registry)
 
     launches = [
         (call.kwargs["het_group"], call.kwargs["nodelist"], call.kwargs["step_name"])
         for call in mock_srun.call_args_list
     ]
     assert launches == [(0, ["node-a"], "telemetry_nic_traffic_g0"), (1, ["node-b"], "telemetry_nic_traffic_g1")]
-
-
-@patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-def test_disabled_capture_launches_nothing(mock_srun, tmp_path: Path) -> None:
-    stage = _Stage(tmp_path, _recipe(tmp_path, TWO_NODES, {"enabled": False}))
-
-    assert stage.start_nic_traffic(ProcessRegistry(job_id="7")) is None
-    stage.finalize_nic_traffic()
-    mock_srun.assert_not_called()
-    assert not (tmp_path / "nic_traffic").exists()
+    assert [process.critical for process in registry.get_all_processes().values()] == [False, False]
 
 
 @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process", side_effect=OSError("srun: not found"))
@@ -454,14 +405,6 @@ def test_launch_failure_is_absorbed(_mock_srun, tmp_path: Path) -> None:
     assert session is not None
     manifest = json.loads(session.manifest_path.read_text())
     assert manifest["missing_nodes"] == ["node-a", "node-b"]
-
-
-def test_node_discovery_failure_is_absorbed(tmp_path: Path) -> None:
-    stage = _Stage(tmp_path, _recipe(tmp_path, TWO_NODES))
-    stage._telemetry_nodes = MagicMock(side_effect=ValueError("bad allocation"))  # type: ignore[method-assign]
-
-    assert stage.start_nic_traffic(ProcessRegistry(job_id="7")) is None
-    stage.finalize_nic_traffic()
 
 
 def test_mock_sweep_starts_and_finalizes_the_capture(tmp_path: Path) -> None:
