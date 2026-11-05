@@ -130,8 +130,17 @@ class TestLocalDockerCommand:
         cluster(launcher="docker", docker_gpus="device=2,3,4,5")
         spec = LaunchSpec(command=["true"], container_image="img:1", env_to_set={"CUDA_VISIBLE_DEVICES": "0,1,2,3"})
         cmd = docker.docker_command(spec, "c")
-        assert cmd[cmd.index("--gpus") + 1] == "device=2,3,4,5"
+        # Docker splits --gpus on commas unless the whole value is wrapped in literal quotes.
+        assert cmd[cmd.index("--gpus") + 1] == '"device=2,3,4,5"'
         assert "all" not in cmd
+
+    def test_docker_gpus_single_device_or_all_is_not_quoted(self, docker, cluster):
+        cluster(launcher="docker", docker_gpus="device=3")
+        cmd = docker.docker_command(LaunchSpec(command=["true"], container_image="img:1"), "c")
+        assert cmd[cmd.index("--gpus") + 1] == "device=3"
+        cluster(launcher="docker")
+        cmd = docker.docker_command(LaunchSpec(command=["true"], container_image="img:1"), "c")
+        assert cmd[cmd.index("--gpus") + 1] == "all"
 
     def test_container_workdir_becomes_w_and_other_srun_options_are_dropped(self, docker, cluster, caplog):
         cluster(launcher="docker")

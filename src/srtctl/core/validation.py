@@ -221,15 +221,17 @@ def _preflight_container(
 
     # Container image URIs (e.g. "nvcr.io/nvidia/sglang-runtime:0.8.1",
     # "vllm/vllm-openai:latest", "docker://...").
-    if isinstance(raw, str) and _is_registry_uri(raw):
+    # The alias may also resolve to a registry URI (srtslurm.yaml ``containers``
+    # mapping a name to a Docker image, as ``launcher: docker`` needs).
+    if isinstance(resolved, str) and _is_registry_uri(resolved):
         return (
             PreflightResolution(
                 field="model.container",
                 raw=raw,
-                resolved=raw,
-                source="container-uri",
+                resolved=resolved,
+                source="container-uri" if raw == resolved else source,
                 ok=True,
-                message=f"Container image URI: {raw}",
+                message=f"Container image URI: {resolved}",
             ),
             [],
         )

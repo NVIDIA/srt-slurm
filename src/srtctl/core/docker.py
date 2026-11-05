@@ -45,6 +45,20 @@ class _DockerStep:
     container: str | None  # docker container name; None for a host process
 
 
+def _gpus_flag_value(value: str) -> str:
+    """Quote a ``--gpus`` value for Docker's CSV parser.
+
+    ``--gpus device=2,3,4,5`` is split on commas into ``device=2`` plus bare
+    fields that Docker reads as a GPU count ("cannot set both Count and
+    DeviceIDs on device request"); the whole value must arrive wrapped in
+    literal double quotes, as ``docker run --gpus '"device=2,3"'`` does.
+    """
+    value = str(value)
+    if "," in value and not (value.startswith('"') and value.endswith('"')):
+        return f'"{value}"'
+    return value
+
+
 class DockerLauncher(Launcher):
     """One job on the current machine: containers under ``docker run``, host commands under ``bash``.
 
@@ -98,7 +112,7 @@ class DockerLauncher(Launcher):
             "--label",
             f"{JOB_LABEL}={self._job_label()}",
             "--gpus",
-            get_srtslurm_setting("docker_gpus") or "all",
+            _gpus_flag_value(get_srtslurm_setting("docker_gpus") or "all"),
             "--network",
             "host",
             "--ipc",

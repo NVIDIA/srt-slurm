@@ -49,7 +49,7 @@ class LaunchSpec:
     cpus_per_task: int | None = None
     nodelist: Sequence[str] | None = None
     output: str | None = None
-    container_image: str | None = None
+    container_image: str | Path | None = None
     container_mounts: dict[Path, Path] | None = None
     # Slurm/pyxis: share one named rootfs per job/image/remap mode across launches, and
     # prepare it on these nodes before the first launch (see ``start_srun_process``).
