@@ -17,7 +17,6 @@ import functools
 import json
 import logging
 import os
-import shlex
 import subprocess
 import sys
 import textwrap
@@ -38,6 +37,7 @@ from srtctl.cli.mixins import (
 )
 from srtctl.core.config import load_config
 from srtctl.core.health import wait_for_port
+from srtctl.core.launcher import get_launcher
 from srtctl.core.lockfile import write_lockfile
 from srtctl.core.processes import (
     ProcessRegistry,
@@ -47,7 +47,7 @@ from srtctl.core.processes import (
 from srtctl.core.resource_snapshot import record_resource_snapshot
 from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import SrtConfig, container_creation_env
-from srtctl.core.slurm import get_slurm_job_id, resolve_container_name, start_srun_process
+from srtctl.core.slurm import resolve_container_name, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, LogStreamer, StatusReporter, tachometer_outbox
 from srtctl.core.supervisor import WORKER_RESTARTS_FILENAME
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
@@ -199,6 +199,7 @@ class SweepOrchestrator(
 
     def _print_connection_info(self) -> None:
         """Print connections using the same image, role options and root mode as launches."""
+        launcher = get_launcher()
         logger.info("")
         logger.info("=" * 60)
         logger.info("Connection Commands")
@@ -223,20 +224,9 @@ class SweepOrchestrator(
             if key in seen:
                 continue
             seen.add(key)
-            args = [f"--container-image={image}"]
-            if resolved.name:
-                args.append(f"--container-name={resolved.name}")
-            if self.runtime.container_mounts:
-                mounts = ",".join(f"{src}:{dst}" for src, dst in self.runtime.container_mounts.items())
-                args.append(f"--container-mounts={mounts}")
             logger.info("")
             logger.info("To connect to %s (%s):", f"{mode} worker" if mode else "head node", node)
-            logger.info(
-                "  srun %s --jobid %s -w %s --overlap --pty bash",
-                shlex.join(args),
-                self.runtime.job_id,
-                node,
-            )
+            logger.info("  %s", launcher.shell_command(self.runtime, node, image=image, container_name=resolved.name))
         logger.info("=" * 60)
         logger.info("")
 
@@ -1020,9 +1010,9 @@ def main():
             logger.info("Setup script override: %s", setup_script_override)
             config = replace(config, setup_script=setup_script_override)
 
-        job_id = get_slurm_job_id()
+        job_id = get_launcher().job_id()
         if not job_id:
-            logger.error("Not running in SLURM (SLURM_JOB_ID not set)")
+            logger.error("Not running inside a job (SLURM_JOB_ID, or SRTCTL_JOB_ID under launcher: docker, not set)")
             sys.exit(1)
 
         # Type narrowing: job_id is str after the check above

@@ -16,7 +16,6 @@ import hashlib
 import logging
 import os
 import re
-import shlex
 import socket
 import subprocess
 import tempfile
@@ -367,6 +366,13 @@ def shrink_job_allocation(job_id: str, keep: str, *, timeout: float = 30.0) -> A
 
 
 def get_hostname_ip(hostname: str, network_interface: str | None = None) -> str:
+    """The address other processes in the job use to reach ``hostname``, from the selected launcher."""
+    from .launcher import get_launcher
+
+    return get_launcher().node_ip(hostname, network_interface)
+
+
+def resolve_slurm_hostname_ip(hostname: str, network_interface: str | None = None) -> str:
     """Resolve hostname to routable IP address.
 
     Uses multiple resolution strategies:
@@ -606,9 +612,9 @@ def start_srun_process(
     het_group: int | None = None,
     step_name: str | None = None,
 ) -> subprocess.Popen:
-    """Start a process via srun with container support.
+    """Start a process through the selected launcher (``srun`` by default; see ``core/launcher.py``).
 
-    This is the central function for launching all srun processes.
+    This is the central function for launching all processes.
     It handles container mounts, environment variables, and output redirection.
 
     Args:
@@ -655,164 +661,36 @@ def start_srun_process(
             env_to_set={"NATS_SERVER": "nats://node1:4222"},
         )
     """
-    srun_cmd = ["srun"]
+    from .launcher import LaunchSpec, get_launcher
 
-    # ensures srun runs in the same job context
-    slurm_job_id = get_slurm_job_id()
-    if slurm_job_id:
-        srun_cmd.extend(["--jobid", slurm_job_id])
-
-    # Basic options
-    if overlap:
-        srun_cmd.append("--overlap")
-
-    # MPI options (for TRTLLM)
-    if mpi:
-        srun_cmd.extend(["--mpi", mpi])
-    if oversubscribe:
-        srun_cmd.append("--oversubscribe")
-    if cpu_bind:
-        srun_cmd.append(f"--cpu-bind={cpu_bind}")
-
-    # Arbitrary layouts derive their node count from the repeated host list.
-    if not srun_options or srun_options.get("distribution") != "arbitrary":
-        srun_cmd.extend(["--nodes", str(nodes)])
-    srun_cmd.extend(["--ntasks", str(ntasks)])
-
-    if cpus_per_task:
-        srun_cmd.extend(["--cpus-per-task", str(cpus_per_task)])
-
-    if nodelist:
-        srun_cmd.extend(["--nodelist", ",".join(nodelist)])
-
-    # Route this srun to a specific component of a SLURM heterogeneous job.
-    # Omitted (None) for non-het jobs; safe to always pass-through from callers.
-    if het_group is not None:
-        srun_cmd.append(f"--het-group={het_group}")
-
-    if output:
-        srun_cmd.extend(["--output", output])
-        # Stream task output with O_APPEND so another process on the shared
-        # filesystem can inject lines into a live log without srun overwriting
-        # them on its next write — this is what lets the benchmark mark its
-        # stages inside the worker logs. Log files are unique per job, so append
-        # behaves like truncate on the first open.
-        srun_cmd.extend(["--open-mode", "append"])
-
-    # Container options
-    resolved_container_name = resolve_container_name(
-        container_image,
-        reuse_container=reuse_container,
-        srun_options=srun_options,
-        srun_export_env=srun_export_env,
-        job_id=slurm_job_id,
-    )
-    if container_image:
-        srun_cmd.extend(["--container-image", str(container_image)])
-        if resolved_container_name.name:
-            srun_cmd.append(f"--container-name={resolved_container_name.name}")
-        srun_cmd.append("--no-container-entrypoint")
-        srun_cmd.append("--no-container-mount-home")
-
-        if container_mounts:
-            mount_str = ",".join(f"{host}:{container}" for host, container in container_mounts.items())
-            srun_cmd.extend(["--container-mounts", mount_str])
-
-    if srun_options:
-        for key, value in srun_options.items():
-            if key == "container-name" and resolved_container_name.name:
-                continue
-            if value:
-                srun_cmd.append(f"--{key}={value}")
-            else:
-                srun_cmd.append(f"--{key}")
-
-    # Set env vars in the task environment so the container runtime (enroot/pyxis)
-    # sees them at container-creation time. Prefix ALL to preserve srun's normal
-    # full-environment propagation and only add these on top.
-    if srun_export_env:
-        exports = ",".join(f"{k}={v}" for k, v in srun_export_env.items())
-        srun_cmd.append(f"--export=ALL,{exports}")
-
-    if resolved_container_name.prepare:
-        assert container_image is not None and resolved_container_name.name is not None
-        _prepare_shared_container(
-            image=container_image,
-            name=resolved_container_name.name,
-            nodes=container_prepare_nodes or nodelist,
+    return get_launcher().launch(
+        LaunchSpec(
+            command=command,
+            nodes=nodes,
+            ntasks=ntasks,
+            cpus_per_task=cpus_per_task,
+            nodelist=nodelist,
             output=output,
-            mounts=container_mounts,
-            options=srun_options,
-            export_env=srun_export_env,
+            container_image=container_image,
+            container_mounts=container_mounts,
+            reuse_container=reuse_container,
+            container_prepare_nodes=container_prepare_nodes,
+            container_prepare_timeout_seconds=container_prepare_timeout_seconds,
+            env_to_pass_through=env_to_pass_through,
+            env_to_set=env_to_set,
+            env_to_unset=env_to_unset,
+            bash_preamble=bash_preamble,
+            srun_options=srun_options,
+            srun_export_env=srun_export_env,
+            overlap=overlap,
+            use_bash_wrapper=use_bash_wrapper,
+            mpi=mpi,
+            oversubscribe=oversubscribe,
+            cpu_bind=cpu_bind,
             het_group=het_group,
             step_name=step_name,
-            timeout_seconds=container_prepare_timeout_seconds,
         )
-
-    if step_name:
-        srun_cmd.append(f"--job-name={step_name}")
-
-    # Build the actual command to run
-    if use_bash_wrapper:
-        # Build bash command with environment setup
-        bash_parts = []
-
-        # Export environment variables
-        if env_to_set:
-            for name, value in env_to_set.items():
-                bash_parts.append(f"export {name}={shlex.quote(value)}")
-
-        # Cluster-wide preamble (e.g. ulimits) runs first so it applies to
-        # exports, the local preamble, and the main command alike.
-        cluster_preamble = _get_cluster_bash_preamble()
-        if cluster_preamble:
-            bash_parts.insert(0, cluster_preamble)
-
-        # Explicitly clear inherited variables after setting worker-specific
-        # values so the preamble and main command see the intended environment.
-        if env_to_unset:
-            for name in env_to_unset:
-                bash_parts.append(f"unset -- {shlex.quote(name)}")
-
-        # Add per-call preamble if provided. It runs after exports/unsets so
-        # setup / fingerprint hooks observe the same environment as the main command.
-        if bash_preamble:
-            bash_parts.append(bash_preamble)
-
-        # exec the main command so it replaces bash as the step's task: srun forwards
-        # SIGTERM to the task, and a bash -c parent would hold the signal until its
-        # child exited, so the child was only ever SIGKILLed at the cleanup timeout
-        # (tachometer never compacted, workers never shut down cleanly).
-        bash_parts.append("exec " + shlex.join(command))
-
-        # Join with && for sequential execution
-        bash_command = " && ".join(bash_parts)
-        srun_cmd.extend(["bash", "-c", bash_command])
-    else:
-        cluster_preamble = _get_cluster_bash_preamble()
-        if cluster_preamble:
-            logger.warning(
-                "Cluster default_bash_preamble is set but this srun bypasses the bash wrapper "
-                "(use_bash_wrapper=False); preamble will not be applied. command=%s",
-                shlex.join(command),
-            )
-        srun_cmd.extend(command)
-
-    # Demoted to debug — every worker srun line is multi-KB once the
-    # fingerprint heredoc is inlined (see core/fingerprint.generate_capture_script),
-    # which dominates the orchestrator log. Re-enable with `--verbose` / by setting
-    # the srtctl logger to DEBUG when troubleshooting srun arg construction.
-    logger.debug("srun command: %s", shlex.join(srun_cmd))
-
-    # Start the process
-    proc = subprocess.Popen(
-        srun_cmd,
-        stdout=subprocess.PIPE if not output else None,
-        stderr=subprocess.STDOUT if not output else None,
-        env=None,  # Inherit environment
     )
-
-    return proc
 
 
 def run_command(
