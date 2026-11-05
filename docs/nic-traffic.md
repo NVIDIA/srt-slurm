@@ -102,7 +102,7 @@ For each window and NIC, the window is snapped to the NIC's nearest sample on ea
 - `mean_*_gbps` is the summed byte delta times 8, over the summed interval time, in 10^9 bit/s;
 - `peak_*_gbps` is the highest single-interval rate, so its resolution is `sample_interval_seconds`.
 
-Each window has one `nic` row per covered NIC and one `node` row per host. A node's mean is the sum of its NICs' means. Its peak sums the rates of the NIC intervals that end at the same `sample_seq` and takes the highest; NICs read in one pass have different timestamps, so the pass, not the time, aligns them. The columns are `concurrency, window_start_unix, window_end_unix, scope, hostname, device, port, netdev, driver, intervals, dropped_intervals, mean_tx_gbps, mean_rx_gbps, peak_tx_gbps, peak_rx_gbps`.
+Each window has one `nic` row per covered NIC and one `node` row per host. A node's mean is the sum of its NICs' means. Its peak sums the rates of the NIC intervals that end at the same `sample_seq` and takes the highest; NICs read in one pass have different timestamps, so the pass, not the time, aligns them. On a `node` row, `intervals` counts those passes and `dropped_intervals` sums its NICs' dropped intervals. The columns are `concurrency, window_start_unix, window_end_unix, scope, hostname, device, port, netdev, driver, intervals, dropped_intervals, mean_tx_gbps, mean_rx_gbps, peak_tx_gbps, peak_rx_gbps`.
 
 ## Running the Sampler by Hand
 
