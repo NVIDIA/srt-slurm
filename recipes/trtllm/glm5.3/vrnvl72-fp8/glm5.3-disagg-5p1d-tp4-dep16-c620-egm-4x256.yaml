@@ -30,11 +30,6 @@ resources:
   gpu_type: vrnvl72
   gpus_per_node: 4
   het_jobs: false
-sbatch_directives:
-  # Nine worker nodes plus the shared frontend/client in one NVLink domain.
-  segment: '10'
-  exclusive: ''
-  mem: '0'
 environment:
   MC_ENABLE_PARALLEL_REG_MR: '0'
 host_setup:
