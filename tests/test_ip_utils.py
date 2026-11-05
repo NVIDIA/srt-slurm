@@ -29,7 +29,7 @@ def test_get_node_ip_ignores_srun_step_created_output(tmp_path, monkeypatch):
     ip = get_node_ip("nvl72156-T15", slurm_job_id="2279904")
 
     assert ip == "10.109.25.246"
-    # the workers hold every CPU and GPU of the node: without --overlap the step waits for them until it times out
+    # a step without --overlap holding the node's GPUs or CPUs would keep a lookup without it pending until timeout
     assert "--overlap" in (tmp_path / "args").read_text().split()
 
 

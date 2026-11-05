@@ -178,7 +178,8 @@ get_node_ip() {
 
     # Execute the script on target node with single srun command
     local result
-    # --overlap: the workers hold every CPU and GPU, so a step without it waits for them until the caller times out
+    # --overlap: any step started without it that holds the node's GPUs or CPUs (srtctl's own steps overlap; a
+    # recipe's srun options or a user's step may not) would keep a lookup without it pending until the timeout
     result=$(srun --quiet --overlap --jobid "$slurm_job_id" --nodes=1 --ntasks=1 --nodelist="$node" bash -c "$ip_script" 2>&1)
     local rc=$?
     local ip
