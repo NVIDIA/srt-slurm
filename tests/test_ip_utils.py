@@ -4,8 +4,11 @@
 """Tests for IP address resolution helpers."""
 
 import os
+import socket
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from srtctl.core.ip_utils import get_node_ip
 from srtctl.core.slurm import get_hostname_ip
@@ -44,9 +47,61 @@ def test_get_hostname_ip_resolves_each_node_once(monkeypatch):
         ) as srun,
         patch("srtctl.core.slurm.socket.gethostbyname", return_value="10.0.0.2") as dns,
     ):
-        assert [get_hostname_ip(node) for node in ("a", "b", "a", "b")] == ["10.0.0.1", "10.0.0.2"] * 2
+        assert [get_hostname_ip(node, "eth0") for node in ("a", "b", "a", "b")] == ["10.0.0.1", "10.0.0.2"] * 2
     get_hostname_ip.cache_clear()
     assert srun.call_count == 2 and dns.call_count == 1
+
+
+@pytest.mark.parametrize("network_interface", [None, ""])
+def test_get_hostname_ip_without_interface_resolves_through_dns(monkeypatch, network_interface):
+    """With no interface named, the hostname's address comes from DNS, without an srun step (several slurmctld RPCs)."""
+    monkeypatch.setenv("SLURM_JOB_ID", "2279904")
+    get_hostname_ip.cache_clear()
+    with (
+        patch("srtctl.core.slurm.get_node_ip") as srun,
+        patch("srtctl.core.slurm.socket.gethostbyname_ex", return_value=("a", [], ["10.0.0.3"])),
+    ):
+        assert get_hostname_ip("a", network_interface) == "10.0.0.3"
+    get_hostname_ip.cache_clear()
+    srun.assert_not_called()
+
+
+def test_get_hostname_ip_with_interface_asks_the_node(monkeypatch):
+    """DNS knows the hostname's address, not which interface it is on: a named interface's address needs srun."""
+    monkeypatch.setenv("SLURM_JOB_ID", "2279904")
+    get_hostname_ip.cache_clear()
+    with (
+        patch("srtctl.core.slurm.get_node_ip", return_value="10.1.0.3") as srun,
+        patch("srtctl.core.slurm.socket.gethostbyname_ex", return_value=("a", [], ["10.0.0.3"])) as dns,
+    ):
+        assert get_hostname_ip("a", "ib0") == "10.1.0.3"
+    get_hostname_ip.cache_clear()
+    srun.assert_called_once_with("a", "2279904", "ib0")
+    dns.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        ("a", [], ["127.0.1.1"]),
+        ("a", [], ["169.254.0.3"]),
+        ("a", [], ["0.0.0.0"]),
+        ("a", [], ["10.0.0.3", "10.1.0.3"]),
+        socket.gaierror("no such host"),
+    ],
+    ids=["loopback", "link-local", "unspecified", "several", "unresolved"],
+)
+def test_get_hostname_ip_falls_back_to_srun_on_unusable_dns(monkeypatch, answer):
+    """A DNS answer the srun lookup would never return, or an ambiguous one, goes to srun instead."""
+    monkeypatch.setenv("SLURM_JOB_ID", "2279904")
+    get_hostname_ip.cache_clear()
+    with (
+        patch("srtctl.core.slurm.get_node_ip", return_value="10.0.0.4") as srun,
+        patch("srtctl.core.slurm.socket.gethostbyname_ex", side_effect=[answer]),
+    ):
+        assert get_hostname_ip("a") == "10.0.0.4"
+    get_hostname_ip.cache_clear()
+    srun.assert_called_once_with("a", "2279904", None)
 
 
 def test_runtime_resolves_control_plane_ips_on_cluster_interface(tmp_path):
