@@ -19,6 +19,7 @@ from srtctl.core.power.contract import CONTAINER_LOG_DIR
 from srtctl.ports import FRONTEND_PUBLIC_PORT
 
 from .config import get_srtslurm_setting
+from .launcher import get_launcher
 from .slurm import (
     DEFAULT_CONTAINER_PREPARE_TIMEOUT_SECONDS,
     get_hostname_ip,
@@ -134,16 +135,6 @@ class Nodes:
             pools: ``(service name, node count)`` pairs for services that own
                    nodes, carved after the engine worker nodes in this order.
         """
-        dedicated_roles = [
-            role
-            for role, wanted in (
-                ("infra", etcd_nats_dedicated_node),
-                ("frontend", frontend_dedicated_node),
-                ("client", client_dedicated_node),
-            )
-            if wanted
-        ]
-
         het_lists = get_slurm_het_nodelists()
         if het_lists is not None:
             if frontend_dedicated_node or client_dedicated_node:
@@ -157,6 +148,37 @@ class Nodes:
         nodelist = get_slurm_nodelist()
         if not nodelist:
             raise RuntimeError("SLURM_NODELIST not set - are we running in SLURM?")
+        return cls.from_nodelist(
+            nodelist,
+            frontend_dedicated_node=frontend_dedicated_node,
+            client_dedicated_node=client_dedicated_node,
+            etcd_nats_dedicated_node=etcd_nats_dedicated_node,
+            colocate_dedicated_nodes=colocate_dedicated_nodes,
+            engine_nodes=engine_nodes,
+            pools=pools,
+        )
+
+    @classmethod
+    def from_nodelist(
+        cls,
+        nodelist: Sequence[str],
+        frontend_dedicated_node: bool = False,
+        client_dedicated_node: bool = False,
+        etcd_nats_dedicated_node: bool = False,
+        colocate_dedicated_nodes: bool = True,
+        engine_nodes: int | None = None,
+        pools: Sequence[tuple[str, int]] = (),
+    ) -> "Nodes":
+        """Carve an expanded, non-heterogeneous nodelist into roles; arguments as for ``from_slurm``."""
+        dedicated_roles = [
+            role
+            for role, wanted in (
+                ("infra", etcd_nats_dedicated_node),
+                ("frontend", frontend_dedicated_node),
+                ("client", client_dedicated_node),
+            )
+            if wanted
+        ]
 
         if not dedicated_roles:
             head = bench = infra = nodelist[0]
@@ -465,9 +487,9 @@ class RuntimeContext:
             job_id: SLURM job ID
             log_dir_base: Base directory for logs (default: ./outputs)
         """
-        # Get nodes from SLURM
+        # Get nodes from the launcher (the Slurm allocation, or this machine)
         pools = [(svc.name, svc.nodes) for svc in config.pool_services if svc.nodes is not None]
-        nodes = Nodes.from_slurm(
+        nodes = get_launcher().nodes(
             frontend_dedicated_node=config.frontend.placement.dedicated,
             client_dedicated_node=config.benchmark.placement.dedicated,
             etcd_nats_dedicated_node=config.infra_dedicated_node,

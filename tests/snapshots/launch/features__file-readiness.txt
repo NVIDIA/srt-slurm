@@ -28,7 +28,7 @@ use_bash_wrapper: True
 command: |
     python3 -c 'from pathlib import Path; import time; Path('"'"'/logs/service_1.ready'"'"').write_text('"'"'ready\n'"'"'); time.sleep(3600)'
 
-## <unnamed>
+## benchmark
 nodelist: node-01
 output: <output>/logs/benchmark.out
 container_image: python:3.12-slim

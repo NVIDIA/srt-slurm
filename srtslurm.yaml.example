@@ -79,6 +79,13 @@ default_time_limit: "04:00:00"
 # skipped. The outcome is written to <log_dir>/allocation-release.json.
 # release_nodes_before_postprocess: true   # Default: false
 
+# Where jobs run. `slurm` (default): srun steps inside an sbatch allocation.
+# `docker`: the whole job on this machine (a single GPU VM without Slurm), each
+# container under `docker run --gpus all --network host`. See docs/cluster-config.md#launcher.
+# launcher: docker
+# docker_args: ["--user", "1000:1000"]
+# docker_gpus: "device=2,3,4,5"   # `--gpus` for every container; default: all
+
 # SLURM directive compatibility
 # Set to false if your cluster doesn't support --gpus-per-node
 use_gpus_per_node_directive: true  # Default: true

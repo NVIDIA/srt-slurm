@@ -357,6 +357,29 @@ class TestPreflightConfigVariants:
         assert results[0].container.source == "container-uri"
         assert results[0].container.resolved == "nvcr.io/fake:latest"
 
+    def test_preflight_accepts_alias_that_resolves_to_docker_uri(self, tmp_path):
+        """A ``containers:`` alias may map to a registry image rather than a
+        ``.sqsh`` file (what ``launcher: docker`` needs); preflight must judge
+        the resolved value, not the raw alias."""
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+
+        results = preflight_config_variants(
+            {
+                "schema": 2,
+                "name": "docker-alias",
+                "model": {"path": str(model_dir), "container": "dynamo-sglang", "precision": "fp4"},
+                "resources": {"gpu_type": "b300", "gpus_per_node": 8},
+                "roles": {"agg": {"nodes": 1, "workers": 1, "gpus": 4}},
+            },
+            cluster_config={"containers": {"dynamo-sglang": "lmsysorg/sglang:nightly-dev-cu13-20260901"}},
+        )
+
+        assert results[0].ok is True
+        assert results[0].container.source == "srtslurm.yaml:containers"
+        assert results[0].container.resolved == "lmsysorg/sglang:nightly-dev-cu13-20260901"
+        assert results[0].errors == []
+
     def test_preflight_accepts_hf_prefix_model_path(self, tmp_path):
         """``hf:org/model`` model paths are accepted — the framework
         downloads via HF cache at serve time.  Mirrors runtime.py's
