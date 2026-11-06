@@ -28,13 +28,6 @@ model:
   path: /raid/common-models/minimax-m3.1-flash
   container: /home/rihuo/m31f-vr200-final-n1-397e38ee-xdr.sqsh
   precision: fp4
-slurm:
-  account: nv-shared-1
-  partition: batch-r37
-  time_limit: 02:00:00
-sbatch_directives:
-  exclusive: ''
-  cpus-per-task: '352'
 resources:
   gpu_type: vr200
   gpus_per_node: 4
@@ -199,8 +192,6 @@ roles:
       M31_DRAFT_SPLIT_PACK_PAD: main
       M31_MOONCAKE_SF_BITS: '4'
       GLOG_log_year_in_prefix: 'false'
-      INFMAX_NUMA_PHYSICAL: '1'
-      INFMAX_API_CPUS: 80-87
     mooncake_store_config:
       global_segment_size: 250GB
     gpu_indices:
@@ -402,16 +393,13 @@ benchmark:
     AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: 'true'
     AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID: 'true'
     # R37's shared caches (the GLM recipe uses /tmp on RapLab); the mmap cache key includes the aiperf version.
-    AIPERF_DATASET_MMAP_CACHE_DIR: /aiperf_mmap_cache
-    HF_HUB_CACHE: /hf_hub_cache
+    AIPERF_DATASET_MMAP_CACHE_DIR: /home/rihuo/aiperf_mmap
+    HF_HUB_CACHE: /home/rihuo/hf_cache
     AIPERF_UI_REALTIME_METRICS_ENABLED: 'true'
     HF_HUB_DISABLE_PROGRESS_BARS: '1'
     TQDM_DISABLE: '1'
 extra_mount:
 - /home/rihuo/:/home/rihuo/
-- /home/nv-shared-1:/home/nv-shared-1
-- /home/nv-shared-1/ai-perf-cache:/aiperf_mmap_cache
-- /home/nv-shared-1/hf-hub-cache:/hf_hub_cache
 services:
 - name: mooncake-master
   type: mooncake-master
@@ -432,12 +420,3 @@ services:
 identity:
   frameworks:
     dynamo: 1.5.0
-host_setup:
-  commands:
-  - bash -eo pipefail -c 'nvidia-smi --query-gpu=clocks.mem --format=csv,noheader,nounits | tee /dev/stderr | awk '"'"'BEGIN {n=0; bad=0} {n++; if ($1 != 4752) bad=1} END {exit (n == 0 || bad)}'"'"''
-  teardown:
-  - bash -eo pipefail -c 'nvidia-smi --query-gpu=clocks.mem --format=csv,noheader,nounits | tee /dev/stderr | awk '"'"'BEGIN {n=0; bad=0} {n++; if ($1 != 4752) bad=1} END {exit (n == 0 || bad)}'"'"''
-  nodes: workers
-  ignore_failure: false
-srun_options:
-  cpu-bind: none
