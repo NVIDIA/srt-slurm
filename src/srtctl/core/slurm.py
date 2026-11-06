@@ -12,6 +12,7 @@ This module consolidates all SLURM-related functionality:
 - Container utilities: get_container_mounts_str
 """
 
+import functools
 import hashlib
 import logging
 import os
@@ -366,12 +367,33 @@ def shrink_job_allocation(job_id: str, keep: str, *, timeout: float = 30.0) -> A
 # ============================================================================
 
 
+# Addresses get_node_ip.sh's _is_bad_ip rejects, so the srun lookup never returns them: keep the two in step
+UNUSABLE_ADDRESSES = ("0.0.0.0",)
+UNUSABLE_ADDRESS_PREFIXES = ("127.", "169.254.")
+
+
+def _hostname_address(hostname: str) -> str | None:
+    """The hostname's one IPv4 address from the resolver, or None if it has none, several, or an unusable one."""
+    try:
+        addresses = socket.gethostbyname_ex(hostname)[2]
+    except OSError:
+        return None
+    if len(addresses) != 1 or addresses[0] in UNUSABLE_ADDRESSES or addresses[0].startswith(UNUSABLE_ADDRESS_PREFIXES):
+        return None
+    return addresses[0]
+
+
+@functools.cache
 def get_hostname_ip(hostname: str, network_interface: str | None = None) -> str:
     """Resolve hostname to routable IP address.
 
     Uses multiple resolution strategies:
-    1. If inside a SLURM job, use srun to get the real IP from the target node
-    2. Fall back to socket.gethostbyname() (may return loopback on some systems)
+    1. With no network_interface, the hostname's single usable address from DNS
+    2. If inside a SLURM job, use srun to get the real IP from the target node
+    3. Fall back to socket.gethostbyname() (may return loopback on some systems)
+
+    Cached for the process: a node's address does not change within a job, and every
+    worker, scrape target and benchmark setting on a node asks for it again.
 
     Args:
         hostname: Node hostname to resolve
@@ -380,6 +402,11 @@ def get_hostname_ip(hostname: str, network_interface: str | None = None) -> str:
     Returns:
         IP address as string
     """
+    # Unset network_interface means the hostname's address. DNS gives it without an srun step, whose several slurmctld
+    # RPCs queue behind the account's RPC rate limit. A named interface's address needs the node itself.
+    if not network_interface and (ip := _hostname_address(hostname)):
+        return ip
+
     # If we're inside a SLURM allocation, use srun-based resolution
     # This gets the actual routable IP from the target node
     slurm_job_id = get_slurm_job_id()

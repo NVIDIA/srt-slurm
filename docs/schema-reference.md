@@ -805,7 +805,7 @@ Top-level keys of `srtslurm.yaml`. Recipes inherit these defaults and resolve al
 | `default_time_limit` | str \| None | `None` | Job time limit (HH:MM:SS) for recipes that omit `slurm.time_limit`. |
 | `gpus_per_node` | int \| None | `None` | GPUs per node for recipes that omit `resources.gpus_per_node`. |
 | `default_gpu_type` | str \| None | `None` | Default for ``ResourceConfig.gpu_type`` when the recipe omits it. Lets one recipe move between clusters of different GPU types without an edit. |
-| `network_interface` | str \| None | `None` | Interface whose IP address frontends use to reach workers (e.g. `ib0`). Unset resolves the hostname. |
+| `network_interface` | str \| None | `None` | Interface whose IP address frontends use to reach workers (e.g. `ib0`). Unset resolves the hostname; set it if hostnames resolve to a different network than the nodes route through. |
 | `visible_devices_env` | str | `'CUDA_VISIBLE_DEVICES'` | GPU-subset mask passed to workers; ROCm clusters use ROCR_VISIBLE_DEVICES. |
 | `default_gpu_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `<lambda>()` | Recipe exporter settings win. Explicit null disables the GPU default only. |
 | `use_gpus_per_node_directive` | bool | `True` | Emit `#SBATCH --gpus-per-node`. Set false on clusters that reject or ignore it. |

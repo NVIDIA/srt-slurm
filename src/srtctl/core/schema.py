@@ -392,7 +392,8 @@ class ClusterConfig:
     # Default for ``ResourceConfig.gpu_type`` when the recipe omits it. Lets one
     # recipe move between clusters of different GPU types without an edit.
     default_gpu_type: str | None = None
-    # Interface whose IP address frontends use to reach workers (e.g. `ib0`). Unset resolves the hostname.
+    # Interface whose IP address frontends use to reach workers (e.g. `ib0`). Unset resolves the hostname; set it if
+    # hostnames resolve to a different network than the nodes route through.
     network_interface: str | None = None
     # GPU-subset mask passed to workers; ROCm clusters use ROCR_VISIBLE_DEVICES.
     visible_devices_env: str = "CUDA_VISIBLE_DEVICES"
