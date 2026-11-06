@@ -207,7 +207,7 @@ class PostProcessStageMixin:
                 continue
             dst = self.runtime.log_dir / name
             try:
-                shutil.copy2(src, dst)
+                shutil.copyfile(src, dst)
                 logger.info("Copied %s to log directory", name)
             except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to copy %s to log directory: %s", name, e)
