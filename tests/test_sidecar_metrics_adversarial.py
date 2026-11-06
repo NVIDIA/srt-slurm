@@ -305,8 +305,8 @@ SHAPES: dict[str, dict[str, Any]] = {
             },
         },
     ),
-    # TP8 / attention-DP 2 over four 2-GPU nodes with KV events: nodes 0 and 2 publish.
-    "sglang-dp-attention-kv-relay": _recipe(
+    # TP8 / attention-DP 2 over four 2-GPU nodes with KV events: nodes 0 and 2 host Rust listeners.
+    "sglang-dp-attention-multinode": _recipe(
         "sglang",
         {
             "agg": {
@@ -319,7 +319,7 @@ SHAPES: dict[str, dict[str, Any]] = {
         },
         gpus_per_node=2,
     ),
-    # Two multi-node TP workers per role; prefill relays KV events, decode does not.
+    # Two multi-node workers per role; attention-DP prefill runs a sidecar on every node, TP-only decode on its leader.
     "sglang-disagg-multinode": _recipe(
         "sglang",
         {
@@ -579,8 +579,8 @@ def test_sglang_metrics_override_is_per_role() -> None:
 
 
 @pytest.mark.parametrize("kv_events", [False, True])
-def test_sglang_follower_runtime_target_follows_the_kv_relay(kv_events: bool) -> None:
-    """A follower's system port is scraped only when it runs a relay sidecar; its engine always is."""
+def test_sglang_follower_runtime_target_does_not_depend_on_kv_events(kv_events: bool) -> None:
+    """A follower that hosts Rust listeners runs a sidecar, so both of its endpoints are scraped."""
     backend = SGLangBackend(
         roles={"agg": RoleConfig(args={"tp-size": 4, "dp-size": 2, "enable-dp-attention": True}, kv_events=kv_events)}
     )
@@ -588,11 +588,15 @@ def test_sglang_follower_runtime_target_follows_the_kv_relay(kv_events: bool) ->
     processes = backend.endpoints_to_processes([endpoint], dynamo_sidecar=True)
 
     names = [t.endpoint_name for t in sidecar_worker_metrics_targets(processes, backend, DYNAMO)]
-    relay = ["backend_agg0_rank1"] if kv_events else []
-    assert names == ["backend_agg0_rank0", "backend_agg0_rank0_engine", *relay, "backend_agg0_rank1_engine"]
+    assert names == [
+        "backend_agg0_rank0",
+        "backend_agg0_rank0_engine",
+        "backend_agg0_rank1",
+        "backend_agg0_rank1_engine",
+    ]
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
         follower_command = backend.build_worker_command(processes[1], processes, _sglang_runtime())
-    assert _launches_sidecar(follower_command) is kv_events
+    assert _launches_sidecar(follower_command)
 
 
 def test_vllm_disable_log_stats_keeps_the_engine_endpoint() -> None:
