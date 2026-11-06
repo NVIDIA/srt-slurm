@@ -23,7 +23,12 @@ from srtctl.backends.base import (
     role_for_mode,
     role_mooncake_store_config,
 )
-from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
+from srtctl.backends.sidecar import (
+    build_sidecar_launch_command,
+    get_dynamo_sidecar_config,
+    run_with_model_link,
+    sidecar_grpc_port,
+)
 from srtctl.ports import DYN_SYSTEM_PORT_BASE, MOONCAKE_MASTER_PORT, TRTLLM_DIST_INIT_PORTS
 
 if TYPE_CHECKING:
@@ -643,16 +648,12 @@ class TRTLLMBackend(Backend):
         base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
 
         if sidecar_config is not None:
-            # The sidecar uses model-path as its Dynamo registration name. Keep the
-            # HF ID there while the native engine loads the pinned snapshot.
-            sidecar_model_arg = (
-                str(runtime.model_path) if runtime.is_hf_model and runtime.hf_snapshot_path else model_arg
-            )
             return self._build_sidecar_command(
                 process=process,
                 config=config,
                 model_arg=model_arg,
-                sidecar_model_arg=sidecar_model_arg,
+                model_arg_is_local=not runtime.is_hf_model or runtime.hf_snapshot_path is not None,
+                served_model_name=self.get_served_model_name(runtime.model_path.name),
                 container_config_path=container_config_path,
                 base_prefix=base_prefix,
                 sidecar_config=sidecar_config,
@@ -742,12 +743,19 @@ class TRTLLMBackend(Backend):
         process: "Process",
         config: dict[str, Any],
         model_arg: str,
-        sidecar_model_arg: str,
+        model_arg_is_local: bool,
+        served_model_name: str,
         container_config_path: Path,
         base_prefix: list[str],
         sidecar_config: "DynamoConfig",
     ) -> list[str]:
-        """Build a lifecycle-coupled TensorRT-LLM native-gRPC and sidecar launch."""
+        """Build a lifecycle-coupled TensorRT-LLM native-gRPC and sidecar launch.
+
+        The Dynamo TRT-LLM sidecar registers under its literal ``--model-path``
+        and ignores the served name the engine reports. Until it honors that
+        name, a local model is passed as a relative link named after the served
+        model name; an unpinned ``hf:`` model passes the HF ID unchanged.
+        """
         grpc_port = sidecar_grpc_port(process)
         engine = self._wrap_with_numa_cpu_bind(
             base_prefix
@@ -778,6 +786,8 @@ class TRTLLMBackend(Backend):
             if config.get(key) is not None:
                 engine.extend([flag, str(config[key])])
 
+        link_model = model_arg_is_local and served_model_name != model_arg
+        sidecar_model_arg = served_model_name if link_model else model_arg
         sidecar = (
             [sidecar_config.sidecar_binary]
             if sidecar_config.sidecar_binary is not None
@@ -799,6 +809,13 @@ class TRTLLMBackend(Backend):
         if context_length is not None:
             sidecar.extend(["--context-length", str(context_length)])
         sidecar.extend(sidecar_config.sidecar_args)
+        if link_model:
+            sidecar = run_with_model_link(
+                sidecar,
+                workdir=f"/tmp/srtctl-trtllm-sidecar-{grpc_port}",
+                name=served_model_name,
+                model_path=model_arg,
+            )
 
         return build_sidecar_launch_command(
             engine=engine,
