@@ -367,14 +367,18 @@ def shrink_job_allocation(job_id: str, keep: str, *, timeout: float = 30.0) -> A
 # ============================================================================
 
 
+# Addresses get_node_ip.sh's _is_bad_ip rejects, so the srun lookup never returns them: keep the two in step
+UNUSABLE_ADDRESSES = ("0.0.0.0",)
+UNUSABLE_ADDRESS_PREFIXES = ("127.", "169.254.")
+
+
 def _hostname_address(hostname: str) -> str | None:
     """The hostname's one IPv4 address from the resolver, or None if it has none, several, or an unusable one."""
     try:
         addresses = socket.gethostbyname_ex(hostname)[2]
     except OSError:
         return None
-    # get_node_ip.sh's _is_bad_ip: the srun lookup never returns these either
-    if len(addresses) != 1 or addresses[0] == "0.0.0.0" or addresses[0].startswith(("127.", "169.254.")):
+    if len(addresses) != 1 or addresses[0] in UNUSABLE_ADDRESSES or addresses[0].startswith(UNUSABLE_ADDRESS_PREFIXES):
         return None
     return addresses[0]
 
