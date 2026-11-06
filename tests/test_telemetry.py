@@ -17,6 +17,7 @@ from srtctl.backends import SGLangBackend, TRTLLMBackend, VLLMBackend
 from srtctl.cli.mixins.frontend_stage import FrontendTopology
 from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core.power.contract import Reason
+from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.processes import ProcessRegistry
 from srtctl.core.schema import (
     BenchmarkConfig,
@@ -1672,7 +1673,7 @@ def _running_exporter():
     return proc
 
 
-def _power_harness(tmp_path, processes, *, het=False, het_groups=None):
+def _power_harness(tmp_path, processes, *, het=False, het_groups=None, pools=None, gpus_per_node=8):
     class Harness(TelemetryStageMixin):
         def __init__(self):
             # NOTE: srun is mocked so no exporter answers; a short deadline avoids a 30s stall per test.
@@ -1692,6 +1693,11 @@ def _power_harness(tmp_path, processes, *, het=False, het_groups=None):
             self.runtime.nodes.head = "node-a"
             self.runtime.nodes.het = het
             self.runtime.nodes.het_group_for.side_effect = lambda node: (het_groups or {}).get(node)
+            self.runtime.nodes.pools = pools or {}
+            self.runtime.nodes.compute = tuple(
+                dict.fromkeys([*(p.node for p in processes), *(n for nodes in (pools or {}).values() for n in nodes)])
+            )
+            self.runtime.gpus_per_node = gpus_per_node
             self.runtime.srun_options = {}
             self.runtime.container_mounts = {Path(tmp_path): Path("/logs")}
             self._backend_processes = processes
@@ -1850,6 +1856,59 @@ class TestDcgmPowerExporterLaunch:
         assert Reason.EXPORTER_LAUNCH_FAILED in outcome.reason_codes
         assert outcome.status == "failed"
         assert outcome.exit_nonzero is True
+
+
+class TestPoolExpectedDevices:
+    """A service pool node is planned whole under its service's name; engine-only manifests do not change."""
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_a_services_only_job_plans_its_pool_gpus_and_samples_the_pool(self, mock_srun, tmp_path):
+        mock_srun.return_value = _running_exporter()
+        harness = _power_harness(tmp_path, [], pools={"sim": ("node-a", "node-b")}, gpus_per_node=2)
+
+        session = harness.start_power_telemetry(ProcessRegistry(job_id="12345"))
+        session.stop_and_finalize()
+
+        assert mock_srun.call_args.kwargs["nodelist"] == ["node-a", "node-b"]
+        manifest = json.loads((tmp_path / "power" / "manifest.json").read_text())
+        assert manifest["expected_devices"] == [
+            {
+                "hostname": node,
+                "gpu_index": gpu,
+                "assignments": [
+                    {"worker_role": "sim", "worker_index": ordinal, "worker_process": 0, "het_group": None}
+                ],
+            }
+            for ordinal, node in enumerate(("node-a", "node-b"))
+            for gpu in range(2)
+        ]
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_an_engine_only_job_plans_exactly_its_worker_gpus(self, mock_srun, tmp_path):
+        mock_srun.return_value = _running_exporter()
+        processes = [_worker("node-a", range(4)), _worker("node-b", range(4), index=1)]
+        harness = _power_harness(tmp_path, processes, pools={})
+
+        session = harness.start_power_telemetry(ProcessRegistry(job_id="12345"))
+        session.stop_and_finalize()
+
+        manifest = json.loads((tmp_path / "power" / "manifest.json").read_text())
+        assert manifest["expected_devices"] == [device.to_dict() for device in build_expected_devices(processes)]
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_a_services_only_job_records_that_no_worker_was_probed(self, mock_srun, tmp_path):
+        mock_srun.return_value = _running_exporter()
+        harness = _power_harness(tmp_path, [], pools={"sim": ("node-a",)}, gpus_per_node=2)
+        registry = ProcessRegistry(job_id="12345")
+        session = harness.start_power_telemetry(registry)
+
+        with patch.object(TelemetryStageMixin, "probe_worker_gpus", side_effect=AssertionError("nothing to probe")):
+            harness.capture_power_worker_identity(registry)
+        session.stop_and_finalize()
+
+        proof = json.loads((tmp_path / "power" / "manifest.json").read_text())["worker_identity_proof"]
+        assert proof["error"] == "no engine workers to probe"
+        assert proof["workers"] == []
 
 
 class TestCpuPowerExporterLaunch:

@@ -4,6 +4,8 @@
 # sleeper on a fourth node, and a helper that rides on the trainer's pool. Four
 # nodes total: engine roles first, then every services[].nodes in declaration
 # order.
+# Pool services have no GPU identity probe to excuse idle devices, so power
+# telemetry rejects exporter devices beyond resources.gpus_per_node.
 #
 #   srtctl dry-run -f examples/features/pools.yaml   # prints the node map
 schema: 2

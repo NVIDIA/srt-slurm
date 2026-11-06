@@ -24,7 +24,7 @@ from srtctl.core.power.identity import WORKER_PROBE_SCRIPTS, WorkerGpuIdentity, 
 from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.power.mapping import DCGM_EXPORTER_COMMAND_TEMPLATE, TACHOMETER_SCRAPE
 from srtctl.core.power.session import PowerSessionSettings, PowerTelemetrySession
-from srtctl.core.power.topology import DeviceAssignment, build_expected_devices
+from srtctl.core.power.topology import DeviceAssignment, build_expected_devices, build_pool_expected_devices
 from srtctl.core.processes import ManagedProcess, ProcessRegistry, list_step_ids
 from srtctl.core.schema import TelemetryExporterConfig
 from srtctl.core.slurm import start_srun_process
@@ -219,7 +219,10 @@ class TelemetryStageMixin:
                 producer_git_commit=read_producer_commit(),
                 mapping=mapping,
             ),
-            expected_devices=build_expected_devices(self.backend_processes),
+            expected_devices=[
+                *build_expected_devices(self.backend_processes),
+                *build_pool_expected_devices(self.runtime.nodes.pools, self.runtime.gpus_per_node),
+            ],
             expected_windows=[
                 ExpectedWindow(benchmark_type=self.config.benchmark.type, concurrency=concurrency)
                 for concurrency in self.config.benchmark.get_concurrency_list()
@@ -270,6 +273,11 @@ class TelemetryStageMixin:
         if session is None:
             return
         captured_at = time.time()
+        if not self.backend_processes:
+            session.record_worker_identity(
+                WorkerIdentityProof(captured_at_unix=captured_at, error="no engine workers to probe")
+            )
+            return
         exporter = self.config.telemetry.dcgm_exporter
         kind = None if exporter is None else exporter.kind
         script = None if kind is None else WORKER_PROBE_SCRIPTS.get(kind)

@@ -27,7 +27,7 @@ from srtctl.core.power.manifest import (
     PowerManifest,
 )
 from srtctl.core.power.samples import SampleRow, SampleWriter, derive_observed_devices
-from srtctl.core.power.topology import build_expected_devices
+from srtctl.core.power.topology import build_expected_devices, build_pool_expected_devices
 from srtctl.core.power.validate_artifacts import validate_power_artifacts
 from srtctl.core.power.windows import validate_expected_windows
 from srtctl.core.topology import Process
@@ -65,13 +65,13 @@ def _processes(*, decode_het_group=1):
 def package(tmp_path):
     """A retained, publishable 1P1D artifact package."""
 
-    def build(*, processes=None, rows=None, publication_valid=True):
+    def build(*, processes=None, expected=None, rows=None, publication_valid=True):
         log_dir = tmp_path / "logs"
         power_dir = log_dir / "power"
         (power_dir / WINDOWS_DIRNAME).mkdir(parents=True)
         (log_dir / RESULT_SUBDIR).mkdir(parents=True)
 
-        expected = build_expected_devices(processes or _processes())
+        expected = expected if expected is not None else build_expected_devices(processes or _processes())
 
         written = rows if rows is not None else _rows(expected)
         writer = SampleWriter(power_dir / SAMPLES_FILENAME)
@@ -187,6 +187,16 @@ class TestRetainedPackage:
         assert report.summary["stable_uuids"] == 8
         assert report.summary["producer_git_commit"] == "a" * 40
         assert report.summary["max_sample_gap_seconds"] == pytest.approx(1.0)
+
+    def test_a_services_only_package_validates_under_its_pool_role(self, package):
+        """Pool devices carry the service's name; the engine-role canary ignores them."""
+        pool = build_pool_expected_devices({"sim": ("node-a", "node-b")}, gpus_per_node=4)
+        log_dir, power_dir = package(expected=pool)
+
+        report = _validate(power_dir, log_dir, expected_roles={"prefill": 0, "decode": 0})
+
+        assert report.ok is True, report.failures
+        assert report.summary["expected_devices"] == 8
 
     def test_cli_exits_zero_on_a_valid_package(self, package, capsys):
         log_dir, power_dir = package()
@@ -873,7 +883,7 @@ class TestDamagedManifest:
                 lambda m: m["expected_devices"][0]["assignments"][0].update(worker_index="first"),
                 id="non-numeric-worker-index",
             ),
-            pytest.param(lambda m: m["expected_devices"][0]["assignments"][0].update(worker_role="bogus"), id="role"),
+            pytest.param(lambda m: m["expected_devices"][0]["assignments"][0].update(worker_role=""), id="empty-role"),
             pytest.param(lambda m: m["expected_windows"][0].update(concurrency=True), id="bool-concurrency"),
             pytest.param(lambda m: m["expected_windows"][0].update(concurrency=0), id="zero-concurrency"),
             pytest.param(lambda m: m["expected_devices"][0].update(gpu_index=-1), id="negative-index"),
@@ -888,6 +898,30 @@ class TestDamagedManifest:
         log_dir, power_dir = package()
         manifest = json.loads((power_dir / MANIFEST_FILENAME).read_text())
         damage(manifest)
+        atomic_write_json(power_dir / MANIFEST_FILENAME, manifest)
+
+        report = _validate(power_dir, log_dir)
+
+        assert report.ok is False
+        assert any("manifest malformed" in failure for failure in report.failures)
+
+    def test_an_identity_proof_worker_outside_the_engine_roles_is_malformed(self, package):
+        """Only engine workers are probed, so a pool name can never be a probed worker's role."""
+        log_dir, power_dir = package()
+        manifest = json.loads((power_dir / MANIFEST_FILENAME).read_text())
+        manifest["worker_identity_proof"] = {
+            "captured_at_unix": START,
+            "error": None,
+            "workers": [
+                {
+                    "hostname": "node-a",
+                    "assignment": {"worker_role": "sim", "worker_index": 0, "worker_process": 0, "het_group": None},
+                    "step_name": "sim_0",
+                    "step_id": "1.0",
+                    "gpu_uuids": ["GPU-node-a0"],
+                }
+            ],
+        }
         atomic_write_json(power_dir / MANIFEST_FILENAME, manifest)
 
         report = _validate(power_dir, log_dir)
