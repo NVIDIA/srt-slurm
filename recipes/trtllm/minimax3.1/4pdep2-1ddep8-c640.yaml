@@ -17,6 +17,10 @@
 #     No InferenceMAX post-processing.
 #   - frontend: on the client's dedicated node, as in that GLM recipe (5 nodes total), without
 #     CI's INFMAX_API_CPUS pinning.
+#   - services/environment: the implied otel-collector is disabled and Dynamo runs with
+#     OTEL_EXPORT_ENABLED=0 and DYN_LIFECYCLE_TRACE_ENABLED=0 (no OTLP export or lifecycle traces).
+#   - decode numa-bind-cpus: every CPU of the rank's NUMA-node half, SMT siblings included, except
+#     its M31_EC_CPUS (CI: 0-39 / 44-83 / 88-127 / 132-171, first SMT thread only).
 #   - dropped CI-only post_eval and srun container-workdir=/infmax-workspace.
 # Needs srtctl >= 1ca857b2 and, in R37's srtslurm.yaml,
 #   default_bash_preamble: export PATH=/configs/m31-launch-bin:$PATH
@@ -36,6 +40,9 @@ dynamo:
   install: false
 environment:
   ETCD_LEASE_TTL: '7200'
+  # No OTLP export or lifecycle tracing in Dynamo (frontend and workers); see services.otel-collector.
+  OTEL_EXPORT_ENABLED: '0'
+  DYN_LIFECYCLE_TRACE_ENABLED: '0'
 frontend:
   type: dynamo
   placement:
@@ -230,11 +237,13 @@ roles:
       - 0
       - 1
       - 1
+      # Each decode rank gets its half of the GPU's NUMA node (CPU n and n+176 are SMT siblings;
+      # node0 = 0-87,176-263, node1 = 88-175,264-351) except its M31_EC_CPUS EngineCore cores.
       numa-bind-cpus:
-      - 0-39
-      - 44-83
-      - 88-127
-      - 132-171
+      - 0-39,42-43,176-215,218-219
+      - 44-83,86-87,220-259,262-263
+      - 88-127,130-131,264-303,306-307
+      - 132-171,174-175,308-347,350-351
       max-num-seqs: 20
       max-num-batched-tokens: 512
       gpu-memory-utilization: 0.92
@@ -401,6 +410,9 @@ benchmark:
 extra_mount:
 - /home/rihuo/:/home/rihuo/
 services:
+- name: otel-collector
+  type: otel-collector
+  enabled: false
 - name: mooncake-master
   type: mooncake-master
   args:
