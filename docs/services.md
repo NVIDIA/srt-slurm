@@ -225,7 +225,10 @@ declaration order:
 - `after_frontend`: once workers and the frontend are healthy, before the scraper. The exporters,
   sidecars that register into a running job.
 
-Within a phase, a service with `readiness` blocks until its probe passes on each of its nodes. The
+Within a phase, services start one after another. The instances of one service launch together, and a
+service with `readiness` blocks until its probe passes on every instance; the probes run concurrently,
+so a service on N nodes waits about as long as its slowest instance, not N times as long. A kind whose
+members join instance 0 (`ray`) launches instance 0 first and waits for it before launching the rest. The
 typed kinds gate on their well-known ports by default (etcd 2379, NATS 4222, the Mooncake master
 8700, 8701, and 8702, the exporters none); a `generic` service without a probe is considered started
 when its `srun` is launched. Four probes are available, and a `readiness` block names exactly one:

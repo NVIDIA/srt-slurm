@@ -5,6 +5,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,7 +13,6 @@ from marshmallow import ValidationError
 
 from srtctl.backends import SGLangBackend, TRTLLMBackend, VLLMBackend
 from srtctl.core.config import load_config
-from srtctl.core.health import check_static_router_health
 from srtctl.core.schema import FrontendConfig, ResourceConfig, RoleConfig, SrtConfig
 from srtctl.core.topology import Process
 from srtctl.frontends import SMGFrontend, get_frontend
@@ -143,13 +143,34 @@ def test_recipe_cannot_move_the_metrics_listener(key: str) -> None:
         SMGFrontend().get_managed_frontend_args(_config({key: 31000}), VLLMBackend(), [])
 
 
-def test_readiness_counts_the_workers_registry() -> None:
-    """SMG's GET /workers carries stats.{prefill,decode,regular}_count; aggregate workers are regular."""
+@pytest.mark.parametrize(
+    "states,expected,ready",
+    [
+        ([], (0, 2), False),
+        ([("regular", False), ("regular", False)], (0, 2), False),
+        ([("regular", True), ("regular", False)], (0, 2), False),
+        ([("regular", True), ("regular", True)], (0, 2), True),
+        ([("prefill", False), ("decode", False)], (1, 1), False),
+        ([("prefill", True), ("decode", False)], (1, 1), False),
+        ([("prefill", False), ("decode", True)], (1, 1), False),
+        ([("prefill", True), ("decode", True)], (1, 1), True),
+        ([("regular", None), ("regular", "true")], (0, 2), False),
+    ],
+)
+def test_readiness_counts_only_healthy_workers(
+    states: list[tuple[str, Any]], expected: tuple[int, int], ready: bool
+) -> None:
+    """Registration stats include pending workers; readiness requires healthy entries of each role."""
     frontend = SMGFrontend()
     assert frontend.health_endpoint == "/workers"
-    response = {"workers": [], "total": 2, "stats": {"prefill_count": 0, "decode_count": 0, "regular_count": 2}}
-    assert frontend.parse_health(response, 0, 2) == check_static_router_health(response, 0, 2)
-    assert frontend.parse_health(response, 0, 2).ready
+    response = {
+        "workers": [{"worker_type": kind, "is_healthy": healthy} for kind, healthy in states],
+        "stats": {"prefill_count": 1, "decode_count": 1, "regular_count": 2},
+    }
+    result = frontend.parse_health(response, *expected)
+    assert result.ready is ready
+    assert result.prefill_ready == sum(kind == "prefill" and healthy is True for kind, healthy in states)
+    assert result.decode_ready == sum(kind in ("regular", "decode") and healthy is True for kind, healthy in states)
 
 
 def test_start_frontends_launches_smg_in_its_own_image(tmp_path: Path) -> None:
@@ -250,6 +271,28 @@ def test_grpc_workers_are_not_scraped() -> None:
     backend = load_config(EXAMPLES_DIR / "vllm/smg-disagg-grpc.yaml").backend
     assert SMGFrontend().worker_metrics_path(backend, "prefill") is None
     assert SMGFrontend().worker_metrics_path(backend, "decode") is None
+
+
+@pytest.mark.parametrize("zmq", [False, True])
+@pytest.mark.parametrize("node_rank", [0, 1])
+def test_worker_http_endpoints_and_metrics_follow_transport(zmq: bool, node_rank: int) -> None:
+    """ZMQ metrics exist on every rank; HTTP serving and profiling stay on native workers."""
+    process = Process(
+        "node0",
+        frozenset({0}),
+        7500,
+        0 if zmq or node_rank else 6100,
+        "agg",
+        0,
+        node_rank=node_rank,
+        tokenspeed_zmq_port=31000 if zmq else None,
+        tokenspeed_metrics_port=35000 if zmq else None,
+    )
+    frontend = SMGFrontend()
+    http_port = 6100 if not zmq and node_rank == 0 else None
+    assert frontend.worker_metrics_port(process, None) == (35000 if zmq else http_port)
+    assert frontend.worker_endpoint_port(process, None, None) == http_port
+    assert frontend.profiling_control_port(process, None, None) == http_port
 
 
 def test_trtllm_example_launches_smg_in_front_of_trtllm_serve() -> None:

@@ -321,8 +321,7 @@ def test_router_launch_uses_router_image_env_setup_and_captured_log() -> None:
     )
     topology = SimpleNamespace(frontend_nodes=["router0"], frontend_port=8000)
     worker = Process("worker0", frozenset(range(4)), 7500, 6100, "agg", 0)
-    backend = MagicMock()
-    backend._get_dp_size.return_value = None
+    backend = VLLMBackend()
     config.backend_for_role = lambda mode: backend
 
     with (

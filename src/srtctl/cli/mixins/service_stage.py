@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 import shlex
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -423,11 +424,32 @@ class ServiceStageMixin:
             probe = ServiceReadinessConfig(tcp=TcpProbe(port=port), timeout_seconds=kind.default_readiness_timeout)
             self._wait_ready(proc, service, probe)
 
+    def _wait_instances_ready(
+        self, service: ServiceConfig, launched: list[tuple[ManagedProcess, ServiceLaunchContext]]
+    ) -> None:
+        """Wait for every launched instance's readiness at once; the first failure raises.
+
+        The pool is not joined on failure: the caller terminates every process, and
+        each remaining probe then stops at its next liveness check.
+        """
+        if not launched:
+            return
+        pool = ThreadPoolExecutor(max_workers=len(launched), thread_name_prefix=f"service-{service.name}")
+        try:
+            futures = [pool.submit(self._wait_service_ready, proc, service, ctx) for proc, ctx in launched]
+            for future in as_completed(futures):
+                future.result()
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
     def start_services(self, start: str, registry: ProcessRegistry | None = None) -> list[ManagedProcess]:
         """Launch every effective service whose ``start`` phase matches: implicit ones first, then declared.
 
         Each process is added to ``registry`` as soon as its srun exists, so a
         readiness wait interrupted by a signal still leaves nothing untracked.
+        Services start one after another; the instances of one service launch
+        together and their readiness probes run concurrently (a kind with
+        ``leader_first`` gets instance 0 ready before the rest launch).
         A readiness gate that fails terminates every process this call started
         and raises. The started processes are also returned. A service with
         ``external`` set launches nothing; its address is injected instead.
@@ -473,9 +495,8 @@ class ServiceStageMixin:
                         "workers" if service.effective_per == "worker" else "nodes",
                     )
                     continue
-                instances: list[ManagedProcess] = []
-                for index, (node, process) in enumerate(placed):
-                    ctx = ServiceLaunchContext(
+                contexts = [
+                    ServiceLaunchContext(
                         runtime=self.runtime,
                         node=node,
                         node_ip=ip_of[node],
@@ -487,15 +508,24 @@ class ServiceStageMixin:
                         process=process,
                         config=self.config,
                     )
-                    proc = self._launch_service_instance(service, ctx, work_dir, len(placed))
-                    started.append(proc)
-                    instances.append(proc)
-                    if registry is not None:
-                        registry.add_process(proc)
-                    self._wait_service_ready(proc, service, ctx)
-                    if service.terminal:
-                        # The manual loop in BenchmarkStageMixin ends the job when these exit.
-                        self.terminal_processes.setdefault(service.name, []).append(proc)
+                    for index, (node, process) in enumerate(placed)
+                ]
+                # Launch a batch, then wait for its readiness probes together.
+                batches = [contexts[:1], contexts[1:]] if kind.leader_first else [contexts]
+                instances: list[ManagedProcess] = []
+                for batch in batches:
+                    launched: list[tuple[ManagedProcess, ServiceLaunchContext]] = []
+                    for ctx in batch:
+                        proc = self._launch_service_instance(service, ctx, work_dir, len(placed))
+                        started.append(proc)
+                        launched.append((proc, ctx))
+                        if registry is not None:
+                            registry.add_process(proc)
+                    self._wait_instances_ready(service, launched)
+                    instances.extend(proc for proc, _ in launched)
+                if service.terminal:
+                    # The manual loop in BenchmarkStageMixin ends the job when these exit.
+                    self.terminal_processes.setdefault(service.name, []).extend(instances)
                 kind.wait_fleet_ready(service, self.runtime, instances)
                 logger.info("Service %s ready: %d instance(s) on %d node(s)", service.name, len(placed), len(nodes))
         except BaseException:

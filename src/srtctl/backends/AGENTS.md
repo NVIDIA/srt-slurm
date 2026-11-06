@@ -20,6 +20,7 @@ Rules for `src/srtctl/backends/`. Every consumer asks a backend through `Backend
    - `get_served_model_name(default)` - Defaults to the supplied model name
    - `prometheus_metrics_path` - Defaults to `/metrics`; where the engine's own HTTP server serves Prometheus text (trtllm-serve overrides it with `/prometheus/metrics`)
    - `is_grpc_mode(mode)` - Defaults to `False`; override when the mode's workers serve gRPC (static routers advertise `grpc://` from it)
+   - `direct_worker_scheme(mode)` / `router_worker_address(process, frontend_node)` - Default to HTTP/gRPC and a positive worker HTTP port on `process.node`; override for a transport whose listener belongs to the gateway. Static routers consume this address without changing physical worker topology. `Frontend.worker_scheme` selects URL transport independently of `worker_launch`.
    - `runs_dynamo_sidecar(process, endpoint_processes)` / `sidecar_engine_metrics_port(process, endpoint_processes)` - Default to `False` / `None`; in Dynamo sidecar mode, whether the process runs a sidecar (and so serves runtime metrics on its system port) and the allocated port its native engine serves Prometheus on. Answer them from the same helpers the sidecar command builder uses; `core/telemetry.py:sidecar_worker_metrics_targets` turns them into the Tachometer and AIPerf targets (`docs/sidecars.md#metrics`)
    - `nvtx_environment` - Defaults to `{}`; the worker environment the automatic nsys preset (`observability.nsys`) sets so the engine emits its own NVTX ranges and nsys can follow the processes that emit them
    - `fatal_log_patterns(mode)` - Defaults to `()`; override for launchers that survive engine failure
@@ -30,7 +31,7 @@ Rules for `src/srtctl/backends/`. Every consumer asks a backend through `Backend
 - **ATOM**: Native ROCm servers behind AToMesh, with one Slurm node per logical worker and allocator-owned Mooncake handshake ports
 - **SGLang**: Per-process srun launching, supports prefill/decode/aggregated modes
 - **TileRT**: Decode workers behind `tilert-router`, paired with an explicit prefill engine and image.
-- **TokenSpeed**: `dynamo.tokenspeed` workers behind the Dynamo frontend, or the gRPC engine `smg_grpc_servicer.tokenspeed` behind SMG (`is_grpc_mode` is always true), aggregated or prefill/decode; allocator-owned `--port` scan base and a dist-init block sized for its control-plane cluster
+- **TokenSpeed**: `dynamo.tokenspeed` workers behind the Dynamo frontend, or `tokenspeed.cli serve --headless` dialing SMG over TCP ZMQ, aggregated or prefill/decode; allocator-owned gateway handshake, per-node metrics, `--port` scan base and a dist-init block sized for its control-plane cluster
 - **TRTLLM**: MPI-style launching (one srun per endpoint with all nodes), prefill/decode only
 - **vLLM**: Per-process srun launching, prefill/decode/aggregated, `per_node` DP; `frontend_type` selects Dynamo registration or a direct `vllm serve` server, and `_CONNECTOR_MAP` owns the KV connector table
 
@@ -40,7 +41,7 @@ Rules for `src/srtctl/backends/`. Every consumer asks a backend through `Backend
 
 - The master is the `mooncake-master` service (`services/`); `services/normalize.py` maps a declared entry onto the internal `backend.mooncake_kv_store` field before schema load, and `engine.mooncake_kv_store` sets that field directly.
 - srtslurm stamps `MOONCAKE_MASTER`, `MOONCAKE_TE_META_DATA_SERVER`, and `MOONCAKE_LOCAL_HOSTNAME` on every worker; `MOONCAKE_LOCAL_HOSTNAME` is the worker's own IP on `runtime.network_interface`. A value in a role's `env` pins the NIC; `MOONCAKE_MASTER` is never set by hand.
-- vLLM reads its store config from JSON: `store_config` is rendered into the file `MOONCAKE_CONFIG_PATH` names.
+- vLLM reads its store config from JSON: `store_config` is rendered into the file `MOONCAKE_CONFIG_PATH` names. A role with its own `roles.<role>.mooncake_store_config` gets `/logs/mooncake_store_config_<role>.json` instead (`VLLMBackend.build_mooncake_store_config(ip, mode)`, `mooncake_store_config_filename(mode)`); roles without one keep the shared file.
 - TRT-LLM's `mooncake-store` connector reads JSON too, one file per role: `TRTLLMBackend.build_mooncake_store_config(mode, ...)` renders `store_config` plus `roles.<role>.mooncake_store_config` (read through `role_mooncake_store_config`) over a per-role `role` default and a `model_key` of the served model name, `Backend.mooncake_store_configs` lists the files the orchestrator writes, and `get_mooncake_worker_env(..., mode)` sets that role's `MOONCAKE_CONFIG_PATH` on the srun task so every MPI rank inherits it. Roles select the connector with `kv_connector_config: {connector: mooncake-store}` and no `mooncake_store` block; `trtllm-serve mooncake_master` and donors are not used.
 - SGLang disaggregated recipes must set `disaggregation-transfer-backend: mooncake` in the prefill and decode `args`; the validator rejects a master without it, because workers would silently fall back to the default transport.
 - Consumers read `backend.mooncake_kv_store` / `backend.get_mooncake_worker_env(...)`; a backend without Mooncake returns `None` / `{}`.

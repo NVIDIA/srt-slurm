@@ -114,7 +114,7 @@ One worker role of the recipe: `roles.prefill`, `roles.decode`, or `roles.agg`.
 | `engine` | str \| mapping | `None` | Engine type or mapping with engine options. Set on every role when no top-level `engine` is declared; the two forms cannot be mixed, and role engines do not inherit options from each other. |
 | `container` | str \| None | `None` | Optional role image; accepts cluster container aliases. Defaults to `model.container`. |
 | `kv_events` | bool \| dict[str, Any] \| None | `None` | `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`. |
-| `mooncake_store_config` | dict[str, Any] | `{}` | TRT-LLM only: Mooncake client config keys for this role's workers (`role`, `global_segment_size`, ...), layered over the `mooncake-master` service's `options.store_config`. Pool-wide keys stay there. |
+| `mooncake_store_config` | dict[str, Any] | `{}` | TRT-LLM and vLLM: Mooncake store config keys for this role's workers (`global_segment_size`, `local_buffer_size`, TRT-LLM's `role`, ...), layered over the `mooncake-master` service's `options.store_config`, so prefill and decode can differ. Pool-wide keys stay there. |
 | `sidecar` | bool \| None | `None` | Run the native engine with a Dynamo sidecar (turns on `dynamo.sidecar`); every role must agree. |
 | `critical` | bool | `True` | A worker of this role exiting fails the run. `false` keeps the run alive for probes that kill workers. |
 | `restart` | [RestartPolicy](#restartpolicy) | `RestartPolicy()` | Relaunch exited workers in place: `never`, `on-failure`, `always`, or a mapping with `policy`, `max_restarts`, `backoff_seconds`, and `max_backoff_seconds`. |
@@ -805,7 +805,7 @@ Top-level keys of `srtslurm.yaml`. Recipes inherit these defaults and resolve al
 | `default_time_limit` | str \| None | `None` | Job time limit (HH:MM:SS) for recipes that omit `slurm.time_limit`. |
 | `gpus_per_node` | int \| None | `None` | GPUs per node for recipes that omit `resources.gpus_per_node`. |
 | `default_gpu_type` | str \| None | `None` | Default for ``ResourceConfig.gpu_type`` when the recipe omits it. Lets one recipe move between clusters of different GPU types without an edit. |
-| `network_interface` | str \| None | `None` | Interface whose IP address frontends use to reach workers (e.g. `ib0`). Unset resolves the hostname. |
+| `network_interface` | str \| None | `None` | Interface whose IP address frontends use to reach workers (e.g. `ib0`). Unset resolves the hostname; set it if hostnames resolve to a different network than the nodes route through. |
 | `visible_devices_env` | str | `'CUDA_VISIBLE_DEVICES'` | GPU-subset mask passed to workers; ROCm clusters use ROCR_VISIBLE_DEVICES. |
 | `default_gpu_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `<lambda>()` | Recipe exporter settings win. Explicit null disables the GPU default only. |
 | `use_gpus_per_node_directive` | bool | `True` | Emit `#SBATCH --gpus-per-node`. Set false on clusters that reject or ignore it. |

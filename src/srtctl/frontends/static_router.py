@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class RouterWorker:
-    """A routable backend HTTP endpoint advertised to a static router."""
+    """One worker connection advertised to a static router."""
 
     mode: str
     url: str
@@ -164,13 +164,13 @@ class StaticRouterFrontend(Frontend):
         config: Any,
         backend: Any,
         backend_processes: list[Process],
+        runtime: RuntimeContext | None = None,
     ) -> list[str]:
-        """Return adapter-managed CLI arguments derived from srtctl config."""
+        """Return adapter-managed CLI arguments derived from config and resolved runtime paths."""
         return []
 
     def worker_scheme(self, backend: Any, mode: WorkerMode) -> str:
-        """Return the protocol used to reach one worker endpoint: gRPC when the backend's mode serves it."""
-        return "grpc" if backend.is_grpc_mode(mode) else "http"
+        return backend.direct_worker_scheme(mode)
 
     def worker_bootstrap_port(self, backend: Any, process: Process) -> int | None:
         """Return the optional P/D bootstrap port advertised for a worker."""
@@ -193,23 +193,26 @@ class StaticRouterFrontend(Frontend):
         backend: Any,
         backend_processes: list[Process],
         network_interface: str | None = None,
+        frontend_node: str | None = None,
     ) -> list[RouterWorker]:
         """Collect every independently routable backend process.
 
-        A positive HTTP port, rather than ``Process.is_leader``, is the source
-        of truth. Upstream vLLM per-node DP intentionally exposes one API per
-        node-local pool, while cross-node TP/PP followers retain port zero.
+        The backend owns the listener address. Native HTTP/gRPC workers use
+        positive HTTP ports, including each vLLM node-local DP pool; headless
+        engines can instead connect to a listener on the frontend node.
         """
         workers: list[RouterWorker] = []
         for process in backend_processes:
-            if process.http_port <= 0:
+            address = backend.router_worker_address(process, frontend_node)
+            if address is None:
                 continue
+            node, port = address
             scheme = self.worker_scheme(backend, process.endpoint_mode)
-            host = self.resolve_worker_host(process.node, network_interface)
+            host = self.resolve_worker_host(node, network_interface)
             workers.append(
                 RouterWorker(
                     mode=process.endpoint_mode,
-                    url=f"{scheme}://{host}:{process.http_port}",
+                    url=f"{scheme}://{host}:{port}",
                     bootstrap_port=self.worker_bootstrap_port(backend, process),
                 )
             )
@@ -317,7 +320,12 @@ class StaticRouterFrontend(Frontend):
                 f"(got {configured_backend!r})"
             )
 
-        workers = self.collect_workers(backend, backend_processes, runtime.network_interface)
+        workers = self.collect_workers(
+            backend,
+            backend_processes,
+            runtime.network_interface,
+            frontend_node=topology.frontend_nodes[0] if topology.frontend_nodes else None,
+        )
         if self.wait_for_workers_before_start:
             self.wait_for_workers(workers, config, stop_event)
 
@@ -325,7 +333,7 @@ class StaticRouterFrontend(Frontend):
         for idx, node in enumerate(topology.frontend_nodes):
             router_log = runtime.log_dir / f"{node}_{self.log_label or self.type}_{idx}.out"
             cmd = self.build_router_command(workers, "0.0.0.0", topology.frontend_port, backend)
-            cmd.extend(self.get_managed_frontend_args(config, backend, backend_processes))
+            cmd.extend(self.get_managed_frontend_args(config, backend, backend_processes, runtime))
             cmd.extend(self.get_frontend_args_list(config.frontend.args))
             cmd = numactl_prefix(config) + cmd
             logger.info("Starting %s %d on %s: %s", self.type, idx, node, shlex.join(cmd))
