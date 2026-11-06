@@ -255,9 +255,14 @@ def test_stage_launches_head_then_workers_with_per_instance_probes(tmp_path: Pat
         patch(KIND_HOST_IP, side_effect=lambda host, iface=None: IPS[host]),
         patch.object(RayService, "wait_fleet_ready") as fleet,
     ):
+        order = MagicMock()
+        order.attach_mock(srun, "srun")
+        order.attach_mock(wait, "wait")
         procs = orchestrator.start_services("before_workers")
 
     assert len(procs) == 3
+    # leader_first: the head is ready before the workers launch together.
+    assert [call[0] for call in order.mock_calls][:4] == ["srun", "wait", "srun", "srun"]
     calls = srun.call_args_list
     assert calls[0].kwargs["nodelist"] == ["node1"]
     assert calls[0].kwargs["command"][:3] == ["ray", "start", "--head"]

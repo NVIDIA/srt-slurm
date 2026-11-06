@@ -71,6 +71,8 @@ class RayService(ServiceKind):
     default_critical = True
     default_placement = "workers"
     default_readiness_timeout = RAY_READINESS_TIMEOUT
+    # Workers join the head's GCS, so the head must answer before they launch.
+    leader_first = True
     option_keys = ("port", "dashboard_port", "num_gpus")
 
     # -- helpers ---------------------------------------------------------------------
@@ -151,8 +153,8 @@ class RayService(ServiceKind):
                 f"--dashboard-port={self.dashboard_port(service)}",
                 *common,
             ]
-        # The stage launches the head first and waits for its dashboard before any
-        # worker starts, so the GCS is up here; the tcp wait only covers the window
+        # leader_first: the stage launches the head and waits for its dashboard before
+        # any worker starts, so the GCS is up here; the tcp wait only covers the window
         # between "dashboard answers" and "GCS accepts registrations". exec makes the
         # raylet the step's process, so SIGTERM on teardown reaches it directly.
         head = f"{self.head_ip(service, ctx.runtime)}:{port}"

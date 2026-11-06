@@ -131,6 +131,10 @@ class ServiceKind:
     # gives no ``readiness`` (all of them, in order). Empty: launch is enough.
     default_readiness_ports: ClassVar[tuple[int, ...]] = ()
     default_readiness_timeout: ClassVar[int] = 120
+    # Instances launch together and are probed concurrently. True when the others need
+    # instance 0 ready first (a cluster head they join): it launches and passes its probe
+    # before the rest launch together.
+    leader_first: ClassVar[bool] = False
     # How tachometer treats this kind's metrics: the scraper filter (``passthrough``
     # keeps names and labels as served; ``dcgm`` / ``node_exporter`` / ``backend`` are
     # the shaped ones), the endpoint name prefix (default: the service name), and

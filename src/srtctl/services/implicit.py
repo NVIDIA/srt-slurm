@@ -146,9 +146,8 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
                 options["store_config"] = dict(mooncake_cfg.store_config)
             if mooncake_cfg.device_names_by_gpu:
                 options["device_names_by_gpu"] = list(mooncake_cfg.device_names_by_gpu)
-        elif isinstance(mooncake_cfg, TRTLLMMooncakeKVStoreConfig):
-            if mooncake_cfg.store_config:
-                options["store_config"] = dict(mooncake_cfg.store_config)
+        elif isinstance(mooncake_cfg, TRTLLMMooncakeKVStoreConfig) and mooncake_cfg.store_config:
+            options["store_config"] = dict(mooncake_cfg.store_config)
         implied.append(
             EffectiveService(
                 ServiceConfig(
