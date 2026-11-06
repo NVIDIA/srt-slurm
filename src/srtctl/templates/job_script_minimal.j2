@@ -130,8 +130,10 @@ echo "Preparing srtctl environment..."
 export PATH="${SRTCTL_SOURCE}/bin:$HOME/.local/bin:$PATH"
 
 # Use a compute-specific venv so we don't pick up the login node's .venv/
-# (which may be built for a different arch, e.g. x86_64 login vs aarch64 compute)
-export UV_PROJECT_ENVIRONMENT="${SRTCTL_SOURCE}/.venv-compute"
+# (which may be built for a different arch, e.g. x86_64 login vs aarch64 compute).
+# Set SRTCTL_COMPUTE_VENV to keep it elsewhere, e.g. on node-local disk when
+# SRTCTL_SOURCE sits on small or distant shared storage.
+export UV_PROJECT_ENVIRONMENT="${SRTCTL_COMPUTE_VENV:-${SRTCTL_SOURCE}/.venv-compute}"
 
 if ! command -v uv &> /dev/null; then
     echo "ERROR: uv not found. Run 'make setup ARCH=<compute_arch>' first."
@@ -170,7 +172,8 @@ cd "${SRTCTL_SOURCE}"
 # "Directory not empty" / "Failed to spawn 'python -m'" / missing CACHEDIR.TAG
 # errors. The flock serializes only the venv init; the lock is released
 # before the actual sweep so jobs still run in parallel.
-flock -x "${SRTCTL_SOURCE}/.venv-compute.lock" uv sync --python 3.12 --no-dev
+mkdir -p "$(dirname "${UV_PROJECT_ENVIRONMENT}")"
+flock -x "${UV_PROJECT_ENVIRONMENT}.lock" uv sync --python 3.12 --no-dev
 uv run --python 3.12 --no-dev --no-sync -m srtctl.cli.do_sweep "${OUTPUT_DIR}/{{ runtime_config_filename }}"{% if serve_only %} --serve-only{% endif %}
 EXIT_CODE=$?
 set -e  # Re-enable exit-on-error
