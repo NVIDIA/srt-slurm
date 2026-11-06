@@ -159,6 +159,14 @@
       "description": "Default for recipe `reuse_container`; explicit true or false in the recipe wins.",
       "default": false
     },
+    "container_runtime": {
+      "enum": [
+        "pyxis",
+        "host"
+      ],
+      "description": "`pyxis` (default) passes --container-image and the mounts to every srun. `host` passes none of them: the job already runs inside one sandbox built from the recipe's image, which binds /model, /configs, /logs and the other mount points, and every step inherits it.",
+      "default": "pyxis"
+    },
     "srtctl_root": {
       "anyOf": [
         {

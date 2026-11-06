@@ -40,6 +40,7 @@ from rich.text import Text
 from srtctl.backends import VLLMBackend, VLLMMooncakeKVStoreConfig
 from srtctl.backends.base import WorkerMode
 from srtctl.core.config import (
+    container_runtime,
     expand_engine_config_defaults,
     generate_override_configs,
     get_srtslurm_setting,
@@ -410,6 +411,11 @@ def show_config_details(config: SrtConfig) -> None:
         )
 
     console.print(Panel(mounts_table, border_style="green"))
+    if container_runtime() == "host":
+        console.print(
+            "[yellow]container_runtime: host[/] no --container-image or --container-mounts reaches srun; "
+            "the job's own container must already provide every container path above"
+        )
 
     if not infmax_ws and "/infmax-workspace" in str(config.benchmark.command or ""):
         console.print(
@@ -1040,6 +1046,7 @@ def generate_minimal_sbatch_script(
         use_gpus_per_node_directive=get_srtslurm_setting("use_gpus_per_node_directive", True),
         use_segment_sbatch_directive=get_srtslurm_setting("use_segment_sbatch_directive", True),
         use_exclusive_sbatch_directive=get_srtslurm_setting("use_exclusive_sbatch_directive", False),
+        container_runtime=container_runtime(),
         sbatch_directives=config.sbatch_directives,
         container_image=container_image,
         srtctl_source=str(srtctl_source.resolve()),

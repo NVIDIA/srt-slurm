@@ -1527,3 +1527,18 @@ class TestRoleGpuIndices:
         show_config_details(config)
         output = " ".join(capsys.readouterr().out.split())
         assert "agg: gpu_indices=0,2 | 1,3 (CUDA_VISIBLE_DEVICES per worker; 2 worker(s) per node)" in output
+
+
+def test_container_runtime_host_is_visible(tmp_path, monkeypatch, capsys):
+    cluster_config = tmp_path / "srtslurm.yaml"
+    cluster_config.write_text(yaml.safe_dump({"container_runtime": "host"}))
+    monkeypatch.setenv("SRTSLURM_CONFIG", str(cluster_config))
+    show_config_details(_make_config())
+    output = " ".join(capsys.readouterr().out.split())
+    assert "container_runtime: host" in output
+    assert "no --container-image or --container-mounts reaches srun" in output
+
+
+def test_container_runtime_pyxis_keeps_dry_run_unchanged(capsys):
+    show_config_details(_make_config())
+    assert "container_runtime" not in capsys.readouterr().out
