@@ -20,6 +20,7 @@ from marshmallow import ValidationError
 from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin, resolve_exporter_command
 from srtctl.core.config import resolve_config_with_defaults
 from srtctl.core.power.contract import MANIFEST_FILENAME, UTILIZATION_METRICS, Reason
+from srtctl.core.power.identity import KFD_PROBE_SCRIPT
 from srtctl.core.power.manifest import DcgmExporterIdentity, ExpectedWindow, PowerManifest
 from srtctl.core.power.mapping import DCGM_EXPORTER_COMMAND_TEMPLATE, DCGM_POWER_MAPPING, TACHOMETER_SCRAPE
 from srtctl.core.power.parser import parse_power_scrape
@@ -27,7 +28,7 @@ from srtctl.core.power.samples import read_samples
 from srtctl.core.power.session import PowerEndpoint, PowerSessionSettings, PowerTelemetrySession
 from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.power.validate_artifacts import validate_power_artifacts
-from srtctl.core.processes import ProcessRegistry
+from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.schema import (
     DCGM_GPU_LABELS,
     DCGM_GPU_METRICS,
@@ -40,6 +41,7 @@ from srtctl.core.schema import (
     TelemetryExporterConfig,
 )
 from srtctl.core.topology import Process
+from tests.test_power_identity import KFD_CAPTURE
 
 AMD_IMAGE = "docker://rocm/device-metrics-exporter:v1.5.2"
 AMD_SCOPE = "gpu_device_power_as_reported_by_amd_device_metrics_exporter"
@@ -336,6 +338,17 @@ class TestSchema:
         with pytest.raises(ValidationError, match="`kind: custom` GPU exporter needs"):
             TelemetryExporterConfig.Schema().load(fields)
 
+    def test_worker_gpu_probe_is_set_on_custom_exporters_and_fixed_for_dcgm(self):
+        amd = TelemetryExporterConfig.Schema().load(
+            {"container_image": AMD_IMAGE, "port": 5000, "command": "x", "worker_gpu_probe": "kfd", **AMD_GPU_CONFIG}
+        )
+        dcgm = TelemetryExporterConfig.Schema().load({"container_image": "dcgm-exporter", "port": 9401})
+        assert (amd.worker_probe, AMD_EXPORTER.worker_probe, dcgm.worker_probe) == ("kfd", None, "nvidia-smi")
+        with pytest.raises(ValidationError, match="`worker_gpu_probe` needs `kind: custom`"):
+            TelemetryExporterConfig.Schema().load(
+                {"container_image": "dcgm-exporter", "port": 9401, "worker_gpu_probe": "kfd"}
+            )
+
     def test_an_unknown_kind_is_rejected(self):
         with pytest.raises(ValidationError, match="kind"):
             TelemetryExporterConfig.Schema().load({"container_image": "x", "port": 1, "kind": "amd"})
@@ -524,6 +537,39 @@ class TestTelemetryStage:
         assert manifest["dcgm_exporter"]["command"] == "/home/amd/tools/entrypoint.sh"
         rows, _ = read_samples(tmp_path / "power" / "samples.csv")
         assert {row.gpu_uuid for row in rows} == {"SN0", "SN1"}
+
+    @patch("srtctl.cli.mixins.telemetry_stage.list_step_ids", return_value={"agg_0": "3183.0", "agg_1": "3183.1"})
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_kfd_probe_records_the_board_serials_each_worker_holds(self, mock_srun, _steps, tmp_path):
+        """Two workers on one MI325X node; the probe prints the output captured there."""
+
+        def run_probe(*, output, **_):
+            Path(output).write_text(KFD_CAPTURE)
+            return MagicMock(**{"wait.return_value": 0})
+
+        mock_srun.side_effect = run_probe
+        exporter = TelemetryExporterConfig.Schema().load(
+            {"container_image": AMD_IMAGE, "port": 5000, "command": "x", "worker_gpu_probe": "kfd", **AMD_GPU_CONFIG}
+        )
+        workers = [_worker(gpus=(2, 5), index=0), _worker(gpus=(0, 1), index=1)]
+        harness = _harness(tmp_path, exporter, workers)
+        harness._power_session = MagicMock(power_dir=tmp_path)
+        registry = ProcessRegistry(job_id="3183")
+        for name, process in zip(("agg_0", "agg_1"), workers, strict=True):
+            popen = MagicMock(**{"poll.return_value": None})
+            registry.add_process(
+                ManagedProcess(name=name, popen=popen, node="node-a", step_name=name, worker_assignments=(process,))
+            )
+
+        harness.capture_power_worker_identity(registry)
+
+        (proof,) = harness._power_session.record_worker_identity.call_args.args
+        assert mock_srun.call_args.kwargs["command"] == ["python3", "-c", KFD_PROBE_SCRIPT, "3183.0", "3183.1"]
+        assert proof.error is None
+        assert [(worker.step_id, worker.gpu_uuids) for worker in proof.workers] == [
+            ("3183.0", ("PCB079220-1144", "PCB079220-1156")),
+            ("3183.1", ("PCB079220-1146", "PCB079220-1177")),
+        ]
 
     def test_tachometer_target_filter_follows_the_mapping(self, tmp_path):
         processes = [_worker(gpus=range(2))]

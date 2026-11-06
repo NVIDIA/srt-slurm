@@ -481,6 +481,7 @@ Configuration for a metrics exporter deployed on worker nodes.
 | `kind` | one of `'dcgm'`, `'custom'` | `'dcgm'` | GPU exporter kind: `dcgm` (built-in DCGM command, labels, metrics and tachometer scrape) or `custom` (any other exporter; set `command`, `gpu_labels` and `gpu_metrics`, and tachometer keeps its rows as served). |
 | `gpu_labels` | [GpuLabelsConfig](#gpulabelsconfig) \| None | `None` | GPU power telemetry: labels identifying a GPU in the scrape; unset means DCGM (`gpu`, `UUID`). |
 | `gpu_metrics` | [GpuMetricsConfig](#gpumetricsconfig) \| None | `None` | GPU power telemetry: per-GPU metrics to record; unset means DCGM. |
+| `worker_gpu_probe` | one of `'kfd'` \| None | `None` | GPU power telemetry: the bare-host probe that proves which GPUs each worker holds, so idle GPUs on a partly used node can be excused. `kfd` reports the PCI `serial_number`, the identity the AMD device-metrics-exporter labels. A `kind: dcgm` exporter always uses `nvidia-smi`; unset on `kind: custom` means no probe. |
 
 ### CpuPowerExporterConfig
 
