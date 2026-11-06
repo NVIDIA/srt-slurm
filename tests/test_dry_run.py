@@ -969,6 +969,38 @@ class TestDryRunExecutionExtensions:
         assert "P2PHANDSHAKE" in output
         assert "100GB" in output
 
+    def test_vllm_mooncake_role_configs_in_dry_run(self, capsys):
+        """A vLLM role with its own mooncake_store_config shows its file and layered config."""
+        kv_cfg = '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
+        config = _make_config(
+            {
+                "engine": "vllm",
+                "roles": {
+                    "prefill": {"args": {"kv-transfer-config": kv_cfg}},
+                    "decode": {
+                        "args": {"kv-transfer-config": kv_cfg},
+                        "mooncake_store_config": {"global_segment_size": "48GB"},
+                    },
+                },
+                "services": [
+                    {
+                        "name": "mooncake-master",
+                        "type": "mooncake-master",
+                        "options": {"store_config": {"protocol": "rdma", "global_segment_size": "24GB"}},
+                    }
+                ],
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        # Rich wraps long values in the narrow test console; the paths are asserted by
+        # tests/test_vllm_mooncake_roles.py, so match the row labels and sizes here.
+        assert "MOONCAKE_CONFIG_PATH" in output
+        assert "store_config (decode)" in output
+        assert "store_config (prefill)" not in output
+        assert "24GB" in output
+        assert "48GB" in output
+
     def test_trtllm_mooncake_role_configs_in_dry_run(self, capsys):
         """Each TRT-LLM role using the mooncake-store connector shows its client config and path."""
         connector = {"kv_connector_config": {"connector": "mooncake-store"}}
