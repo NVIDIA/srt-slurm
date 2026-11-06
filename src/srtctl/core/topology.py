@@ -483,6 +483,11 @@ def allocate_endpoints(
                 # multiple of gpus_per_node, leave GPUs idle so every node of
                 # this worker sees the same count (required by --nnodes).
                 # 6 GPUs on 4-GPU nodes → 2 nodes × {0,1,2}, not 4+2.
+                if gpu_offset:
+                    node_idx += 1
+                    gpu_offset = 0
+                if node_idx + nodes_per_worker > len(available_nodes):
+                    raise ValueError("Not enough nodes for GPU allocation")
                 worker_nodes = tuple(available_nodes[node_idx + j] for j in range(nodes_per_worker))
                 node_idx += nodes_per_worker
                 per_node, uneven = divmod(gpus_per_worker, nodes_per_worker)

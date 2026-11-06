@@ -53,6 +53,7 @@ class TileRTBackend(Backend):
         available_nodes: Sequence[str],
         spread_workers: bool = False,
         gpu_indices_by_mode: Mapping[WorkerMode, Sequence[frozenset[int]]] | None = None,
+        allow_prefill_decode_colocation: bool = False,
     ) -> list[Endpoint]:
         from srtctl.core.topology import allocate_endpoints
 
@@ -67,6 +68,7 @@ class TileRTBackend(Backend):
             available_nodes=available_nodes,
             spread_workers=spread_workers,
             gpu_indices_by_mode=gpu_indices_by_mode,
+            allow_prefill_decode_colocation=allow_prefill_decode_colocation,
         )
 
     def endpoints_to_processes(

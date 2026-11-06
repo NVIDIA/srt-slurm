@@ -2410,6 +2410,11 @@
           "description": "If True, place each partial-node worker on its own node instead of packing multiple onto the same node. Caller must reserve enough nodes (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node).",
           "default": false
         },
+        "pack_prefill_decode": {
+          "type": "boolean",
+          "description": "Pack prefill then decode into a shared node pool and size the allocation from the engine's actual GPU placement. Defaults off to keep separate pools.",
+          "default": false
+        },
         "het_jobs": {
           "anyOf": [
             {

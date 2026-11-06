@@ -950,6 +950,10 @@ class ResourceConfig:
     # (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node).
     spread_workers: bool = False
 
+    # Pack prefill then decode into a shared node pool and size the allocation
+    # from the engine's actual GPU placement. Defaults off to keep separate pools.
+    pack_prefill_decode: bool = False
+
     # SLURM heterogeneous-job opt-in. Tri-state: None defers to the cluster
     # default `use_het_jobs` on ClusterConfig; True/False overrides per recipe.
     # When effectively True (and we are in disaggregated mode), the prefill and
@@ -2892,6 +2896,7 @@ class SrtConfig:
                 raise ValueError("identity.model.repo must match model.path when model.hf_snapshot_path is set")
         self._validate_roles()
         _ = self.backend  # bind the roles onto the engine now, so a bad role setting fails at load
+        self._validate_prefill_decode_packing()
         self._validate_role_backends()
         self._validate_frontend_worker_selection()
         self._validate_profiling()
@@ -3413,6 +3418,24 @@ class SrtConfig:
                 "frontend.placement.node: dedicated / benchmark.placement.node: dedicated are not supported "
                 "together with het_jobs=true (a dedicated frontend/client node is not carved out of a het allocation)"
             )
+
+    def _validate_prefill_decode_packing(self) -> None:
+        if not self.resources.pack_prefill_decode:
+            return
+        topology = self.topology
+        if not topology.num_prefill or not topology.num_decode or topology.num_agg:
+            raise ValidationError("resources.pack_prefill_decode requires both prefill and decode workers")
+        if self.resources.spread_workers:
+            raise ValidationError("resources.pack_prefill_decode requires resources.spread_workers: false")
+        if self.resources.het_jobs:
+            raise ValidationError("resources.pack_prefill_decode requires resources.het_jobs: false")
+        if topology.colocated_decode:
+            raise ValidationError(
+                "resources.pack_prefill_decode sizes a shared node pool; set roles.decode.nodes to a positive "
+                "integer instead of colocate (which restricts decode to the prefill nodes)"
+            )
+        if topology.gpu_indices_by_mode:
+            raise ValidationError("resources.pack_prefill_decode cannot be combined with roles.*.gpu_indices")
 
     def _validate_colocated_decode(self) -> None:
         """``roles.decode.nodes: colocate`` reserves no nodes of its own, so every decode worker
@@ -4200,6 +4223,18 @@ class SrtConfig:
     def _engine_total_nodes(self) -> int:
         """Worker node count of the engine roles, adjusted for backend-specific packing."""
         topology = self.topology
+        if self.resources.pack_prefill_decode:
+            # One node group per worker is an upper bound, including fragmentation
+            # and multi-node workers. Size from the same allocator used at launch:
+            # ceil(total GPUs / node GPUs) can undercount when a worker cannot fit
+            # in the previous worker's partial node.
+            upper_bound = sum(
+                topology.workers(role)
+                * ((topology.gpus_per_worker(role) + topology.gpus_per_node - 1) // topology.gpus_per_node)
+                for role in ("prefill", "decode")
+            )
+            endpoints = self.allocate_worker_endpoints([f"node{i}" for i in range(upper_bound)])
+            return len({node for endpoint in endpoints for node in endpoint.nodes})
         if self.has_role_backends:
             return topology.total_nodes
         if isinstance(self.backend, VLLMBackend) and self.backend.should_colocate_prefill_decode(

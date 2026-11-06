@@ -802,6 +802,7 @@ class VLLMBackend(Backend):
         available_nodes: Sequence[str],
         spread_workers: bool = False,
         gpu_indices_by_mode: Mapping[WorkerMode, Sequence[frozenset[int]]] | None = None,
+        allow_prefill_decode_colocation: bool = False,
     ) -> list[Endpoint]:
         """Allocate endpoints to nodes."""
         from srtctl.core.topology import allocate_endpoints
@@ -817,7 +818,8 @@ class VLLMBackend(Backend):
             available_nodes=available_nodes,
             spread_workers=spread_workers,
             gpu_indices_by_mode=gpu_indices_by_mode,
-            allow_prefill_decode_colocation=self.should_colocate_prefill_decode(
+            allow_prefill_decode_colocation=allow_prefill_decode_colocation
+            or self.should_colocate_prefill_decode(
                 num_prefill=num_prefill,
                 num_decode=num_decode,
                 num_agg=num_agg,

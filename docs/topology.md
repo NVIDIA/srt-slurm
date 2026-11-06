@@ -101,6 +101,56 @@ roles:
       tensor-parallel-size: 4
 ```
 
+### Packing prefill and decode across nodes
+
+`resources.pack_prefill_decode: true` packs prefill workers followed by decode
+workers into one shared node pool, for every engine. Decode can use the last
+prefill node's spare GPUs and continue onto more nodes. srtctl requests the node
+count produced by the engine's allocator, accounting for workers that cannot fit
+in a partial node. It preserves each engine's multi-node worker layout.
+
+For 1xTP2 prefill and 3xTP2 decode on 4-GPU GB300 nodes:
+
+```yaml
+resources:
+  gpu_type: gb300
+  gpus_per_node: 4
+  pack_prefill_decode: true
+engine: sglang
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 2
+    args:
+      tensor-parallel-size: 2
+  decode:
+    nodes: 2
+    workers: 3
+    gpus: 2
+    args:
+      tensor-parallel-size: 2
+```
+
+This requests two worker nodes instead of three:
+
+| Node | GPUs 0,1 | GPUs 2,3 |
+| --- | --- | --- |
+| First | Prefill 0 | Decode 0 |
+| Second | Decode 1 | Decode 2 |
+
+Role `nodes` counts still derive `gpus` when it is omitted; they no longer reserve
+separate pools with this option. Set `gpus` explicitly to make the worker shapes
+clear. Dedicated frontend, client, and service nodes are added separately.
+Packing is opt-in and cannot be combined with `spread_workers`, heterogeneous
+Slurm jobs, explicit `gpu_indices`, or `decode.nodes: colocate`. Use
+`het_jobs: false` if the cluster defaults to heterogeneous jobs.
+`nodes: colocate` retains its narrower meaning: decode must fit within the
+prefill nodes already reserved. vLLM's existing engine-level colocation flags
+remain supported; the shared resource setting works without them.
+
+See `examples/features/disagg-packing.yaml` for a runnable example.
+
 ### kv_events
 
 KV events are a Dynamo frontend feature for kv-aware routing (`frontend.args.router-mode: kv`): workers publish cache/scheduling information over ZMQ and the Dynamo router uses it to place requests. Setting `kv_events` on a role passes `--kv-events-config` to that role's workers with auto-allocated ZMQ ports.
