@@ -1,0 +1,5 @@
+#!/bin/bash
+# python3 shim for the MiniMax-M3.1 Flash R37 recipes (recipes/trtllm/minimax3.1/).
+# Same as InferenceMAX's m31-launch-bin/python3, but runs the adapter copied next to it
+# instead of /infmax-workspace/infx/bench/launch_affinity.py.
+exec /usr/bin/python3 /configs/m31-launch-bin/launch_affinity.py "$@"

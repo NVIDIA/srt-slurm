@@ -1,0 +1,458 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# MiniMax-M3.1 Flash, vLLM + Dynamo 1.5.0, VR200 R37 (vrnvl72): 1 x DEP2 prefill (GPUs 0,2) + 1 x DEP8 decode (2 nodes); C126 (959020), caps 32/2.
+# Exact replay of the first seven-point sweep of InferenceMAX PR 1859: CI run 42170068985
+# (commit 4455c46e, srt-slurm 1ca857b2). Every serving setting below is the config.yaml srtctl
+# resolved for that run, including the CI's dspark synthetic-acceptance override (AL 4.04).
+# Changes from the CI config:
+#   - model/container: explicit paths instead of the CI cluster aliases (same files).
+#   - slurm/sbatch_directives/extra_mount: the CI cluster settings for R37, made explicit.
+#   - benchmark: runs `agentx profile` (agentx-harness 1.0.13 + datasets 5.1.0, as CI installed)
+#     with the same flags directly instead of InferenceMAX's srt_agentic.sh; no InferenceMAX
+#     post-processing.
+#   - dropped CI-only post_eval and srun container-workdir=/infmax-workspace.
+# Needs srtctl >= 1ca857b2 and, in R37's srtslurm.yaml,
+#   default_bash_preamble: export PATH=/configs/m31-launch-bin:$PATH
+# so INFMAX_API_CPUS / INFMAX_NUMA_PHYSICAL take effect (configs/m31-launch-bin). See README.md.
+
+schema: 2
+name: m31f-r37-1pdep2-1ddep8-c126
+model:
+  path: /raid/common-models/minimax-m3.1-flash
+  container: /home/rihuo/m31f-vr200-final-n1-397e38ee-xdr.sqsh
+  precision: fp4
+slurm:
+  account: nv-shared-1
+  partition: batch-r37
+  time_limit: 02:00:00
+sbatch_directives:
+  exclusive: ''
+  cpus-per-task: '352'
+benchmark:
+  type: custom
+  stream_output: true
+  command: |
+    set -euo pipefail
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
+    # Same client runtime as CI: uv venv on Python 3.11 with the versions CI installed.
+    venv=$(mktemp -d /tmp/m31f-agentx-XXXXXX)
+    trap 'rm -rf "$venv"' EXIT
+    /usr/local/bin/uv venv --python 3.11 "$venv"
+    /usr/local/bin/uv pip install --python "$venv/bin/python" --no-config 'agentx-harness==1.0.13' 'datasets==5.1.0'
+    "$venv/bin/hf" download --repo-type dataset semianalysisai/cc-traces-weka-062126
+    IFS=',' read -r -a worker_metrics_urls <<< "${AIPERF_SERVER_METRICS_URLS:?worker metrics URLs were not provided}"
+    out="/logs/agentic/conc_${CONC}"
+    mkdir -p "$out"
+    cmd=(taskset -c 168-175,344-351 "$venv/bin/agentx" profile
+      --url "http://${SRT_FRONTEND_HOST}:${SRT_FRONTEND_PORT}"
+      --model MiniMaxAI/MiniMax-M3.1-Flash --tokenizer MiniMaxAI/MiniMax-M3.1-Flash
+      --concurrency "$CONC" --benchmark-duration 3600
+      --tokenizer-trust-remote-code
+      --server-metrics "${worker_metrics_urls[@]}"
+      --output-artifact-dir "$out/aiperf_artifacts"
+      --public-dataset semianalysis_cc_traces_weka_062126)
+    printf '%q ' "${cmd[@]}" > "$out/benchmark_command.txt"; echo >> "$out/benchmark_command.txt"
+    "${cmd[@]}" 2>&1 | tee "$out/benchmark.log"
+  env:
+    CONC: '126'
+    HF_HUB_CACHE: /hf_hub_cache
+    AIPERF_DATASET_MMAP_CACHE_DIR: /aiperf_mmap_cache
+    AIPERF_REQUIRED_SERVER_METRIC_PREFIX: 'vllm:'
+    AIPERF_USE_DYNAMO_CONV_AWARE_ROUTING: '0'
+    AIPERF_DYNAMO_SESSION_TIMEOUT_SECONDS: '3600'
+    AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: 'false'
+    AIPERF_EXPERIMENTAL_FAST: '0'
+extra_mount:
+- /home/nv-shared-1:/home/nv-shared-1
+- /home/nv-shared-1/ai-perf-cache:/aiperf_mmap_cache
+- /home/nv-shared-1/hf-hub-cache:/hf_hub_cache
+dynamo:
+  install: false
+engine:
+  connector: null
+  type: vllm
+frontend:
+  args:
+    kv-cache-block-size: 128
+    router-decode-active-request-weight: 3000
+    router-mode: kv
+    router-session-affinity-ttl-secs: 14400
+    router-temperature: '0'
+  enable_multiple_frontends: false
+  type: dynamo
+  env:
+    INFMAX_API_CPUS: 80-87,256-263
+health_check:
+  interval_seconds: 5
+  max_attempts: 1440
+observability:
+  enabled: false
+  tachometer:
+    enabled: false
+resources:
+  gpu_type: vr200
+  gpus_per_node: 4
+  spread_workers: true
+roles:
+  decode:
+    args:
+      async-scheduling: true
+      attention-config: '{"indexer_kv_dtype":"nvfp4","use_prefill_query_quantization":true}'
+      block-size: 128
+      compilation-config: '{"cudagraph_mode":"FULL","cudagraph_capture_sizes":[8,16,24,32,40,48,56,64,72,80,88,96,104,112,120,128,136,144,152,160,168,176,184,192,200,208,216,224,232,240,248,256,264,272,280,288,296,304,312,320,328,336,344,352,360,368,376,384,392,400,408,416,424,432,440,448,456,464,472,480,488,496,504,512],"mode":0}'
+      cudagraph-metrics: true
+      data-parallel-size: 8
+      disable-hybrid-kv-cache-manager: true
+      dp-sync-interval: 32
+      dyn-default-thinking-mode: enabled
+      dyn-tool-call-parser: minimax_m3
+      enable-cumem-allocator: true
+      enable-expert-parallel: true
+      enable-prefix-caching: true
+      gpu-memory-utilization: 0.92
+      kernel-config: '{"enable_flashinfer_autotune":true,"moe_backend":"cutedsl_mega_moe"}'
+      kv-cache-dtype: nvfp4
+      kv-cache-metrics: true
+      kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_load_failure_policy":"fail","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_buffer_device":"cuda","kv_connector_extra_config":{"backends":["UCX"],"kv_lease_duration":180,"enforce_handshake_compat":true,"background_receiver":false}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"enable_lookup":false,"cache_prefix":"m31u-depdis-1xdep2p-hn-dep8d-mc-r0-mc296-hn1-dpsync32-l7prune-sf4-hwm99-nvfp4kv-depv11r83"}}]}}'
+      language-model-only: true
+      max-cudagraph-capture-size: 512
+      max-model-len: 1048576
+      max-num-batched-tokens: 512
+      max-num-seqs: 2
+      numa-bind: true
+      numa-bind-cpus:
+      - 0-39
+      - 44-83
+      - 88-127
+      - 132-171
+      numa-bind-nodes:
+      - 0
+      - 0
+      - 1
+      - 1
+      pipeline-parallel-size: 1
+      reasoning-parser: minimax_m3
+      safetensors-load-strategy: lazy
+      served-model-name: MiniMaxAI/MiniMax-M3.1-Flash
+      speculative-config: '{"method": "dspark", "model": "/model/dspark", "num_speculative_tokens": 7, "draft_sample_method": "probabilistic", "rejection_sample_method": "synthetic", "attention_backend": "FLASH_ATTN", "kv_cache_dtype": "fp8", "synthetic_acceptance_length": 4.04}'
+      stream-interval: 20
+      tensor-parallel-size: 1
+      trust-remote-code: true
+    env:
+      CM_MEGAMOE_DIE_AWARE: '1'
+      CM_MEGAMOE_EARLY_TRIGGER: '0'
+      CM_MEGAMOE_MAX_TOKENS: '512'
+      DYN_RUNTIME_MAX_BLOCKING_THREADS: '8'
+      DYN_RUNTIME_NUM_WORKER_THREADS: '8'
+      GLOG_log_year_in_prefix: 'false'
+      GLOO_SOCKET_IFNAME: eth0
+      HF_HUB_OFFLINE: '1'
+      M31_DRAFT_SPLIT: '1'
+      M31_DRAFT_SPLIT_PACK: '8'
+      M31_DROP_CKPT_CACHE: '1'
+      M31_D_EVENT_PAIRS: '1'
+      M31_D_EVENT_POOL: '1'
+      M31_D_PACK_TOKEN_IDS: '1'
+      M31_D_STEP_LOG: '1'
+      M31_D_STEP_LOG_MS: '10'
+      M31_EC_CPUS: 40-41,216-217;84-85,260-261;128-129,304-305;172-173,348-349
+      M31_E_NO_IDLE_SLEEP: '1'
+      M31_E_STEP_LOG: '1'
+      M31_E_STEP_LOG_MS: '25'
+      M31_E_TOKEN_ARRAY: '1'
+      M31_KV_CONTIG_ALLOC: '1'
+      M31_KV_CONTIG_POOL: '1'
+      M31_NIXL_ASYNC_POST: '1'
+      M31_NIXL_POST_CHUNK_DESCS: '512'
+      M31_NIXL_POST_NOPOLL: '1'
+      M31_NIXL_XFER_LOG: '1'
+      M31_PREEMPT_LOG: '1'
+      M31_STEP_GPU: '1'
+      M31_STEP_LOG_EVERY: '8'
+      MC_ENABLE_DEST_DEVICE_AFFINITY: '1'
+      MC_GID_INDEX: '0'
+      MC_STORE_CLIENT_METRIC: '1'
+      MC_STORE_CLIENT_METRIC_INTERVAL: '5'
+      MC_TE_METRIC: '1'
+      MM3_GC_LOG: '60'
+      MM3_GC_LOG_MS: '2'
+      MM3_GC_SYNC: '128'
+      MM3_GC_SYNC_FULL: '0'
+      MM3_GC_SYNC_WORKER: '64'
+      MM_SPARSE_ATTN_AOT_DISABLE: '1'
+      NCCL_ALGO: Ring
+      NCCL_CUMEM_ENABLE: '1'
+      NCCL_MIN_NCHANNELS: '64'
+      NCCL_MNNVL_ENABLE: '1'
+      NCCL_NVLINK_UTIL_CENTRIC_SCHED_ENABLE: '0'
+      NCCL_NVLS_ENABLE: '1'
+      NCCL_SOCKET_IFNAME: eth0
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONNOUSERSITE: '1'
+      PYTHONPYCACHEPREFIX: /tmp/aria-pycache
+      PYTHONUNBUFFERED: '1'
+      TMPDIR: /tmp
+      UCX_CUDA_IPC_ENABLE_MNNVL: y
+      UCX_MEMTYPE_CACHE: n
+      UCX_MODULE_DIR: /usr/local/lib/python3.12/dist-packages/nixl_cu13.libs/ucx
+      UCX_NET_DEVICES: eth0
+      UCX_RCACHE_MAX_UNRELEASED: '1024'
+      UCX_RNDV_PIPELINE_ERROR_HANDLING: y
+      UCX_TLS: tcp,cuda_ipc,cuda_copy
+      VLLM_ALLREDUCE_USE_SYMM_MEM: '0'
+      VLLM_CHAT_TEMPLATE_RENDER_TIMEOUT: '600'
+      VLLM_CUTEDSL_MEGA_MOE_MODULE: cm_megamoe.vllm_experts
+      VLLM_ENGINE_READY_TIMEOUT_S: '7200'
+      VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: '1800'
+      VLLM_FLASHINFER_ALLREDUCE_BACKEND: trtllm
+      VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR: /tmp/fi-autotune-cache
+      VLLM_FLOAT32_MATMUL_PRECISION: high
+      VLLM_HTTP_TIMEOUT_KEEP_ALIVE: '600'
+      VLLM_KV_CACHE_LAYOUT: LBHNC
+      VLLM_LOG_STATS_INTERVAL: '10'
+      VLLM_M31_DEP_FUSED_NORM: '1'
+      VLLM_M31_DEP_QKV_PDL_OVER_CUBLASLT: '1'
+      VLLM_M31_DEP_QKV_PDL_PREFETCH: '0.25'
+      VLLM_M31_DEP_TOPK_PDL: '1'
+      VLLM_MEGA_MOE_SHARED_SIDE: '1'
+      VLLM_MINIMAX_M3_PROFILE_PREFILL_WORKSPACE: '1'
+      VLLM_MINIMAX_M3_Q8KV4_PREFILL_CHUNK_TOKENS: '1024'
+      VLLM_MOONCAKE_LOAD_RECV_THREADS: '20'
+      VLLM_MXFP8_CUBLASLT_MIN_M: '36'
+      VLLM_RPC_BASE_PATH: /tmp
+      VLLM_USE_BREAKABLE_CUDAGRAPH: '1'
+      VLLM_USE_NCCL_SYMM_MEM: '0'
+      VLLM_USE_V2_MODEL_RUNNER: '1'
+      WITH_NVIDIA_PEERMEM: '0'
+      INFMAX_API_CPUS: 80-87,256-263
+    gpus: 8
+    nodes: 2
+    workers: 1
+    mooncake_store_config:
+      global_segment_size: 317827579904
+  prefill:
+    args:
+      attention-config: '{"indexer_kv_dtype":"nvfp4","use_prefill_query_quantization":true}'
+      block-size: 128
+      compilation-config: '{"cudagraph_mode":"FULL","cudagraph_capture_sizes":[1,8],"mode":0}'
+      cudagraph-metrics: true
+      data-parallel-size: 2
+      disable-hybrid-kv-cache-manager: true
+      dyn-tool-call-parser: minimax_m3
+      enable-cumem-allocator: true
+      enable-expert-parallel: true
+      enable-logging-iteration-details: true
+      enable-prefix-caching: true
+      gpu-memory-utilization: 0.92
+      kernel-config: '{"enable_flashinfer_autotune":true,"moe_backend":"deep_gemm_mega_moe"}'
+      kv-cache-dtype: nvfp4
+      kv-cache-metrics: true
+      kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_load_failure_policy":"recompute","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_buffer_device":"cuda","kv_connector_extra_config":{"backends":["UCX"],"kv_lease_duration":180,"enforce_handshake_compat":true,"background_receiver":false}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"lookup_async":false,"cache_prefix":"m31u-depdis-1xdep2p-hn-dep8d-mc-r0-mc296-hn1-dpsync32-l7prune-sf4-hwm99-nvfp4kv-depv11r83"}}]}}'
+      language-model-only: true
+      long-prefill-token-threshold: 8192
+      long-prefill-token-threshold-adaptive: true
+      max-cudagraph-capture-size: 8
+      max-model-len: 1048576
+      max-num-batched-tokens: 16384
+      max-num-seqs: 32
+      numa-bind: true
+      numa-bind-cpus:
+      - 0-79
+      - 88-167
+      numa-bind-nodes:
+      - 0
+      - 1
+      pipeline-parallel-size: 1
+      reasoning-parser: minimax_m3
+      router-kv-overlap-score-credit: 16
+      router-mode: kv
+      safetensors-load-strategy: lazy
+      served-model-name: MiniMaxAI/MiniMax-M3.1-Flash
+      speculative-config: '{"method": "dspark", "model": "/model/dspark", "num_speculative_tokens": 7, "draft_sample_method": "probabilistic", "rejection_sample_method": "synthetic", "attention_backend": "FLASH_ATTN", "kv_cache_dtype": "fp8", "synthetic_acceptance_length": 4.04}'
+      stream-interval: 20
+      tensor-parallel-size: 1
+      trust-remote-code: true
+    env:
+      DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn,dynamo_kv_router::indexer::radix_tree=error
+      GLOG_log_year_in_prefix: 'false'
+      GLOO_SOCKET_IFNAME: eth0
+      HF_HUB_OFFLINE: '1'
+      M31_DRAFT_SPLIT: '1'
+      M31_DRAFT_SPLIT_PACK: '7'
+      M31_DRAFT_SPLIT_PACK_PAD: main
+      M31_DROP_CKPT_CACHE: '1'
+      M31_E_STEP_LOG: '1'
+      M31_E_STEP_LOG_MS: '25'
+      M31_E_TOKEN_ARRAY: '1'
+      M31_KV_CONTIG_ALLOC: '1'
+      M31_KV_CONTIG_POOL: '1'
+      M31_MOONCAKE_SF_BITS: '4'
+      M31_PACK_PRUNE: '1'
+      M31_PREEMPT_LOG: '1'
+      M31_P_LEASE_TOUCH: '1'
+      M31_P_SHORT_SLOT: '1'
+      M31_P_SHORT_SLOT_MAX_LOOKUPS: '16'
+      M31_P_SHORT_SLOT_RECHECK_JITTER: '16'
+      M31_STEP_LOG_EVERY: '8'
+      MC_ENABLE_DEST_DEVICE_AFFINITY: '1'
+      MC_GID_INDEX: '0'
+      MC_STORE_CLIENT_METRIC: '1'
+      MC_STORE_CLIENT_METRIC_INTERVAL: '5'
+      MC_TE_METRIC: '1'
+      MM3_GC_LOG: '60'
+      MM3_GC_LOG_MS: '2'
+      MM3_GC_SYNC: '128'
+      MM3_GC_SYNC_WORKER: '64'
+      MM_SPARSE_ATTN_AOT_DISABLE: '1'
+      NCCL_ALGO: Ring
+      NCCL_CUMEM_ENABLE: '1'
+      NCCL_MIN_NCHANNELS: '64'
+      NCCL_MNNVL_ENABLE: '1'
+      NCCL_NVLINK_UTIL_CENTRIC_SCHED_ENABLE: '0'
+      NCCL_NVLS_ENABLE: '1'
+      NCCL_SOCKET_IFNAME: eth0
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONNOUSERSITE: '1'
+      PYTHONPYCACHEPREFIX: /tmp/aria-pycache
+      PYTHONUNBUFFERED: '1'
+      TMPDIR: /tmp
+      UCX_CUDA_IPC_ENABLE_MNNVL: y
+      UCX_MEMTYPE_CACHE: n
+      UCX_MODULE_DIR: /usr/local/lib/python3.12/dist-packages/nixl_cu13.libs/ucx
+      UCX_NET_DEVICES: eth0
+      UCX_RCACHE_MAX_UNRELEASED: '1024'
+      UCX_RNDV_PIPELINE_ERROR_HANDLING: y
+      UCX_TLS: tcp,cuda_ipc,cuda_copy
+      VLLM_ALLREDUCE_USE_SYMM_MEM: '0'
+      VLLM_CHAT_TEMPLATE_RENDER_TIMEOUT: '600'
+      VLLM_ENGINE_READY_TIMEOUT_S: '7200'
+      VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: '1800'
+      VLLM_FLASHINFER_ALLREDUCE_BACKEND: trtllm
+      VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR: /tmp/fi-autotune-cache
+      VLLM_FLOAT32_MATMUL_PRECISION: high
+      VLLM_HTTP_TIMEOUT_KEEP_ALIVE: '600'
+      VLLM_KV_CACHE_LAYOUT: LBHNC
+      VLLM_LOG_STATS_INTERVAL: '10'
+      VLLM_M31_DEP_FUSED_NORM: '1'
+      VLLM_M31_DEP_QKV_PDL_PREFETCH: '0'
+      VLLM_M31_DEP_TOPK_PDL: '0'
+      VLLM_MEGA_MOE_BLOCK_M: '192'
+      VLLM_MEGA_MOE_DG: dev
+      VLLM_MEGA_MOE_LOCALIZE: '0'
+      VLLM_MEGA_MOE_PREFILL_SWITCH: '4096'
+      VLLM_MEGA_MOE_PREFILL_SWITCH_MODE: total
+      VLLM_MEGA_MOE_SHARED_SIDE: '0'
+      VLLM_MINIMAX_M3_INDEXER_SCORE_BUFFER_MB: '512'
+      VLLM_MINIMAX_M3_PROFILE_PREFILL_WORKSPACE: '1'
+      VLLM_MINIMAX_M3_Q8KV4_PREFILL_CHUNK_TOKENS: '8192'
+      VLLM_MOONCAKE_LOAD_RECV_THREADS: '20'
+      VLLM_RPC_BASE_PATH: /tmp
+      VLLM_USE_BREAKABLE_CUDAGRAPH: '1'
+      VLLM_USE_NCCL_SYMM_MEM: '0'
+      VLLM_USE_V2_MODEL_RUNNER: '1'
+      WITH_NVIDIA_PEERMEM: '0'
+      INFMAX_API_CPUS: 80-87,256-263
+    gpus: 2
+    kv_events: true
+    nodes: 1
+    workers: 1
+    mooncake_store_config:
+      global_segment_size: 325998084096
+    gpu_indices:
+    - 0
+    - 2
+services:
+- args:
+  - --eviction_high_watermark_ratio=0.99
+  - --eviction_ratio=0.01
+  env:
+    GLOG_log_year_in_prefix: 'false'
+  name: mooncake-master
+  options:
+    store_config:
+      device_name: mlx5_0,mlx5_1,mlx5_2,mlx5_5,mlx5_6,mlx5_7,mlx5_8,mlx5_11
+      enable_offload: false
+      global_segment_size: 296GB
+      local_buffer_size: 16MB
+      metadata_server: P2PHANDSHAKE
+      mode: embedded
+      protocol: rdma
+  type: mooncake-master
+- command:
+  - python3
+  - -c
+  - |-
+    import os,glob,time;t=time.time();n=0
+    for f in glob.glob('/model/**',recursive=True):
+      if os.path.isfile(f):
+        fd=os.open(f,os.O_RDONLY);os.posix_fadvise(fd,0,0,os.POSIX_FADV_DONTNEED);os.close(fd);n+=os.path.getsize(f)
+    print('drop-ckpt-cache: fadvised %.1f GiB in %.1f s'%(n/2**30,time.time()-t),flush=True)
+    for p in ('/sys/fs/cgroup/memory.current','/sys/fs/cgroup/memory.events','/sys/fs/cgroup/memory.pressure'):
+      try: print(p, open(p).read().replace(chr(10),' | '),flush=True)
+      except OSError as e: print(p,e)
+  critical: false
+  name: drop-ckpt-cache
+  placement:
+    node: all
+  start: after_frontend
+  type: generic
+- command:
+  - python3
+  - -c
+  - |-
+    import glob,os,socket,time
+    h=socket.gethostname()
+    def rd(f):
+      try: return open(f).read()
+      except OSError: return ''
+    def jobcg():
+      p=([l.split(':',2)[2].strip() for l in rd('/proc/self/cgroup').splitlines() if l.startswith('0::')] or ['/'])[0]
+      parts=[x for x in p.split('/') if x]
+      for i in range(len(parts),0,-1):
+        d='/sys/fs/cgroup/'+'/'.join(parts[:i])
+        if parts[i-1].startswith('job_') and os.path.isdir(d): return d
+      return '/sys/fs/cgroup'
+    d=jobcg()
+    cg=os.path.basename(d) if os.path.basename(d).startswith('job_') else 'root'
+    kv=lambda s:dict(l.split()[:2] for l in s.splitlines() if len(l.split())>=2)
+    X=('anon','file','pgsteal_direct','workingset_refault_file')
+    while True:
+      t=time.time()
+      ev,st=kv(rd(d+'/memory.events')),kv(rd(d+'/memory.stat'))
+      a=['M31MEM t=%.0f host=%s cg=%s'%(t,h,cg)]
+      for k,f in (('cur','memory.current'),('peak','memory.peak'),('max','memory.max')):
+        v=rd(d+'/'+f).strip()
+        if v: a.append('%s=%s'%(k,v))
+      a+=['ev_%s=%s'%(k,v) for k,v in ev.items()]
+      if 'pgscan_direct' in st: a.append('pgscan_direct='+st['pgscan_direct'])
+      b=['M31MEMX t=%.0f host=%s cg=%s'%(t,h,cg)]+['%s=%s'%(k,st[k]) for k in X if k in st]
+      for l in rd(d+'/memory.numa_stat').splitlines():
+        w=l.split()
+        if w[:1] in (['anon'],['file']): b+=['numa%s_%s=%s'%(x.split('=')[0][1:],w[0],x.split('=')[1]) for x in w[1:]]
+      for f in sorted(glob.glob('/sys/devices/system/node/node*/meminfo')):
+        n=f.split('/')[-2][4:]
+        m={l.split()[2].rstrip(':'):l.split()[3] for l in rd(f).splitlines() if len(l.split())>=4}
+        if 'MemFree' in m: a.append('numa%s_free=%d'%(n,int(m['MemFree'])*1024))
+        if 'FilePages' in m: b.append('numa%s_filepages=%d'%(n,int(m['FilePages'])*1024))
+      print(' '.join(a),flush=True)
+      print(' '.join(b),flush=True)
+      time.sleep(30)
+  critical: false
+  name: mem-watch
+  placement:
+    node: all
+  start: before_workers
+  type: generic
+srun_options:
+  cpu-bind: none
+identity:
+  frameworks:
+    dynamo: 1.5.0
+host_setup:
+  commands:
+  - bash -eo pipefail -c 'nvidia-smi --query-gpu=clocks.mem --format=csv,noheader,nounits | tee /dev/stderr | awk '"'"'BEGIN {n=0; bad=0} {n++; if ($1 != 4752) bad=1} END {exit (n == 0 || bad)}'"'"''
+  teardown:
+  - bash -eo pipefail -c 'nvidia-smi --query-gpu=clocks.mem --format=csv,noheader,nounits | tee /dev/stderr | awk '"'"'BEGIN {n=0; bad=0} {n++; if ($1 != 4752) bad=1} END {exit (n == 0 || bad)}'"'"''
+  nodes: workers
+  ignore_failure: false

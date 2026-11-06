@@ -1,0 +1,190 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# MiniMax-M3.1 Flash, vLLM + Dynamo 1.5.0, VR200 R37 (vrnvl72): TP2 aggregate (GPUs 0,2), low-latency MLFQ; C14, cap 4.
+# Exact replay of the first seven-point sweep of InferenceMAX PR 1859: CI run 42170068985
+# (commit 4455c46e, srt-slurm 1ca857b2). Every serving setting below is the config.yaml srtctl
+# resolved for that run, including the CI's dspark synthetic-acceptance override (AL 4.04).
+# Changes from the CI config:
+#   - model/container: explicit paths instead of the CI cluster aliases (same files).
+#   - slurm/sbatch_directives/extra_mount: the CI cluster settings for R37, made explicit.
+#   - benchmark: runs `agentx profile` (agentx-harness 1.0.13 + datasets 5.1.0, as CI installed)
+#     with the same flags directly instead of InferenceMAX's srt_agentic.sh; no InferenceMAX
+#     post-processing.
+#   - dropped CI-only post_eval and srun container-workdir=/infmax-workspace.
+# Needs srtctl >= 1ca857b2 and, in R37's srtslurm.yaml,
+#   default_bash_preamble: export PATH=/configs/m31-launch-bin:$PATH
+# so INFMAX_API_CPUS / INFMAX_NUMA_PHYSICAL take effect (configs/m31-launch-bin). See README.md.
+
+schema: 2
+name: m31f-r37-tp2-c14
+model:
+  path: /raid/common-models/minimax-m3.1-flash
+  container: /home/rihuo/m31f-vr200-final-n1-397e38ee-xdr.sqsh
+  precision: fp4
+slurm:
+  account: nv-shared-1
+  partition: batch-r37
+  time_limit: 02:00:00
+sbatch_directives:
+  exclusive: ''
+  cpus-per-task: '352'
+resources:
+  gpu_type: vr200
+  gpus_per_node: 4
+dynamo:
+  install: false
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: round-robin
+  env:
+    DYN_TOKENIZER: fastokens
+    DYN_TOKENIZER_CACHE_BYTES: '1073741824'
+    INFMAX_API_CPUS: 84-87
+observability:
+  enabled: false
+  tachometer:
+    enabled: false
+engine:
+  type: vllm
+  connector: null
+health_check:
+  interval_seconds: 5
+  max_attempts: 1440
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 2
+    args:
+      served-model-name: MiniMaxAI/MiniMax-M3.1-Flash
+      trust-remote-code: true
+      language-model-only: true
+      reasoning-parser: minimax_m3
+      dyn-reasoning-parser: minimax_m3
+      dyn-tool-call-parser: minimax_m3
+      dyn-default-thinking-mode: enabled
+      tensor-parallel-size: 2
+      pipeline-parallel-size: 1
+      block-size: 128
+      enable-prefix-caching: true
+      kv-cache-metrics: true
+      max-model-len: 1048576
+      stream-interval: 20
+      kv-cache-dtype: fp8
+      attention-config: '{"indexer_kv_dtype":"fp8"}'
+      disable-hybrid-kv-cache-manager: true
+      moe-backend: flashinfer_trtllm
+      kernel-config: '{"enable_flashinfer_autotune":true}'
+      numa-bind: true
+      numa-bind-nodes:
+      - 0
+      - 1
+      numa-bind-cpus:
+      - 0-83
+      - 88-167
+      max-num-batched-tokens: 16384
+      gpu-memory-utilization: 0.92
+      speculative-config: '{"method": "dspark", "model": "/model/dspark", "num_speculative_tokens": 7, "draft_sample_method": "probabilistic", "rejection_sample_method": "synthetic", "attention_backend": "FLASH_ATTN", "kv_cache_dtype": "fp8", "synthetic_acceptance_length": 4.04}'
+      max-num-seqs: 4
+      compilation-config: '{"cudagraph_mode":"FULL","cudagraph_capture_sizes":[1,8],"mode":0}'
+      max-cudagraph-capture-size: 8
+      async-scheduling: true
+      hf-overrides: '{"architectures":["MiniMaxM3LowLatencyForConditionalGeneration"]}'
+      additional-config: '{"m3_lowlatency":{"preset":"m3.sm107a.tp2.c1.m31q7","dev":{"check":"off","receipt_dir":"/logs/m3ll-receipts"},"components":{"draft_mk":{"prep":true,"ctxw":true}}}}'
+    env:
+      PYTHONNOUSERSITE: '1'
+      M31_M3LL_BUILD: 830a986n1
+      M31_FI_M31LOC: '1'
+      PYTHONUNBUFFERED: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONPYCACHEPREFIX: /tmp/aria-pycache
+      TMPDIR: /tmp
+      HF_HUB_OFFLINE: '1'
+      VLLM_RPC_BASE_PATH: /tmp
+      VLLM_ENGINE_READY_TIMEOUT_S: '7200'
+      VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: '1800'
+      VLLM_HTTP_TIMEOUT_KEEP_ALIVE: '600'
+      VLLM_CHAT_TEMPLATE_RENDER_TIMEOUT: '600'
+      VLLM_LOG_STATS_INTERVAL: '10'
+      VLLM_FLOAT32_MATMUL_PRECISION: high
+      VLLM_USE_V2_MODEL_RUNNER: '1'
+      VLLM_USE_BREAKABLE_CUDAGRAPH: '1'
+      MM_SPARSE_ATTN_AOT_DISABLE: '1'
+      VLLM_FLASHINFER_ALLREDUCE_BACKEND: trtllm
+      VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR: /tmp/fi-autotune-cache
+      VLLM_MXFP8_CUBLASLT_MIN_M: '36'
+      NCCL_CUMEM_ENABLE: '1'
+      NCCL_MNNVL_ENABLE: '1'
+      NCCL_NVLS_ENABLE: '1'
+      NCCL_ALGO: Ring
+      NCCL_MIN_NCHANNELS: '64'
+      VLLM_M31_LOWBIT_PREFILL_AR: '1'
+      VLLM_M31_LOWBIT_PREFILL_AR_LIB: /opt/m31-unified/lib/liblbt_sm107a_c7c206c1af8cbd9d.so
+      VLLM_M31_LOWBIT_PREFILL_AR_MIN_TOKENS: '1024'
+      VLLM_USE_LOCALITY_DOMAINS: '1'
+      VLLM_MINIMAX_M3_FC2_STATIC_SCALE: '1'
+      VLLM_MOE_LOCALIZE_FREE_FULL_WEIGHTS: '1'
+      VLLM_MOE_LOCALIZE_BACKFILL: '0'
+      VLLM_PLUGINS: m3_lowlatency
+      M31_SCORER_ONE_WAVE: '1'
+      M31_FUSED_DRAFT_SAMPLE: '1'
+      M31_MLFQ_SCHEDULED: '1'
+      M31_MLFQ_DEMOTE_TOKENS: '4000'
+      M31_MLFQ_MAX_PAUSE_S: '60'
+      INFMAX_API_CPUS: 84-87
+    gpu_indices:
+    - 0
+    - 2
+benchmark:
+  type: custom
+  stream_output: true
+  command: |
+    set -euo pipefail
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
+    # Same client runtime as CI: uv venv on Python 3.11 with the versions CI installed.
+    venv=$(mktemp -d /tmp/m31f-agentx-XXXXXX)
+    trap 'rm -rf "$venv"' EXIT
+    /usr/local/bin/uv venv --python 3.11 "$venv"
+    /usr/local/bin/uv pip install --python "$venv/bin/python" --no-config 'agentx-harness==1.0.13' 'datasets==5.1.0'
+    "$venv/bin/hf" download --repo-type dataset semianalysisai/cc-traces-weka-062126
+    IFS=',' read -r -a worker_metrics_urls <<< "${AIPERF_SERVER_METRICS_URLS:?worker metrics URLs were not provided}"
+    out="/logs/agentic/conc_${CONC}"
+    mkdir -p "$out"
+    cmd=(taskset -c 168-175 "$venv/bin/agentx" profile
+      --url "http://${SRT_FRONTEND_HOST}:${SRT_FRONTEND_PORT}"
+      --model MiniMaxAI/MiniMax-M3.1-Flash --tokenizer MiniMaxAI/MiniMax-M3.1-Flash
+      --concurrency "$CONC" --benchmark-duration 3600
+      --tokenizer-trust-remote-code
+      --server-metrics "${worker_metrics_urls[@]}"
+      --output-artifact-dir "$out/aiperf_artifacts"
+      --public-dataset semianalysis_cc_traces_weka_062126)
+    printf '%q ' "${cmd[@]}" > "$out/benchmark_command.txt"; echo >> "$out/benchmark_command.txt"
+    "${cmd[@]}" 2>&1 | tee "$out/benchmark.log"
+  env:
+    CONC: '14'
+    HF_HUB_CACHE: /hf_hub_cache
+    AIPERF_DATASET_MMAP_CACHE_DIR: /aiperf_mmap_cache
+    AIPERF_REQUIRED_SERVER_METRIC_PREFIX: 'vllm:'
+    AIPERF_USE_DYNAMO_CONV_AWARE_ROUTING: '0'
+    AIPERF_DYNAMO_SESSION_TIMEOUT_SECONDS: '3600'
+    AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: 'false'
+    AIPERF_EXPERIMENTAL_FAST: '0'
+extra_mount:
+- /home/nv-shared-1:/home/nv-shared-1
+- /home/nv-shared-1/ai-perf-cache:/aiperf_mmap_cache
+- /home/nv-shared-1/hf-hub-cache:/hf_hub_cache
+identity:
+  frameworks:
+    dynamo: 1.5.0
+host_setup:
+  commands:
+  - bash -eo pipefail -c 'nvidia-smi --query-gpu=clocks.mem --format=csv,noheader,nounits | tee /dev/stderr | awk '"'"'BEGIN {n=0; bad=0} {n++; if ($1 != 4752) bad=1} END {exit (n == 0 || bad)}'"'"''
+  teardown:
+  - bash -eo pipefail -c 'nvidia-smi --query-gpu=clocks.mem --format=csv,noheader,nounits | tee /dev/stderr | awk '"'"'BEGIN {n=0; bad=0} {n++; if ($1 != 4752) bad=1} END {exit (n == 0 || bad)}'"'"''
+  nodes: workers
+  ignore_failure: false
+srun_options:
+  cpu-bind: none
