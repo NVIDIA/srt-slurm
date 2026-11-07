@@ -6,7 +6,8 @@
 from .base import LogMetricDefinition, LogMetricEvent, LogMetricGenerator
 from .sglang import SGLangLogMetrics
 from .tokenspeed import DynamoTokenSpeedLogMetrics
+from .vllm import VLLMLogMetrics
 
-GENERATORS: tuple[LogMetricGenerator, ...] = (DynamoTokenSpeedLogMetrics(), SGLangLogMetrics())
+GENERATORS: tuple[LogMetricGenerator, ...] = (DynamoTokenSpeedLogMetrics(), SGLangLogMetrics(), VLLMLogMetrics())
 
 __all__ = ["GENERATORS", "LogMetricDefinition", "LogMetricEvent", "LogMetricGenerator"]

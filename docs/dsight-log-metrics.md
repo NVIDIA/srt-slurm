@@ -203,6 +203,33 @@ on the same request still contribute points.
 The [upstream request-timing implementation](https://github.com/sgl-project/sglang/blob/f884231f5a3108d9139b0141406ddea60f6a97ff/python/sglang/srt/observability/req_time_stats.py)
 defines the stage boundaries, missing-endpoint behavior, and binary transfer units.
 
+## vLLM engine stats
+
+vLLM's periodic stats logger (`vllm/v1/metrics/loggers.py`) prints one line per
+engine every `VLLM_LOG_STATS_INTERVAL` (10 s by default) while the engine is busy:
+
+```text
+(MainProcess pid=2080868) INFO 10-09 17:50:00 [loggers.py:320] Engine 000: Avg prompt throughput: 1474.0 tokens/s, Avg generation throughput: 313.5 tokens/s, Running: 8 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.3%, Prefix cache hit rate: 6.2%, External prefix cache hit rate: 0.0%
+```
+
+| Metric name to select or pin | Source field | Unit |
+| --- | --- | --- |
+| `log_vllm_running_requests` | `Running: N reqs` | requests |
+| `log_vllm_waiting_requests` | `Waiting: N reqs` | requests |
+| `log_vllm_kv_cache_usage` | `GPU KV cache usage: X%` | ratio (X / 100) |
+| `log_vllm_prefix_cache_hit_rate` | `Prefix cache hit rate: X%` | ratio |
+| `log_vllm_external_prefix_cache_hit_rate` | `External prefix cache hit rate: X%` (KV connector cache) | ratio |
+| `log_vllm_prompt_throughput` | `Avg prompt throughput` | tokens/s |
+| `log_vllm_generation_throughput` | `Avg generation throughput` | tokens/s |
+
+Each series keeps the engine index (`Engine NNN`) as a `dp` rank and the logging
+process name (`MainProcess`, `EngineCore_DP<n>`). The line is on by default and
+is not vLLM's per-iteration logging (`enable_logging_iteration_details`), which
+stays off in measured runs. vLLM prints a local month-day timestamp without a
+year: set `--iteration-timezone`, and the reader takes the year that places the
+stamp nearest the run's recorded start. Idle intervals are not logged, so a gap
+is not a zero.
+
 ## Capacity presentation
 
 Pin **Active decode batch** and **Active KV pages** to see activity and capacity

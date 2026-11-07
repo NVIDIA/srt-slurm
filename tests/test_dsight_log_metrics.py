@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 from test_dsight import write_run
 
 from srtctl.dsight.importer import Importer
 from srtctl.dsight.log_metrics import LogMetricDefinition, LogMetricEvent, LogMetricGenerator
-from srtctl.dsight.log_metrics.reader import read_log_metrics
+from srtctl.dsight.log_metrics.reader import read_log_metrics, timestamp_ns
 from srtctl.dsight.log_metrics.tokenspeed import (
     ACTIVE_DECODE,
     ACTIVE_PAGES,
@@ -21,6 +22,12 @@ from srtctl.dsight.log_metrics.tokenspeed import (
     POOL_PAGES,
     DynamoTokenSpeedLogMetrics,
 )
+from srtctl.dsight.log_metrics.vllm import EXTERNAL_HIT as VLLM_EXTERNAL_HIT
+from srtctl.dsight.log_metrics.vllm import KV_USAGE as VLLM_KV_USAGE
+from srtctl.dsight.log_metrics.vllm import PREFIX_HIT as VLLM_PREFIX_HIT
+from srtctl.dsight.log_metrics.vllm import RUNNING as VLLM_RUNNING
+from srtctl.dsight.log_metrics.vllm import WAITING as VLLM_WAITING
+from srtctl.dsight.log_metrics.vllm import VLLMLogMetrics
 from srtctl.dsight.query import TraceDataset
 from srtctl.dsight.sources import source_identity
 
@@ -251,3 +258,42 @@ def test_carriage_return_progress_keeps_physical_log_line_evidence(tmp_path):
     assert active["points"][0][2:] == snapshot["evidence"]
     assert active["points"][0][3] == 3
     assert metrics(data)[DECODE_LIMIT]["points"][0][3] == 2
+
+
+def vllm_stats(second=33, running=8, waiting=0, usage="0.3", prefix="6.2", engine="000", process="MainProcess"):
+    return (
+        f"({process} pid=2080868) INFO 09-17 10:58:{second:02d} [loggers.py:320] Engine {engine}: "
+        f"Avg prompt throughput: 1474.0 tokens/s, Avg generation throughput: 313.5 tokens/s, "
+        f"Running: {running} reqs, Waiting: {waiting} reqs, GPU KV cache usage: {usage}%, "
+        f"Prefix cache hit rate: {prefix}%, External prefix cache hit rate: 100.0%"
+    )
+
+
+def test_vllm_periodic_stats_become_dp_scoped_log_metrics(tmp_path):
+    _, data = log_run(tmp_path, [vllm_stats(), vllm_stats(36, running=12, waiting=3, usage="41.5"), "unrelated"])
+    series = {s["name"]: s for s in data["metrics"] if s.get("generator") == "vllm"}
+    assert [p[:2] for p in series[VLLM_RUNNING]["points"]] == [[2.0, 8], [5.0, 12]]
+    assert [p[1] for p in series[VLLM_WAITING]["points"]] == [0, 3]
+    assert [p[1] for p in series[VLLM_KV_USAGE]["points"]] == pytest.approx([0.003, 0.415])  # Percent as ratio.
+    assert series[VLLM_PREFIX_HIT]["points"][0][1] == pytest.approx(0.062)
+    assert series[VLLM_EXTERNAL_HIT]["points"][0][1] == pytest.approx(1.0)  # Not confused with the local rate.
+    running = series[VLLM_RUNNING]
+    assert running["rank_kind"] == "dp" and running["rank"] == 0 and running["worker_process"] == "MainProcess"
+    assert running["time_resolution_s"] == 1.0  # vLLM's default formatter prints whole seconds.
+
+
+def test_vllm_engines_are_separate_ranks():
+    source = source_identity(Path("decode-host_decode_w0.out"))
+    events = [
+        VLLMLogMetrics().parse_line(vllm_stats(engine=e, process="EngineCore_DP1"), source) for e in ("000", "001")
+    ]
+    assert [(e.rank, e.rank_kind) for e in events] == [(0, "dp"), (1, "dp")]
+    assert dict(events[0].values)[VLLM_RUNNING] == 8
+
+
+def test_yearless_stamps_take_the_year_nearest_the_run():
+    utc = ZoneInfo("UTC")
+    new_year = timestamp_ns("2027-01-01T00:00:05", utc)
+    assert timestamp_ns("12-31 23:59:59", utc, new_year) == timestamp_ns("2026-12-31T23:59:59", utc)
+    assert timestamp_ns("01-01 00:00:09", utc, new_year) == timestamp_ns("2027-01-01T00:00:09", utc)
+    assert timestamp_ns("01-01 00:00:09", None, new_year) is None  # Local time still needs a timezone.
