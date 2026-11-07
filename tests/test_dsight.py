@@ -18,7 +18,7 @@ import pyarrow.parquet as pq
 import pytest
 from pyarrow import ipc
 
-from srtctl.dsight.build import build_dashboard
+from srtctl.dsight.build import build_dashboard, build_each_client
 from srtctl.dsight.importer import Importer
 from srtctl.dsight.mcp import query_trace
 from srtctl.dsight.model import lifecycle
@@ -359,6 +359,35 @@ def test_multiple_exports_require_explicit_client_selection(artifacts):
     with pytest.raises(ValueError, match="--client"):
         Importer(logs).run()
     assert Importer(logs, client=source).run()["audit"]["client_requests"] == 2
+
+
+def test_each_client_builds_one_report_per_sweep_export(artifacts, tmp_path):
+    logs, _ = artifacts
+    source = next(logs.rglob("profile_export.jsonl"))
+    rows = [json.loads(line) for line in source.read_text().splitlines() if line.strip()]
+    source.unlink()
+    for name in ("trace_c8", "trace_c32", "warmup"):
+        export = logs / "artifacts" / name / "profile_export.jsonl"
+        export.parent.mkdir(parents=True)
+        renamed = []
+        for row in rows:
+            metadata = dict(row["metadata"])
+            for key in ("x_request_id", "request_id"):
+                if key in metadata:
+                    metadata[key] = f"{name}-{metadata[key]}"
+            renamed.append(json.dumps({**row, "metadata": metadata}))
+        export.write_text("\n".join(renamed) + "\n")
+    with pytest.raises(ValueError, match="--each-client") as error:
+        Importer(logs).run()  # Sweeps are never mixed into one report.
+    assert "artifacts/trace_c8/profile_export.jsonl" in str(error.value)
+    measured = sum(row["metadata"].get("benchmark_phase") != "warmup" for row in rows)
+    result = build_each_client(logs, tmp_path / "reports", client=None)  # As the CLI passes it.
+    assert sorted(Path(r["output"]).name for r in result["reports"]) == ["artifacts__trace_c32", "artifacts__trace_c8"]
+    for report in result["reports"]:
+        summary = query_trace(report["output"], "summary")
+        assert summary["counts"]["requests"] == measured  # Only that export's requests.
+    with pytest.raises(ValueError, match="do not combine"):
+        build_each_client(logs, tmp_path / "other", client=logs / "artifacts" / "warmup" / "profile_export.jsonl")
 
 
 def test_rebuild_is_safe_and_mcp_reads_new_generation(artifacts, tmp_path, monkeypatch):

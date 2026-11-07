@@ -77,10 +77,8 @@ class TraceReplayRunner(AIPerfBenchmarkRunner):
 
         model_name = config.served_model_name or config.model.path
 
-        # Format concurrencies as comma-separated string
-        concurrencies = b.concurrencies
-        if isinstance(concurrencies, list):
-            concurrencies = ",".join(str(c) for c in concurrencies)
+        # bench.sh splits on commas; the recipe may use the documented "8x32" form.
+        concurrencies = ",".join(str(c) for c in b.get_concurrency_list())
 
         ttft_threshold = getattr(b, "ttft_threshold_ms", None) or 2000
         itl_threshold = getattr(b, "itl_threshold_ms", None) or 25

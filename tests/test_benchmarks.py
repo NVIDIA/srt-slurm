@@ -563,6 +563,26 @@ class TestCustomBenchmarkRunner:
             "http://ip-node-p0:7500/metrics,http://ip-node-d0:7504/metrics,http://ip-node-d1:7505/metrics"
         )
 
+    @pytest.mark.parametrize(("recipe", "expected"), [(None, "aiperf==0.12.0"), ("aiperf==0.13.0", "aiperf==0.13.0")])
+    def test_aiperf_benchmarks_install_a_pinned_client(self, recipe, expected):
+        from unittest.mock import patch
+
+        from srtctl.benchmarks.trace_replay import TraceReplayRunner
+
+        stage = self._benchmark_stage("dynamo", self._two_node_disagg_processes(), benchmark_type="trace-replay")
+        stage.config.benchmark.aiperf_package = recipe
+        with patch("srtctl.cli.mixins.benchmark_stage.get_hostname_ip", side_effect=lambda node, _: f"ip-{node}"):
+            env = stage._get_benchmark_env(TraceReplayRunner())
+        assert env["AIPERF_PACKAGE"] == expected
+
+    def test_benchmark_failure_excerpt_keeps_the_last_error_lines(self, tmp_path):
+        from srtctl.cli.mixins.benchmark_stage import _error_excerpt
+
+        log = tmp_path / "benchmark.out"
+        log.write_text("ok\n" * 50 + "Traceback (most recent call last):\n  frame\nTokenizerError: bad /model\ndone\n")
+        assert _error_excerpt(log) == ["Traceback (most recent call last):", "TokenizerError: bad /model"]
+        assert _error_excerpt(tmp_path / "missing.out") == []
+
     def test_sglang_pure_tp_custom_metrics_keep_logical_leaders(self):
         env = self._custom_env({"prefill": {"tp-size": 8}, "decode": {"tp-size": 8}})
 
@@ -1387,6 +1407,25 @@ class TestTraceReplayRunner:
         assert cmd[6] == "3000"  # ttft threshold
         assert cmd[7] == "7"  # itl threshold
         assert cmd[8] == "/model"  # tokenizer path (local model)
+
+    @pytest.mark.parametrize("concurrencies", [[8, 32], "8x32", "8,32"])
+    def test_build_command_accepts_every_concurrency_spelling(self, concurrencies):
+        """bench.sh splits on commas, so the documented "8x32" string is normalized too."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.trace_replay import TraceReplayRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/qwen", container="/image", precision="bf16"),
+            resources=ResourceConfig(gpu_type="gb300"),
+            benchmark=BenchmarkConfig(type="trace-replay", trace_file="/t.jsonl", concurrencies=concurrencies),
+        )
+        assert TraceReplayRunner().build_command(config, runtime)[5] == "8,32"
 
     def test_build_command_default_thresholds(self):
         """Build command uses default thresholds when not specified."""
