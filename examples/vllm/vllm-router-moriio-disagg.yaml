@@ -3,7 +3,7 @@
 #
 # `connector: moriio` puts the Router in discovery mode: it is launched with
 # `--vllm-pd-disaggregation --kv-connector moriio --vllm-discovery-address
-# 0.0.0.0:36367` and no worker URLs. Each `vllm serve` worker gets a role-aware
+# 0.0.0.0:8200` and no worker URLs. Each `vllm serve` worker gets a role-aware
 # `MoRIIOConnector` --kv-transfer-config that names the Router's address, the
 # worker's own routable IP and HTTP port, and the handshake and notify ports the
 # allocator reserved for it, then registers itself over ZMQ. Readiness is the

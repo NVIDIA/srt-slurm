@@ -57,7 +57,7 @@ class NodePortAllocator:
         allocator.next(HTTP_PORTS, "node0")  # 6100
         allocator.next(HTTP_PORTS, "node0")  # 6132: a second worker on the node
         allocator.next(HTTP_PORTS, "node1")  # 6100: per node, so node1 starts over
-        allocator.next(NIXL_PORTS, size=4)   # 5400, and the next NIXL allocation is 5404
+        allocator.next(NIXL_PORTS, size=4)   # 6820, and the next NIXL allocation is 6824
     """
 
     bases: dict[str, int] = field(default_factory=dict)
@@ -77,6 +77,9 @@ class NodePortAllocator:
             raise ValueError(f"{kind.name} ports are allocated per node; pass the node")
         key = (kind.name, node if kind.per_node else None)
         ordinal = self._next.get(key, 0)
+        if ordinal + size > kind.cap:
+            where = f"on {node}" if kind.per_node else "in one job"
+            raise ValueError(f"{kind.name} port block exhausted: more than {kind.cap} ports {where}")
         self._next[key] = ordinal + size
         port = self.bases.get(kind.name, kind.base) + ordinal * kind.stride
         last = port + (size - 1) * kind.stride

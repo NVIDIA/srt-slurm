@@ -5,9 +5,17 @@
 
 Fixed ports are plain constants. Per-process ports are ``PortKind`` ranges at
 the bottom of this module, handed out by ``srtctl.core.topology.NodePortAllocator``.
+
+Every port srtctl chooses sits in 1024-8999, below ``EPHEMERAL_FLOOR``: some
+clusters set net.ipv4.ip_local_port_range as low as 9000, and a port inside that
+range can already be held by an unrelated outbound socket on the node when the
+listener binds (EADDRINUSE). ``tests/test_port_layout.py`` checks the blocks
+stay below the floor and apart; the few that cannot are listed there with why.
 """
 
 from dataclasses import dataclass
+
+EPHEMERAL_FLOOR = 9000
 
 # Shared infrastructure services.
 ETCD_CLIENT_PORT = 2379
@@ -31,40 +39,38 @@ SGLANG_BOOTSTRAP_PORT_BASE = 7200
 SGLANG_DIST_INIT_PORT_BASE = 8300
 # One per physical SGLang server process. This is used for SGLang's local TP
 # rendezvous; a deterministic assignment avoids concurrent free-port races.
-# Kept below 9000 so it stays outside wide ephemeral ranges (e.g. 9000-65000),
-# where an unrelated outbound socket on the node can already hold the port and
-# the TCPStore bind fails with EADDRINUSE. 4400-5399 sits between OTel (4317)
-# and NIXL (5400), room for 1000 server processes per job.
 SGLANG_NCCL_PORT_BASE = 4400
 # HTTP sidecar of an SGLang gRPC-mode server (--grpc-http-sidecar-port): /metrics and
 # the profiler routes, which the gRPC listener does not serve.
 SGLANG_GRPC_HTTP_PORT_BASE = 6700
-# SGLang Model Gateway (sglang_router) Prometheus listener; the router's own default.
+# SGLang Model Gateway (sglang_router) Prometheus listener.
 # Only started when --prometheus-port is passed, which srtctl does so tachometer can scrape it.
-SGLANG_ROUTER_METRICS_PORT = 29000
+SGLANG_ROUTER_METRICS_PORT = 8190
 
 # Shepherd Model Gateway (frontend.type: smg) Prometheus listener on each router node,
 # passed as --prometheus-port so srtctl, not upstream's default, owns it.
-SMG_METRICS_PORT = 29000
+SMG_METRICS_PORT = 8191
 
 # llm-d router-node listeners, passed explicitly; Envoy admin serves /ready.
-LLM_D_EPP_GRPC_PORT = 9002
-LLM_D_EPP_HEALTH_PORT = 9003
-LLM_D_EPP_METRICS_PORT = 9090
-LLM_D_ENVOY_ADMIN_PORT = 9901
+LLM_D_EPP_GRPC_PORT = 8210
+LLM_D_EPP_HEALTH_PORT = 8211
+LLM_D_EPP_METRICS_PORT = 8212
+LLM_D_ENVOY_ADMIN_PORT = 8213
 # EPP binds this ZMQ subscriber; all KV-event publishers connect to it.
 LLM_D_EPP_KV_EVENTS_PORT = 5557
 # Per-worker proxy listeners, including llm-d decode sidecars; see PROXY_PORTS.
-WORKER_PROXY_PORT_BASE = 9600
+WORKER_PROXY_PORT_BASE = 7300
 
 # TRT-LLM torch.distributed bootstrap, one port per MPI endpoint.
-TRTLLM_DIST_INIT_PORT_BASE = 29500
+TRTLLM_DIST_INIT_PORT_BASE = 2050
+# TRT-LLM DWDP rendezvous (TRTLLM_DWDP_MASTER_PORT) on the rank-0 worker's node.
+TRTLLM_DWDP_MASTER_PORT = 8220
 
 # TokenSpeed --port, one per process: a follower node's health listener and the base
 # of the engine's own NCCL free-port scan, which starts 100 to 1000 ports above it.
 TOKENSPEED_PORT_BASE = 10000
 TOKENSPEED_PORT_STRIDE = 1024
-TOKENSPEED_ZMQ_PORT_BASE = 31000
+TOKENSPEED_ZMQ_PORT_BASE = 2200
 TOKENSPEED_METRICS_PORT_BASE = 6800
 
 # Mooncake transfer-engine ports (shared by SGLang and vLLM backends).
@@ -82,16 +88,16 @@ LMCACHE_SERVER_PORT = 8750
 LMCACHE_HTTP_PORT = 8751
 
 # vLLM backend ports.
-VLLM_NIXL_PORT_BASE = 5400
+VLLM_NIXL_PORT_BASE = 6820
 # vLLM Router discovery endpoint (frontend.type: vllm-router with a discovery
 # connector): the one ZMQ listener on the router node that MoRI-IO workers
 # register their HTTP and transfer addresses with (--vllm-discovery-address).
-VLLM_DISCOVERY_PORT = 36367
-# MoRI-IO adds rank offsets to both bases. Keep these blocks below Linux's
-# default ephemeral range (32768-60999), used by its other bind(0) listeners.
-VLLM_MORIIO_HANDSHAKE_PORT_BASE = 26000
-VLLM_MORIIO_NOTIFY_PORT_BASE = 27000
-VLLM_DATA_PARALLEL_RPC_PORT = 8400
+VLLM_DISCOVERY_PORT = 8200
+# MoRI-IO adds rank offsets to both bases. Keep these blocks out of the ephemeral
+# range, used by its other bind(0) listeners.
+VLLM_MORIIO_HANDSHAKE_PORT_BASE = 4900
+VLLM_MORIIO_NOTIFY_PORT_BASE = 5560
+VLLM_DATA_PARALLEL_RPC_PORT = 7400
 VLLM_PORT_BASE = 20000
 VLLM_PORT_STRIDE = 50
 # torch.distributed rendezvous of a multi-node vLLM engine (--master-port; vLLM's own
@@ -102,7 +108,7 @@ VLLM_MASTER_PORT_STRIDE = 100
 
 # Dynamo runtime and connector ports.
 DYN_SYSTEM_PORT_BASE = 7500
-KVBM_ZMQ_PORT_BASE = 5600
+KVBM_ZMQ_PORT_BASE = 1024
 
 # Ray cluster (services[].type: ray): GCS on the head, dashboard (also the job
 # submission API) on the head. Ray's own defaults; options.port / dashboard_port move them.
@@ -110,13 +116,17 @@ RAY_GCS_PORT = 6379
 RAY_DASHBOARD_PORT = 8265
 
 # Dynamo sidecar gRPC listener next to a native engine (dynamo.sidecar_port), one
-# per sidecar process across the job. Keep this block below Linux's default
-# ephemeral range (32768-60999): a loopback connect to a port inside it can be
-# handed that port as its source and connect to itself, and the TIME_WAIT socket
-# it leaves makes the engine's bind fail. 19000 clears TokenSpeed's per-node
-# scans (below 18200 at 8 processes per node), and stays under vLLM's scan
-# ranges (20000) for up to 1000 sidecars.
-DYNAMO_SIDECAR_GRPC_PORT = 19000
+# per sidecar process across the job. Outside the ephemeral range on purpose: a
+# loopback connect to a port inside it can be handed that port as its source and
+# connect to itself, and the TIME_WAIT socket it leaves makes the engine's bind fail.
+DYNAMO_SIDECAR_GRPC_PORT = 2400
+
+# Prometheus exporters (observability.tachometer), offset from the conventional
+# 9400/9100 because managed clusters may run host exporters there.
+DCGM_EXPORTER_PORT = 9401
+NODE_EXPORTER_PORT = 9101
+PROCESS_EXPORTER_PORT = 9256
+CPU_POWER_EXPORTER_PORT = 9405
 
 
 def rank_offset_subscriber_port(port: int, rank: int) -> int:
@@ -137,6 +147,8 @@ class PortKind:
     range of its own from the port it is given), and ``per_node`` whether the
     counter restarts on every node (the port is only bound there) or runs
     across the whole job (a side channel that peers on other nodes address).
+    ``cap`` is the most slots one counter hands out, so the block ends at
+    ``base + (cap - 1) * stride`` and never runs into the next one.
     Every per-process port is allocated once in ``endpoints_to_processes`` and
     carried on ``Process``; nothing derives a port from another port.
     """
@@ -145,30 +157,31 @@ class PortKind:
     base: int
     stride: int = 1
     per_node: bool = False
+    cap: int = 1
 
 
 # Bound on every worker process.
-SYS_PORTS = PortKind("sys", DYN_SYSTEM_PORT_BASE)
-HTTP_PORTS = PortKind("http", SGLANG_HTTP_PORT_BASE, SGLANG_HTTP_PORT_STRIDE, per_node=True)
-BOOTSTRAP_PORTS = PortKind("bootstrap", SGLANG_BOOTSTRAP_PORT_BASE, per_node=True)
-KV_EVENTS_PORTS = PortKind("kv_events", KV_EVENTS_PORT_BASE)
-NIXL_PORTS = PortKind("nixl", VLLM_NIXL_PORT_BASE)
-DP_RPC_PORTS = PortKind("dp_rpc", VLLM_DATA_PARALLEL_RPC_PORT, per_node=True)
+SYS_PORTS = PortKind("sys", DYN_SYSTEM_PORT_BASE, cap=500)
+HTTP_PORTS = PortKind("http", SGLANG_HTTP_PORT_BASE, SGLANG_HTTP_PORT_STRIDE, per_node=True, cap=8)
+BOOTSTRAP_PORTS = PortKind("bootstrap", SGLANG_BOOTSTRAP_PORT_BASE, per_node=True, cap=64)
+KV_EVENTS_PORTS = PortKind("kv_events", KV_EVENTS_PORT_BASE, cap=1200)
+NIXL_PORTS = PortKind("nixl", VLLM_NIXL_PORT_BASE, cap=380)
+DP_RPC_PORTS = PortKind("dp_rpc", VLLM_DATA_PARALLEL_RPC_PORT, per_node=True, cap=64)
 # KVBM leader ZMQ pair: pub at the port, ack at the port + 1.
-KVBM_ZMQ_PORTS = PortKind("kvbm_zmq", KVBM_ZMQ_PORT_BASE, 2)
-SIDECAR_GRPC_PORTS = PortKind("sidecar_grpc", DYNAMO_SIDECAR_GRPC_PORT)
+KVBM_ZMQ_PORTS = PortKind("kvbm_zmq", KVBM_ZMQ_PORT_BASE, 2, cap=500)
+SIDECAR_GRPC_PORTS = PortKind("sidecar_grpc", DYNAMO_SIDECAR_GRPC_PORT, cap=500)
 # Allocated on each worker's node for Frontend.proxied_worker_modes.
-PROXY_PORTS = PortKind("proxy", WORKER_PROXY_PORT_BASE, per_node=True)
+PROXY_PORTS = PortKind("proxy", WORKER_PROXY_PORT_BASE, per_node=True, cap=64)
 # Engine-specific: the backend allocates these for its own processes.
-NCCL_PORTS = PortKind("nccl", SGLANG_NCCL_PORT_BASE)
-DIST_INIT_PORTS = PortKind("dist_init", SGLANG_DIST_INIT_PORT_BASE, per_node=True)
-GRPC_HTTP_PORTS = PortKind("grpc_http", SGLANG_GRPC_HTTP_PORT_BASE, per_node=True)
-VLLM_SCAN_PORTS = PortKind("vllm_scan", VLLM_PORT_BASE, VLLM_PORT_STRIDE)
+NCCL_PORTS = PortKind("nccl", SGLANG_NCCL_PORT_BASE, cap=500)
+DIST_INIT_PORTS = PortKind("dist_init", SGLANG_DIST_INIT_PORT_BASE, per_node=True, cap=400)
+GRPC_HTTP_PORTS = PortKind("grpc_http", SGLANG_GRPC_HTTP_PORT_BASE, per_node=True, cap=32)
+VLLM_SCAN_PORTS = PortKind("vllm_scan", VLLM_PORT_BASE, VLLM_PORT_STRIDE, cap=900)
 # vLLM discovery-connector (MoRI-IO) workers: one port per local rank in each block.
-MORIIO_HANDSHAKE_PORTS = PortKind("moriio_handshake", VLLM_MORIIO_HANDSHAKE_PORT_BASE)
-MORIIO_NOTIFY_PORTS = PortKind("moriio_notify", VLLM_MORIIO_NOTIFY_PORT_BASE)
-TRTLLM_DIST_INIT_PORTS = PortKind("trtllm_dist_init", TRTLLM_DIST_INIT_PORT_BASE)
-TOKENSPEED_PORTS = PortKind("tokenspeed", TOKENSPEED_PORT_BASE, TOKENSPEED_PORT_STRIDE, per_node=True)
+MORIIO_HANDSHAKE_PORTS = PortKind("moriio_handshake", VLLM_MORIIO_HANDSHAKE_PORT_BASE, cap=512)
+MORIIO_NOTIFY_PORTS = PortKind("moriio_notify", VLLM_MORIIO_NOTIFY_PORT_BASE, cap=512)
+TRTLLM_DIST_INIT_PORTS = PortKind("trtllm_dist_init", TRTLLM_DIST_INIT_PORT_BASE, cap=128)
+TOKENSPEED_PORTS = PortKind("tokenspeed", TOKENSPEED_PORT_BASE, TOKENSPEED_PORT_STRIDE, per_node=True, cap=8)
 # SMG binds one handshake per endpoint on the frontend node, including remote workers.
-TOKENSPEED_ZMQ_PORTS = PortKind("tokenspeed_zmq", TOKENSPEED_ZMQ_PORT_BASE)
-TOKENSPEED_METRICS_PORTS = PortKind("tokenspeed_metrics", TOKENSPEED_METRICS_PORT_BASE, per_node=True)
+TOKENSPEED_ZMQ_PORTS = PortKind("tokenspeed_zmq", TOKENSPEED_ZMQ_PORT_BASE, cap=128)
+TOKENSPEED_METRICS_PORTS = PortKind("tokenspeed_metrics", TOKENSPEED_METRICS_PORT_BASE, per_node=True, cap=16)

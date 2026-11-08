@@ -562,17 +562,17 @@ consumer derives one port from another.
 | `sys` | 7500 | 1 | global | every process (`DYN_SYSTEM_PORT`) |
 | `http` | 6100 | 32 | per node | endpoint leaders (a router connects) |
 | `bootstrap` | 7200 | 1 | per node | prefill endpoints |
-| `kv_events` | 5200 | 1 | global | every process (block per DP rank: vLLM local, SGLang the worker's) |
-| `nixl` | 5400 | 1 | global | every process (block per DP size) |
-| `dp_rpc` | 8400 | 1 | per node | vLLM DP endpoints |
-| `kvbm_zmq` | 5600 | 2 | global | KVBM leaders (pub, ack = pub + 1) |
-| `sidecar_grpc` | 19000 | 1 | global | Dynamo sidecars (base: `sidecar_port`) |
-| `nccl` | 4400 | 1 | global | SGLang servers (below 9000, outside wide ephemeral ranges) |
+| `kv_events` | 3000 | 1 | global | every process (block per DP rank: vLLM local, SGLang the worker's) |
+| `nixl` | 6820 | 1 | global | every process (block per DP size) |
+| `dp_rpc` | 7400 | 1 | per node | vLLM DP endpoints |
+| `kvbm_zmq` | 1024 | 2 | global | KVBM leaders (pub, ack = pub + 1) |
+| `sidecar_grpc` | 2400 | 1 | global | Dynamo sidecars (base: `sidecar_port`) |
+| `nccl` | 4400 | 1 | global | SGLang servers |
 | `dist_init` | 8300 | 1 | per node | SGLang multi-node endpoints (leader) |
 | `vllm_scan` | 20000 | 50 | global | vLLM `get_open_port()` scan range |
-| `moriio_handshake` | 40000 | 1 | global | vLLM MoRI-IO workers (peer handshake) |
-| `moriio_notify` | 41000 | 1 | global | vLLM MoRI-IO workers (block per rank) |
-| `trtllm_dist_init` | 29500 | 1 | global | TRT-LLM endpoints (leader's `MASTER_PORT`) |
+| `moriio_handshake` | 4900 | 1 | global | vLLM MoRI-IO workers (peer handshake) |
+| `moriio_notify` | 5560 | 1 | global | vLLM MoRI-IO workers (block per rank) |
+| `trtllm_dist_init` | 2050 | 1 | global | TRT-LLM endpoints (leader's `MASTER_PORT`) |
 
 Fixed constants: frontend public port 8000, internal 8180 (behind nginx); etcd 2379, NATS 4222.
 

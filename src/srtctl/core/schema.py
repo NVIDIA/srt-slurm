@@ -73,7 +73,13 @@ from srtctl.core.power.contract import (
 from srtctl.core.power.mapping import DCGM_POWER_MAPPING, PowerMetricMapping
 from srtctl.core.roles import COLOCATE, PER_ROLE_ENGINE_KEYS, ROLE_NAMES, ROLE_TO_MODE
 from srtctl.core.source import DynamoSourceConfig, is_commit_sha
-from srtctl.ports import DYNAMO_SIDECAR_GRPC_PORT
+from srtctl.ports import (
+    CPU_POWER_EXPORTER_PORT,
+    DCGM_EXPORTER_PORT,
+    DYNAMO_SIDECAR_GRPC_PORT,
+    NODE_EXPORTER_PORT,
+    PROCESS_EXPORTER_PORT,
+)
 from srtctl.services.config import ServiceConfig
 
 if TYPE_CHECKING:
@@ -1746,14 +1752,14 @@ class TelemetryExporterConfig:
 # resolves these fields.
 DEFAULT_DCGM_EXPORTER = TelemetryExporterConfig(
     container_image="nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04",
-    port=9401,
+    port=DCGM_EXPORTER_PORT,
     # No command: the tachometer launch derives --collect-interval from
     # observability.tachometer.collect_interval_ms so the exporter samples
     # exactly as often as it is scraped. An explicit command still wins.
 )
 DEFAULT_NODE_EXPORTER = TelemetryExporterConfig(
     container_image="quay.io#prometheus/node-exporter:v1.8.2",
-    port=9101,
+    port=NODE_EXPORTER_PORT,
 )
 # Per-process and per-thread host telemetry from /proc: CPU seconds by mode,
 # thread count and thread CPU by thread name, context switches, RSS, open fds --
@@ -1771,7 +1777,7 @@ DEFAULT_NODE_EXPORTER = TelemetryExporterConfig(
 # a shell and leave `binary` unset to get the container launch.
 DEFAULT_PROCESS_EXPORTER = TelemetryExporterConfig(
     container_image="",
-    port=9256,
+    port=PROCESS_EXPORTER_PORT,
     binary="configs/process-exporter",
 )
 
@@ -2054,7 +2060,7 @@ class CpuPowerExporterConfig:
     """
 
     # Port the exporter listens on and the head-node collector scrapes.
-    port: int = 9405
+    port: int = CPU_POWER_EXPORTER_PORT
     source: CpuPowerExporterSource = "auto"
 
     Schema: ClassVar[type[Schema]] = Schema
@@ -2734,12 +2740,15 @@ class HealthCheckConfig:
             behind a live launcher is only noticed when this health window runs out.
         extra_fatal_log_patterns: Additional regular expressions, matched against
             every new worker log line, that fail the run the same way.
+        fail_on_ephemeral_ports: Fail before workers start, instead of warning, when a port
+            the job assigned lies inside its node's unreserved ip_local_port_range.
     """
 
     max_attempts: int = 180
     interval_seconds: int = 10
     fatal_log_markers: bool = True
     extra_fatal_log_patterns: list[str] = field(default_factory=list)
+    fail_on_ephemeral_ports: bool = False
 
     Schema: ClassVar[type[Schema]] = Schema
 

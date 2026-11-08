@@ -24,7 +24,7 @@ from srtctl.backends.base import (
     role_mooncake_store_config,
 )
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
-from srtctl.ports import DYN_SYSTEM_PORT_BASE, MOONCAKE_MASTER_PORT, TRTLLM_DIST_INIT_PORTS
+from srtctl.ports import DYN_SYSTEM_PORT_BASE, MOONCAKE_MASTER_PORT, TRTLLM_DIST_INIT_PORTS, TRTLLM_DWDP_MASTER_PORT
 
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
@@ -224,7 +224,6 @@ DWDP_RANK_ENV = "TRTLLM_DWDP_RANK"
 DWDP_MASTER_ADDR_ENV = "TRTLLM_DWDP_MASTER_ADDR"
 DWDP_MASTER_PORT_ENV = "TRTLLM_DWDP_MASTER_PORT"
 DWDP_RENDEZVOUS_TIMEOUT_ENV = "TRTLLM_DWDP_RENDEZVOUS_TIMEOUT_S"
-DWDP_MASTER_PORT = 29600
 DWDP_RENDEZVOUS_TIMEOUT_S = 3600
 # Container path of the job's log dir (what build_worker_command writes the engine YAML under).
 _CONTAINER_LOG_DIR = "/logs"
@@ -456,7 +455,7 @@ class TRTLLMBackend(Backend):
         private = self.dwdp_private_dir(process)
         env = {
             DWDP_RANK_ENV: str(process.endpoint_index),
-            DWDP_MASTER_PORT_ENV: str(DWDP_MASTER_PORT),
+            DWDP_MASTER_PORT_ENV: str(TRTLLM_DWDP_MASTER_PORT),
             DWDP_RENDEZVOUS_TIMEOUT_ENV: str(DWDP_RENDEZVOUS_TIMEOUT_S),
         }
         for key, value in (

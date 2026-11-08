@@ -494,8 +494,8 @@ def test_vllm_sidecar_exposes_each_nodes_hybrid_dp_range(dp_size: int) -> None:
         assert "--headless" not in engine
         assert engine[engine.index("--data-parallel-address") + 1] == node_ips["node0"]
         assert engine[engine.index("--data-parallel-rpc-port") + 1] == str(processes[0].dp_rpc_port)
-        assert engine[engine.index("--grpc-port") + 1] == str(19000 + i)
-        assert f"python3 -m dynamo.vllm.sidecar --grpc-endpoint 127.0.0.1:{19000 + i}" in script
+        assert engine[engine.index("--grpc-port") + 1] == str(2400 + i)
+        assert f"python3 -m dynamo.vllm.sidecar --grpc-endpoint 127.0.0.1:{2400 + i}" in script
         assert 'wait -n "${ENGINE_PID}" "${SIDECAR_PID}"' in script
         kv_config = json.loads(engine[engine.index("--kv-events-config") + 1])
         assert kv_config["endpoint"] == f"tcp://{node_ips[process.node]}:{process.kv_events_port}"
