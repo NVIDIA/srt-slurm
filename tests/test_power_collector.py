@@ -1173,6 +1173,7 @@ class TestRequiredReadinessGate:
         config.frontend.type = "dynamo"
         config.profiling.enabled = False
         config.reporting = None
+        config.host_memory_check.enabled = False
         runtime = MagicMock()
         runtime.log_dir = tmp_path
         runtime.job_id = "12345"

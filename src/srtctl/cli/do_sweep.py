@@ -549,8 +549,9 @@ class SweepOrchestrator(
         launch turns that into an immediate error naming the node.
         """
         check = self.config.host_memory_check
-        roles = self.config.active_role_backends()
-        if not (check.enabled and any(backend.pinned_host_bytes_per_gpu(role) for role, backend in roles)):
+        modes: tuple[WorkerMode, ...] = ("prefill", "decode", "agg")
+        backend_for = self.config.backend_for_role
+        if not (check.enabled and any(backend_for(mode).pinned_host_bytes_per_gpu(mode) for mode in modes)):
             return  # nothing planned: leave the worker topology to the worker stage
         planned = self._planned_host_bytes()
         procs = []
