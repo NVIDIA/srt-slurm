@@ -55,7 +55,7 @@ env_to_set:
 srun_export_env:
     ENROOT_REMAP_ROOT: yes
 bash_preamble: |
-    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing dynamo 1.4.2...' && pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime==1.4.2 ai-dynamo==1.4.2 && echo 'Dynamo 1.4.2 installed' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock" && ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing dynamo 1.4.2...' && pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime==1.4.2 ai-dynamo==1.4.2 && echo 'Dynamo 1.4.2 installed' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock" && case ",${UCX_TLS:-all}," in *,all,*|*,cuda,*|*,cuda_copy,*|,^*) ;; *) echo "srtctl: UCX_TLS=$UCX_TLS has no CUDA transport for NIXL; prepending cuda_copy,cuda_ipc,sm,self" >&2 && export UCX_TLS="cuda_copy,cuda_ipc,sm,self,$UCX_TLS" ;; esac && ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
     __FINGERPRINT_EOF__
     ) || true )
@@ -91,7 +91,7 @@ env_to_set:
 srun_export_env:
     ENROOT_REMAP_ROOT: yes
 bash_preamble: |
-    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing dynamo 1.4.2...' && pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime==1.4.2 ai-dynamo==1.4.2 && echo 'Dynamo 1.4.2 installed' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock" && ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing dynamo 1.4.2...' && pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime==1.4.2 ai-dynamo==1.4.2 && echo 'Dynamo 1.4.2 installed' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock" && case ",${UCX_TLS:-all}," in *,all,*|*,cuda,*|*,cuda_copy,*|,^*) ;; *) echo "srtctl: UCX_TLS=$UCX_TLS has no CUDA transport for NIXL; prepending cuda_copy,cuda_ipc,sm,self" >&2 && export UCX_TLS="cuda_copy,cuda_ipc,sm,self,$UCX_TLS" ;; esac && ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
     __FINGERPRINT_EOF__
     ) || true )

@@ -358,6 +358,10 @@ class Backend(ABC):
         """
         return False
 
+    def uses_nixl(self, mode: WorkerMode) -> bool:
+        """Whether the mode's workers move KV cache over NIXL, whose UCX backend needs a CUDA transport in UCX_TLS."""
+        return False
+
     def direct_worker_scheme(self, mode: WorkerMode) -> str:
         """URL transport of the engine's native workers behind a static router."""
         return "grpc" if self.is_grpc_mode(mode) else "http"

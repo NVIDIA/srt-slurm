@@ -34,7 +34,7 @@ env_to_set:
     VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
     VLLM_PORT: 20000
 bash_preamble: |
-    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    case ",${UCX_TLS:-all}," in *,all,*|*,cuda,*|*,cuda_copy,*|,^*) ;; *) echo "srtctl: UCX_TLS=$UCX_TLS has no CUDA transport for NIXL; prepending cuda_copy,cuda_ipc,sm,self" >&2 && export UCX_TLS="cuda_copy,cuda_ipc,sm,self,$UCX_TLS" ;; esac && ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
     __FINGERPRINT_EOF__
     ) || true )
@@ -58,7 +58,7 @@ env_to_set:
     VLLM_NIXL_SIDE_CHANNEL_PORT: 5401
     VLLM_PORT: 20050
 bash_preamble: |
-    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    case ",${UCX_TLS:-all}," in *,all,*|*,cuda,*|*,cuda_copy,*|,^*) ;; *) echo "srtctl: UCX_TLS=$UCX_TLS has no CUDA transport for NIXL; prepending cuda_copy,cuda_ipc,sm,self" >&2 && export UCX_TLS="cuda_copy,cuda_ipc,sm,self,$UCX_TLS" ;; esac && ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
     __FINGERPRINT_EOF__
     ) || true )

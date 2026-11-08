@@ -418,6 +418,11 @@ class TRTLLMBackend(Backend):
             env.setdefault("TLLM_NUMA_AWARE_WORKER_AFFINITY", "0")
         return env
 
+    def uses_nixl(self, mode: WorkerMode) -> bool:
+        """Whether the role's ``cache_transceiver_config.backend`` is NIXL."""
+        transceiver = self.get_config_for_mode(mode).get("cache_transceiver_config")
+        return isinstance(transceiver, Mapping) and str(transceiver.get("backend", "")).upper() == "NIXL"
+
     @property
     def numa_wrapper_policy(self) -> NumaWrapperPolicy | None:
         """Resolve the memory policy applied by configs/numa_cpu_bind.sh."""

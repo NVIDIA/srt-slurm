@@ -150,6 +150,12 @@ Environment variable values support per-worker templating with these placeholder
 
 **Note**: For per-role environment variables, use `roles.prefill.env`, `roles.decode.env`, or `roles.agg.env` (see [roles](topology.md#roles)). The role's `env` is applied first and the global `environment` after it, so a key set in both takes the global value.
 
+### UCX transports for NIXL
+
+NIXL 1.5 and later refuse to start their UCX backend on a node with NVIDIA GPUs when `UCX_TLS` is set without a CUDA transport ([`validateTlsCudaSupport`](https://github.com/ai-dynamo/nixl/blob/v1.5.0/src/plugins/ucx/config.cpp#L30-L86)). Some clusters' container runtimes inject `UCX_TLS=tcp` into every container, for example from an enroot `environ.d` file, and the prefill and decode workers then die at KV transfer init with `Invalid UCX_TLS=tcp for NIXL UCX backend`.
+
+Prefill and decode workers that move KV over NIXL (SGLang `disaggregation-transfer-backend: nixl`, the vLLM `NixlConnector`, TRT-LLM `cache_transceiver_config.backend: NIXL`) check `UCX_TLS` inside the container before the engine starts. When NIXL would reject it, srtctl prepends `cuda_copy,cuda_ipc,sm,self` (`tcp` becomes `cuda_copy,cuda_ipc,sm,self,tcp`) and prints a `srtctl: UCX_TLS=...` line to the worker log. An unset `UCX_TLS`, a value NIXL accepts and a deny list (`^...`) are left alone. A `UCX_TLS` set in `environment` or `roles.<role>.env` is used as written. On multi-node NVLink systems (GB200/GB300 NVL72), `cuda_ipc` also reaches GPUs on other nodes when UCX detects the fabric; `UCX_CUDA_IPC_ENABLE_MNNVL` (default `try`) controls that, and `"y"` in `environment` requires it.
+
 ## extra_mount
 
 Additional container mounts as a list of mount specifications.
