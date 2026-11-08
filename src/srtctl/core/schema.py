@@ -2207,6 +2207,14 @@ TRTLLM_ENGINE_DEFAULTS: dict[str, bool] = {
 # path is reachable from every node without any extra recipe wiring.
 _DYNAMO_CACHE_ROOT = "/configs/dynamo-wheels"
 
+# `-C target-cpu=native` only on x86_64: on aarch64 (Grace) LLVM codegen for some
+# crates stalls for over an hour with it. A RUSTFLAGS from the environment replaces
+# the default; `--cfg tokio_unstable` is always added.
+_DYNAMO_RUSTFLAGS_EXPORT = (
+    'if [ -z "${RUSTFLAGS:-}" ] && [ "$(uname -m)" = x86_64 ]; then RUSTFLAGS="-C target-cpu=native"; fi && '
+    'export RUSTFLAGS="${RUSTFLAGS:-} --cfg tokio_unstable" && '
+)
+
 
 def dynamo_source_cache_key(dynamo_hash: str, cargo_patches: list[str] | None = None) -> str:
     """Return the cache key shared by Slurm and direct source builds.
@@ -2312,7 +2320,7 @@ def _hash_cached_source_install(
         f"cd dynamo && {checkout_cmd} && "
         f"{override_cmd}"
         f"cd lib/bindings/python/ && "
-        f'export RUSTFLAGS="${{RUSTFLAGS:-}} -C target-cpu=native --cfg tokio_unstable" && '
+        f"{_DYNAMO_RUSTFLAGS_EXPORT}"
         f"rm -f /tmp/ai_dynamo_runtime*.whl && "
         f"maturin build --release -o /tmp && "
         # Populate cache atomically: copy artifacts first, touch .complete last.
@@ -2354,7 +2362,7 @@ def _live_source_install_for_top_of_tree() -> str:
         f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         "cd dynamo && "
         "cd lib/bindings/python/ && "
-        'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
+        f"{_DYNAMO_RUSTFLAGS_EXPORT}"
         "maturin build --release -o /tmp && "
         "pip install /tmp/ai_dynamo_runtime*.whl && "
         "cd /sgl-workspace/dynamo/ && "
@@ -2374,7 +2382,7 @@ def _live_source_install_for_top_of_tree() -> str:
         f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         "cd dynamo && "
         "cd lib/bindings/python/ && "
-        'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
+        f"{_DYNAMO_RUSTFLAGS_EXPORT}"
         "rm -f /tmp/ai_dynamo_runtime*.whl && "
         "maturin build --release -o /tmp && "
         "pip install --break-system-packages /tmp/ai_dynamo_runtime*.whl --force-reinstall && "

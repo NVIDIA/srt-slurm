@@ -211,6 +211,7 @@ Fields: [DynamoConfig](schema-reference.md#dynamoconfig), [DynamoSourceConfig](s
 - `rev` must be immutable: a commit SHA, a tag such as `v1.4.2`, or `refs/pull/<n>/head` for an unmerged PR. `main`, `master`, and `HEAD` are rejected; pin the commit you mean.
 - `srtctl apply` resolves a non-commit `rev` with `git ls-remote`, writes the commit as `source.sha` into the submitted `config.yaml` (comments preserved, the recipe on disk is untouched), and echoes it as `pinned_sources` in `--json` output. The job builds that commit and the `/configs/dynamo-wheels` cache is keyed by it, so two runs of one recipe cannot silently build different code because the PR moved. If the login node cannot reach the remote, the submit continues with a warning and the compute node fetches the ref by name.
 - `srtctl dry-run` prints the resolved Dynamo source.
+- Source builds add `-C target-cpu=native` to `RUSTFLAGS` on x86_64 only; on aarch64 (Grace) it can stall LLVM codegen for over an hour. A `RUSTFLAGS` set in `environment:` replaces that default (`--cfg tokio_unstable` is always added). The cache key does not include `RUSTFLAGS`, so a commit already in the cache is not rebuilt.
 
 The v1 spelling of this (`dynamo.version`, `dynamo.hash`, `dynamo.top_of_tree`, `dynamo.wheel`, `dynamo.cargo_patches`) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
 

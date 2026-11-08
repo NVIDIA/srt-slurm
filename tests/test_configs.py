@@ -383,6 +383,38 @@ class TestDynamoConfig:
         assert "--force-reinstall --quiet maturin" in sglang_branch
         assert "--force-reinstall --quiet maturin" in portable_branch
 
+    @pytest.mark.parametrize(
+        ("arch", "env_flags", "expected"),
+        [
+            ("x86_64", None, "-C target-cpu=native --cfg tokio_unstable"),
+            ("aarch64", None, " --cfg tokio_unstable"),
+            ("x86_64", "-C opt-level=2", "-C opt-level=2 --cfg tokio_unstable"),
+            ("aarch64", "-C target-cpu=neoverse-v2", "-C target-cpu=neoverse-v2 --cfg tokio_unstable"),
+        ],
+    )
+    def test_source_build_rustflags(self, tmp_path, arch, env_flags, expected):
+        """target-cpu=native is the x86_64 default only (it stalls aarch64 codegen); a set RUSTFLAGS replaces it."""
+        import os
+        import subprocess
+
+        from srtctl.core.schema import _DYNAMO_RUSTFLAGS_EXPORT, DynamoConfig, DynamoSourceConfig
+
+        for config in (DynamoConfig(source=DynamoSourceConfig(rev="abc123")), DynamoConfig(top_of_tree=True)):
+            assert config.get_install_commands().count(_DYNAMO_RUSTFLAGS_EXPORT) == (1 if config.git_rev else 2)
+
+        fake_uname = tmp_path / "uname"
+        fake_uname.write_text(f"#!/bin/sh\necho {arch}\n")
+        fake_uname.chmod(0o755)
+        env = {"PATH": f"{tmp_path}:{os.environ['PATH']}"} | ({"RUSTFLAGS": env_flags} if env_flags else {})
+        out = subprocess.run(
+            ["bash", "-c", _DYNAMO_RUSTFLAGS_EXPORT + 'printf %s "$RUSTFLAGS"'],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert out.stdout == expected
+
     def test_hash_and_top_of_tree_not_allowed(self):
         """Cannot specify both hash and top_of_tree."""
 
