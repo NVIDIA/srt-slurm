@@ -25,7 +25,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17500 --enable-metrics --disaggregation-mode prefill --skip-server-warmup --disaggregation-bootstrap-port 7200 --context-length 4096 --disable-piecewise-cuda-graph --mem-fraction-static 0.5 --tensor-parallel-size 1
+    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 4400 --enable-metrics --disaggregation-mode prefill --skip-server-warmup --disaggregation-bootstrap-port 7200 --context-length 4096 --disable-piecewise-cuda-graph --mem-fraction-static 0.5 --tensor-parallel-size 1
 
 ## decode_0_node-02
 nodelist: node-02
@@ -50,7 +50,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17501 --enable-metrics --disaggregation-mode decode --skip-server-warmup --context-length 4096 --disable-piecewise-cuda-graph --mem-fraction-static 0.5 --tensor-parallel-size 1
+    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 4401 --enable-metrics --disaggregation-mode decode --skip-server-warmup --context-length 4096 --disable-piecewise-cuda-graph --mem-fraction-static 0.5 --tensor-parallel-size 1
 
 ## sglang_router_0
 nodelist: node-01

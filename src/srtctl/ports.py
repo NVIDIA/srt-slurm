@@ -31,7 +31,11 @@ SGLANG_BOOTSTRAP_PORT_BASE = 7200
 SGLANG_DIST_INIT_PORT_BASE = 8300
 # One per physical SGLang server process. This is used for SGLang's local TP
 # rendezvous; a deterministic assignment avoids concurrent free-port races.
-SGLANG_NCCL_PORT_BASE = 17500
+# Kept below 9000 so it stays outside wide ephemeral ranges (e.g. 9000-65000),
+# where an unrelated outbound socket on the node can already hold the port and
+# the TCPStore bind fails with EADDRINUSE. 4400-5399 sits between OTel (4317)
+# and NIXL (5400), room for 1000 server processes per job.
+SGLANG_NCCL_PORT_BASE = 4400
 # HTTP sidecar of an SGLang gRPC-mode server (--grpc-http-sidecar-port): /metrics and
 # the profiler routes, which the gRPC listener does not serve.
 SGLANG_GRPC_HTTP_PORT_BASE = 6700
@@ -109,9 +113,9 @@ RAY_DASHBOARD_PORT = 8265
 # per sidecar process across the job. Keep this block below Linux's default
 # ephemeral range (32768-60999): a loopback connect to a port inside it can be
 # handed that port as its source and connect to itself, and the TIME_WAIT socket
-# it leaves makes the engine's bind fail. 19000 clears SGLang NCCL (17500 + n)
-# and TokenSpeed's per-node scans (below 18200 at 8 processes per node), and
-# stays under vLLM's scan ranges (20000) for up to 1000 sidecars.
+# it leaves makes the engine's bind fail. 19000 clears TokenSpeed's per-node
+# scans (below 18200 at 8 processes per node), and stays under vLLM's scan
+# ranges (20000) for up to 1000 sidecars.
 DYNAMO_SIDECAR_GRPC_PORT = 19000
 
 

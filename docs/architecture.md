@@ -567,7 +567,7 @@ consumer derives one port from another.
 | `dp_rpc` | 8400 | 1 | per node | vLLM DP endpoints |
 | `kvbm_zmq` | 5600 | 2 | global | KVBM leaders (pub, ack = pub + 1) |
 | `sidecar_grpc` | 19000 | 1 | global | Dynamo sidecars (base: `sidecar_port`) |
-| `nccl` | 17500 | 1 | global | SGLang servers |
+| `nccl` | 4400 | 1 | global | SGLang servers (below 9000, outside wide ephemeral ranges) |
 | `dist_init` | 8300 | 1 | per node | SGLang multi-node endpoints (leader) |
 | `vllm_scan` | 20000 | 50 | global | vLLM `get_open_port()` scan range |
 | `moriio_handshake` | 40000 | 1 | global | vLLM MoRI-IO workers (peer handshake) |

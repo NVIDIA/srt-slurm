@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from srtctl import ports
 from srtctl.backends.sglang import SGLangBackend
 from srtctl.core.config import resolve_config_with_defaults
 from srtctl.core.schema import SrtConfig
@@ -109,6 +110,19 @@ class TestNodePortAllocator:
         ]
         assert len({kind.name for kind in kinds}) == len(kinds)
         assert len({kind.base for kind in kinds}) == len(kinds)
+
+    def test_sglang_nccl_block_sits_below_wide_ephemeral_ranges(self):
+        """Some clusters set ip_local_port_range to 9000-65000, where an unrelated outbound
+        socket can already hold a fixed port and the TCPStore bind fails with EADDRINUSE."""
+        allocator = NodePortAllocator()
+        block = [allocator.next(NCCL_PORTS) for _ in range(1000)]
+        assert block[-1] < 9000
+        others = {
+            name: value
+            for name, value in vars(ports).items()
+            if name.isupper() and isinstance(value, int) and name != "SGLANG_NCCL_PORT_BASE"
+        }
+        assert not {name: port for name, port in others.items() if port in block}
 
 
 def _example_processes(config: SrtConfig) -> list[Process]:
