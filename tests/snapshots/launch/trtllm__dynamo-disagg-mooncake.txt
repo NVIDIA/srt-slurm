@@ -62,7 +62,7 @@ env_to_set:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
     HEAD_NODE_IP: 127.0.0.1
     MASTER_ADDR: 127.0.0.1
-    MASTER_PORT: 29500
+    MASTER_PORT: 2050
     MOONCAKE_CONFIG_PATH: /logs/mooncake_store_config_prefill.json
     MOONCAKE_LOCAL_HOSTNAME: 127.0.0.1
     MOONCAKE_MASTER: 127.0.0.1:8700
@@ -108,7 +108,7 @@ env_to_set:
     ETCD_ENDPOINTS: http://127.0.0.1:2379
     HEAD_NODE_IP: 127.0.0.1
     MASTER_ADDR: 127.0.0.1
-    MASTER_PORT: 29501
+    MASTER_PORT: 2051
     MOONCAKE_CONFIG_PATH: /logs/mooncake_store_config_decode.json
     MOONCAKE_LOCAL_HOSTNAME: 127.0.0.1
     MOONCAKE_MASTER: 127.0.0.1:8700

@@ -16,7 +16,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20000
 bash_preamble: |
     ( python3 <(cat <<'__FINGERPRINT_EOF__'
@@ -40,7 +40,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5401
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6821
     VLLM_PORT: 20050
 bash_preamble: |
     ( python3 <(cat <<'__FINGERPRINT_EOF__'
@@ -60,7 +60,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 command: |
-    epp --pool-name=srtctl --pool-namespace=srtctl --config-file=/logs/llm-d-epp-config.yaml --grpc-port=9002 --grpc-health-port=9003 --metrics-port=9090 --secure-serving=false
+    epp --pool-name=srtctl --pool-namespace=srtctl --config-file=/logs/llm-d-epp-config.yaml --grpc-port=8210 --grpc-health-port=8211 --metrics-port=8212 --secure-serving=false
 
 ## llm-d-envoy_0
 nodelist: node-01

@@ -17,7 +17,7 @@ env_to_set:
     CUDA_VISIBLE_DEVICES: 0
     HEAD_NODE_IP: 127.0.0.1
     MASTER_ADDR: 127.0.0.1
-    MASTER_PORT: 29500
+    MASTER_PORT: 2050
     PYTHONUNBUFFERED: 1
     TLLM_LOG_LEVEL: INFO
     TRTLLM_EPLB_SHM_NAME: <random>
@@ -50,7 +50,7 @@ env_to_set:
     CUDA_VISIBLE_DEVICES: 1
     HEAD_NODE_IP: 127.0.0.1
     MASTER_ADDR: 127.0.0.1
-    MASTER_PORT: 29501
+    MASTER_PORT: 2051
     PYTHONUNBUFFERED: 1
     TLLM_LOG_LEVEL: INFO
     TRTLLM_EPLB_SHM_NAME: <random>
@@ -78,7 +78,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 command: |
-    smg launch --worker-urls http://127.0.0.1:6100 http://127.0.0.1:6132 --host 0.0.0.0 --port 8000 --prometheus-port 29000 --policy cache_aware
+    smg launch --worker-urls http://127.0.0.1:6100 http://127.0.0.1:6132 --host 0.0.0.0 --port 8000 --prometheus-port 8191 --policy cache_aware
 
 ## service_dcgm-exporter_node-01
 nodelist: node-01

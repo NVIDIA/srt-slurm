@@ -21,7 +21,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6100 --device-ids 0 --gpu-memory-utilization 0.5 --kv-transfer-config '{"kv_connector": "MoRIIOConnector", "kv_role": "kv_producer", "kv_connector_extra_config": {"proxy_ip": "127.0.0.1", "proxy_ping_port": "36367", "http_port": "6100", "host_ip": "127.0.0.1", "handshake_port": "26000", "notify_port": "27000", "read_mode": true}}' --max-model-len 4096 --served-model-name Qwen/Qwen3-0.6B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6100 --device-ids 0 --gpu-memory-utilization 0.5 --kv-transfer-config '{"kv_connector": "MoRIIOConnector", "kv_role": "kv_producer", "kv_connector_extra_config": {"proxy_ip": "127.0.0.1", "proxy_ping_port": "8200", "http_port": "6100", "host_ip": "127.0.0.1", "handshake_port": "4900", "notify_port": "5560", "read_mode": true}}' --max-model-len 4096 --served-model-name Qwen/Qwen3-0.6B --tensor-parallel-size 1
 
 ## decode_0_node-02
 nodelist: node-02
@@ -42,7 +42,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6100 --device-ids 0 --gpu-memory-utilization 0.5 --kv-transfer-config '{"kv_connector": "MoRIIOConnector", "kv_role": "kv_consumer", "kv_connector_extra_config": {"proxy_ip": "127.0.0.1", "proxy_ping_port": "36367", "http_port": "6100", "host_ip": "127.0.0.1", "handshake_port": "26001", "notify_port": "27001", "read_mode": true}}' --max-model-len 4096 --served-model-name Qwen/Qwen3-0.6B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6100 --device-ids 0 --gpu-memory-utilization 0.5 --kv-transfer-config '{"kv_connector": "MoRIIOConnector", "kv_role": "kv_consumer", "kv_connector_extra_config": {"proxy_ip": "127.0.0.1", "proxy_ping_port": "8200", "http_port": "6100", "host_ip": "127.0.0.1", "handshake_port": "4901", "notify_port": "5561", "read_mode": true}}' --max-model-len 4096 --served-model-name Qwen/Qwen3-0.6B --tensor-parallel-size 1
 
 ## vllm_router_0
 nodelist: node-01
@@ -54,7 +54,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 command: |
-    vllm-router --vllm-pd-disaggregation --kv-connector moriio --vllm-discovery-address 0.0.0.0:36367 --host 0.0.0.0 --port 8000 --worker-startup-timeout-secs 1800 --policy consistent_hash
+    vllm-router --vllm-pd-disaggregation --kv-connector moriio --vllm-discovery-address 0.0.0.0:8200 --host 0.0.0.0 --port 8000 --worker-startup-timeout-secs 1800 --policy consistent_hash
 
 ## service_dcgm-exporter_node-01
 nodelist: node-01

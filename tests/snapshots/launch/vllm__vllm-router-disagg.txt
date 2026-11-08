@@ -16,7 +16,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20000
 bash_preamble: |
     ( python3 <(cat <<'__FINGERPRINT_EOF__'
@@ -40,7 +40,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5401
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6821
     VLLM_PORT: 20050
 bash_preamble: |
     ( python3 <(cat <<'__FINGERPRINT_EOF__'
@@ -60,7 +60,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 command: |
-    vllm-router --vllm-pd-disaggregation --prefill http://127.0.0.1:6100 5400 --decode http://127.0.0.1:6100 --host 0.0.0.0 --port 8000 --worker-startup-timeout-secs 1800 --policy consistent_hash
+    vllm-router --vllm-pd-disaggregation --prefill http://127.0.0.1:6100 6820 --decode http://127.0.0.1:6100 --host 0.0.0.0 --port 8000 --worker-startup-timeout-secs 1800 --policy consistent_hash
 
 ## service_dcgm-exporter_node-01
 nodelist: node-01

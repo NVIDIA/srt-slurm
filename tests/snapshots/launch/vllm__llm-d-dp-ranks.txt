@@ -16,7 +16,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20000
 env_to_unset: VLLM_PORT
 bash_preamble: |
@@ -25,7 +25,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6100 --data-parallel-rank 0 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 0 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6100@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5557"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6100 --data-parallel-rank 0 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 7400 --device-ids 0 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6100@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5557"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## agg_0_node-01_dp1
 nodelist: node-01
@@ -41,7 +41,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20050
 env_to_unset: VLLM_PORT
 bash_preamble: |
@@ -50,7 +50,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6132 --data-parallel-rank 1 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 1 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6132@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5556"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6132 --data-parallel-rank 1 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 7400 --device-ids 1 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6132@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5556"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## agg_0_node-01_dp2
 nodelist: node-01
@@ -66,7 +66,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20100
 env_to_unset: VLLM_PORT
 bash_preamble: |
@@ -75,7 +75,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6164 --data-parallel-rank 2 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 2 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6164@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5555"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6164 --data-parallel-rank 2 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 7400 --device-ids 2 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6164@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5555"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## agg_0_node-01_dp3
 nodelist: node-01
@@ -91,7 +91,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20150
 env_to_unset: VLLM_PORT
 bash_preamble: |
@@ -100,7 +100,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6196 --data-parallel-rank 3 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 3 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6196@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5554"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6196 --data-parallel-rank 3 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 7400 --device-ids 3 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6196@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5554"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## agg_0_node-01_dp4
 nodelist: node-01
@@ -116,7 +116,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20200
 env_to_unset: VLLM_PORT
 bash_preamble: |
@@ -125,7 +125,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6228 --data-parallel-rank 4 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 4 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6228@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5553"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6228 --data-parallel-rank 4 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 7400 --device-ids 4 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6228@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5553"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## agg_0_node-01_dp5
 nodelist: node-01
@@ -141,7 +141,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20250
 env_to_unset: VLLM_PORT
 bash_preamble: |
@@ -150,7 +150,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6260 --data-parallel-rank 5 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 5 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6260@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5552"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6260 --data-parallel-rank 5 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 7400 --device-ids 5 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6260@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5552"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## agg_0_node-01_dp6
 nodelist: node-01
@@ -166,7 +166,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20300
 env_to_unset: VLLM_PORT
 bash_preamble: |
@@ -175,7 +175,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6292 --data-parallel-rank 6 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 6 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6292@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5551"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6292 --data-parallel-rank 6 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 7400 --device-ids 6 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6292@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5551"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## agg_0_node-01_dp7
 nodelist: node-01
@@ -191,7 +191,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20350
 env_to_unset: VLLM_PORT
 bash_preamble: |
@@ -200,7 +200,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6324 --data-parallel-rank 7 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 7 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6324@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5550"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6324 --data-parallel-rank 7 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 7400 --device-ids 7 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6324@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5550"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## agg_0_node-02_dp8
 nodelist: node-02
@@ -216,7 +216,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20400
 env_to_unset: VLLM_PORT
 bash_preamble: |
@@ -225,7 +225,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6100 --data-parallel-rank 8 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 0 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6100@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5549"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6100 --data-parallel-rank 8 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 7400 --device-ids 0 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6100@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5549"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## agg_0_node-02_dp9
 nodelist: node-02
@@ -241,7 +241,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20450
 env_to_unset: VLLM_PORT
 bash_preamble: |
@@ -250,7 +250,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6132 --data-parallel-rank 9 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 1 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6132@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5548"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6132 --data-parallel-rank 9 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 7400 --device-ids 1 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6132@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5548"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## agg_0_node-02_dp10
 nodelist: node-02
@@ -266,7 +266,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20500
 env_to_unset: VLLM_PORT
 bash_preamble: |
@@ -275,7 +275,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6164 --data-parallel-rank 10 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 2 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6164@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5547"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6164 --data-parallel-rank 10 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 7400 --device-ids 2 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6164@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5547"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## agg_0_node-02_dp11
 nodelist: node-02
@@ -291,7 +291,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20550
 env_to_unset: VLLM_PORT
 bash_preamble: |
@@ -300,7 +300,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6196 --data-parallel-rank 11 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 3 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6196@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5546"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6196 --data-parallel-rank 11 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 7400 --device-ids 3 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6196@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5546"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## agg_0_node-02_dp12
 nodelist: node-02
@@ -316,7 +316,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20600
 env_to_unset: VLLM_PORT
 bash_preamble: |
@@ -325,7 +325,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6228 --data-parallel-rank 12 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 4 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6228@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5545"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6228 --data-parallel-rank 12 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 7400 --device-ids 4 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6228@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5545"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## agg_0_node-02_dp13
 nodelist: node-02
@@ -341,7 +341,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20650
 env_to_unset: VLLM_PORT
 bash_preamble: |
@@ -350,7 +350,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6260 --data-parallel-rank 13 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 5 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6260@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5544"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6260 --data-parallel-rank 13 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 7400 --device-ids 5 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6260@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5544"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## agg_0_node-02_dp14
 nodelist: node-02
@@ -366,7 +366,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20700
 env_to_unset: VLLM_PORT
 bash_preamble: |
@@ -375,7 +375,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6292 --data-parallel-rank 14 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 6 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6292@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5543"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6292 --data-parallel-rank 14 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 7400 --device-ids 6 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6292@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5543"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## agg_0_node-02_dp15
 nodelist: node-02
@@ -391,7 +391,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20750
 env_to_unset: VLLM_PORT
 bash_preamble: |
@@ -400,7 +400,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6324 --data-parallel-rank 15 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --device-ids 7 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6324@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5542"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --host 0.0.0.0 --port 6324 --data-parallel-rank 15 --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 7400 --device-ids 7 --kv-events-config '{"publisher": "zmq", "topic": "kv@127.0.0.1:6324@Qwen/Qwen3-30B-A3B", "enable_kv_cache_events": true, "endpoint": "tcp://127.0.0.1:5542"}' --data-parallel-external-lb --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## llm-d-epp_0
 nodelist: node-01
@@ -412,7 +412,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 command: |
-    epp --pool-name=srtctl --pool-namespace=srtctl --config-file=/logs/llm-d-epp-config.yaml --grpc-port=9002 --grpc-health-port=9003 --metrics-port=9090 --secure-serving=false
+    epp --pool-name=srtctl --pool-namespace=srtctl --config-file=/logs/llm-d-epp-config.yaml --grpc-port=8210 --grpc-health-port=8211 --metrics-port=8212 --secure-serving=false
 
 ## llm-d-envoy_0
 nodelist: node-01

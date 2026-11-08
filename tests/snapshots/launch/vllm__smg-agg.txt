@@ -16,7 +16,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20000
 bash_preamble: |
     ( python3 <(cat <<'__FINGERPRINT_EOF__'
@@ -40,7 +40,7 @@ env_to_set:
     HEAD_NODE_IP: 127.0.0.1
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5401
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6821
     VLLM_PORT: 20050
 bash_preamble: |
     ( python3 <(cat <<'__FINGERPRINT_EOF__'
@@ -60,7 +60,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 command: |
-    smg launch --worker-urls http://127.0.0.1:6100 http://127.0.0.1:6132 --host 0.0.0.0 --port 8000 --prometheus-port 29000 --policy cache_aware
+    smg launch --worker-urls http://127.0.0.1:6100 http://127.0.0.1:6132 --host 0.0.0.0 --port 8000 --prometheus-port 8191 --policy cache_aware
 
 ## service_dcgm-exporter_node-01
 nodelist: node-01

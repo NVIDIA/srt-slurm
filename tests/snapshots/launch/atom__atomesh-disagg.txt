@@ -20,7 +20,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    env ATOM_HOST_IP=127.0.0.1 python3 -m atom.entrypoints.openai_server --model /model --host 0.0.0.0 --server-port 6100 -tp 1 --kv-transfer-config '{"kv_role":"kv_producer","kv_connector":"mooncake","proxy_ip":"127.0.0.1","handshake_port":5400,"protocol":"tcp"}'
+    env ATOM_HOST_IP=127.0.0.1 python3 -m atom.entrypoints.openai_server --model /model --host 0.0.0.0 --server-port 6100 -tp 1 --kv-transfer-config '{"kv_role":"kv_producer","kv_connector":"mooncake","proxy_ip":"127.0.0.1","handshake_port":6820,"protocol":"tcp"}'
 
 ## decode_0_node-02
 nodelist: node-02
@@ -40,7 +40,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    env ATOM_HOST_IP=127.0.0.1 python3 -m atom.entrypoints.openai_server --model /model --host 0.0.0.0 --server-port 6100 -tp 1 --kv-transfer-config '{"kv_role":"kv_consumer","kv_connector":"mooncake","proxy_ip":"127.0.0.1","handshake_port":5401,"protocol":"tcp"}'
+    env ATOM_HOST_IP=127.0.0.1 python3 -m atom.entrypoints.openai_server --model /model --host 0.0.0.0 --server-port 6100 -tp 1 --kv-transfer-config '{"kv_role":"kv_consumer","kv_connector":"mooncake","proxy_ip":"127.0.0.1","handshake_port":6821,"protocol":"tcp"}'
 
 ## atomesh_0
 nodelist: node-01

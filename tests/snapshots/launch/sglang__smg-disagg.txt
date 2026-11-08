@@ -58,7 +58,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 command: |
-    smg launch --pd-disaggregation --prefill http://127.0.0.1:6100 7200 --decode http://127.0.0.1:6100 --host 0.0.0.0 --port 8000 --prometheus-port 29000 --policy cache_aware
+    smg launch --pd-disaggregation --prefill http://127.0.0.1:6100 7200 --decode http://127.0.0.1:6100 --host 0.0.0.0 --port 8000 --prometheus-port 8191 --policy cache_aware
 
 ## service_dcgm-exporter_node-01
 nodelist: node-01
