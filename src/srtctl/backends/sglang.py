@@ -199,6 +199,18 @@ class SGLangBackend(Backend):
                 return name
         return default
 
+    def pinned_host_bytes_per_gpu(self, mode: WorkerMode) -> int:
+        """``hicache-size`` GB (10^9 bytes) per rank when ``enable-hierarchical-cache`` is set.
+
+        Each scheduler rank allocates its own host KV pool of ``hicache-size * 1e9`` bytes
+        (sgl-project/sglang c10e0e17735f, ``mem_cache/pool_host/base.py:HostKVCache``).
+        ``hicache-ratio`` sizes depend on the device pool and are not counted.
+        """
+        config = {key.replace("_", "-"): value for key, value in self.get_config_for_mode(mode).items()}
+        if not config.get("enable-hierarchical-cache"):
+            return 0
+        return int(float(config.get("hicache-size") or 0) * 1e9)
+
     def get_kv_events_config_for_mode(self, mode: WorkerMode) -> dict[str, str] | None:
         """``roles.<role>.kv_events`` for a worker mode over the ZMQ defaults; None when it publishes none."""
         return role_kv_events(self.roles, mode, {"publisher": "zmq", "topic": "kv-events"})

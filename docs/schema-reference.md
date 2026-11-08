@@ -34,6 +34,7 @@ Top-level keys of a recipe YAML.
 | `enable_config_dump` | bool | `True` | Accepted for compatibility; srtctl does not read it. Workers dump their config where the engine supports it. |
 | `setup_script` | str \| None | `None` | Custom setup script (runs before dynamo install and worker startup) e.g. "custom-setup.sh" -> runs /configs/custom-setup.sh |
 | `host_setup` | [HostSetupConfig](#hostsetupconfig) | `HostSetupConfig()` | Commands run on each node's bare host, outside the container, before any worker starts. Cluster-wide default lives in srtslurm.yaml as default_host_setup; a recipe that sets this block replaces that default. |
+| `host_memory_check` | [HostMemoryCheckConfig](#hostmemorycheckconfig) | `HostMemoryCheckConfig()` | Before workers start, fail (or warn) when a node's MemAvailable cannot hold the host memory its workers will pin, such as SGLang `hicache-size` per GPU. |
 | `services` | list[[ServiceConfig](#serviceconfig)] | `[]` | Long-running processes launched next to the job: generic sidecars (an experimental router built from a PR) and typed ones (a standalone Mooncake store per worker node). See docs/services.md. |
 | `post_eval` | [PostEvalConfig](#postevalconfig) | `PostEvalConfig()` | Post-benchmark / eval-only evaluation dispatch: extra env forwarded into the eval process and an optional command override. Replaces the downstream source patch that used to extend the passthrough list in do_sweep.py. |
 | `identity` | [IdentityConfig](#identityconfig) | `IdentityConfig()` | Virtual identity — declares what *should* be running (verified against fingerprint) |
@@ -322,6 +323,16 @@ Commands run on the bare host of each allocated node, outside the container.
 | `nodes` | one of `'all'`, `'workers'` | `'all'` | Which nodes to target. "all" covers head, infra, and workers; "workers" covers only the nodes running backend workers. |
 | `ignore_failure` | bool | `False` | When True, a failing node logs a warning instead of failing the job. |
 | `timeout_seconds` | int | `300` | Per-node wall-clock budget for commands and for teardown. |
+
+### HostMemoryCheckConfig
+
+Before workers start, compare each node's MemAvailable with the host memory its workers will pin.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `True` | Probe ``/proc/meminfo`` on the bare host of every node with planned host memory. |
+| `headroom_gib` | float | `32.0` | GiB per node kept free on top of the planned pools, for what the estimate does not count (worker processes, CUDA context, the container, other host pools). |
+| `on_shortfall` | one of `'fail'`, `'warn'` | `'fail'` | ``fail`` aborts the job before workers start; ``warn`` logs and continues. |
 
 ### ServiceConfig
 

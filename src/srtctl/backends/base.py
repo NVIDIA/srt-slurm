@@ -350,6 +350,14 @@ class Backend(ABC):
         """Get served model name from backend config, or return default."""
         return default
 
+    def pinned_host_bytes_per_gpu(self, mode: WorkerMode) -> int:
+        """Host memory each GPU rank of a ``mode`` worker allocates for pools the role's args size explicitly.
+
+        Read by ``host_memory_check`` before workers start. Defaults to 0: an engine
+        whose args declare no host pool size plans nothing.
+        """
+        return 0
+
     def is_grpc_mode(self, mode: WorkerMode) -> bool:
         """Whether the mode's workers serve gRPC instead of HTTP.
 

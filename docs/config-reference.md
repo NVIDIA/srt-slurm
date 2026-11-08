@@ -13,7 +13,7 @@ Field-level facts (every key, type, default, and allowed value) are generated fr
 | Load and evals | [Benchmarks](benchmarks.md) | `benchmark`, `post_eval` |
 | Profilers | [Profiling](profiling.md) | `profiling` |
 | Metrics and power | [Observability and Telemetry](observability.md) | `observability`, `telemetry` |
-| Container paths and env | [Paths, Mounts, and Environment](runtime-env.md) | `container_mounts`, `extra_mount`, `environment`, `setup_script`, `host_setup` |
+| Container paths and env | [Paths, Mounts, and Environment](runtime-env.md) | `container_mounts`, `extra_mount`, `environment`, `setup_script`, `host_setup`, `host_memory_check` |
 | Sidecars and infrastructure | [Services](services.md) | `services` |
 | Many jobs from one file | [Parameter Sweeps](sweeps.md), [Config Overrides](overrides.md) | `sweep`, `base` / `override_*` |
 

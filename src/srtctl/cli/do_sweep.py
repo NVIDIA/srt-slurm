@@ -17,6 +17,7 @@ import functools
 import json
 import logging
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -526,6 +527,76 @@ class SweepOrchestrator(
         self._clock_sync_failures = failures
         logger.warning("%s (telemetry.required is false; continuing, artifacts will be marked unpublishable)", message)
 
+    HOST_MEMORY_PROBE_TIMEOUT_SECONDS = 30
+
+    def _planned_host_bytes(self) -> dict[str, int]:
+        """Host memory each node's workers will pin: the per-GPU pool their args size, times their GPUs there."""
+        planned: dict[str, int] = {}
+        for process in self.backend_processes:
+            mode = process.endpoint_mode
+            per_gpu = self.config.backend_for_role(mode).pinned_host_bytes_per_gpu(mode)
+            if per_gpu:
+                planned[process.node] = planned.get(process.node, 0) + per_gpu * len(process.gpu_indices)
+        return planned
+
+    def _check_host_memory(self) -> None:
+        """Refuse to start workers on a node whose MemAvailable cannot hold the host pools they will pin.
+
+        An engine checks its pools, if at all, only when it allocates them (after the
+        container start and weight load), and the worker processes' own memory comes on
+        top of them, so a node that starts with less MemAvailable than its peers fails or
+        is OOM-killed minutes into startup. Reading MemAvailable on the bare host before
+        launch turns that into an immediate error naming the node.
+        """
+        check = self.config.host_memory_check
+        roles = self.config.active_role_backends()
+        if not (check.enabled and any(backend.pinned_host_bytes_per_gpu(role) for role, backend in roles)):
+            return  # nothing planned: leave the worker topology to the worker stage
+        planned = self._planned_host_bytes()
+        procs = []
+        for node in planned:
+            log = self.runtime.log_dir / f"host_memory_{node}.out"
+            proc = start_srun_process(
+                command=["grep", "MemAvailable", "/proc/meminfo"],
+                nodelist=[node],
+                output=str(log),
+                container_image=None,  # the node's memory, not a container's view of it
+                het_group=self.runtime.nodes.het_group_for(node),
+            )
+            procs.append((node, proc, log))
+
+        gib = 1024**3
+        shortfalls = []
+        for node, proc, log in procs:
+            try:
+                proc.wait(timeout=self.HOST_MEMORY_PROBE_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            match = re.search(r"MemAvailable:\s+(\d+) kB", log.read_text() if log.exists() else "")
+            if match is None:
+                logger.warning("host_memory_check: could not read MemAvailable on %s (see %s); not checked", node, log)
+                continue
+            available = int(match.group(1)) * 1024
+            summary = (
+                f"{node} has {available / gib:.1f} GiB MemAvailable; its workers will pin "
+                f"{planned[node] / gib:.1f} GiB of host pools + {check.headroom_gib:g} GiB headroom"
+            )
+            if planned[node] + check.headroom_gib * gib > available:
+                shortfalls.append(summary)
+            else:
+                logger.info("host_memory_check: %s: OK", summary)
+
+        if not shortfalls:
+            return
+        message = (
+            f"host_memory_check: {'; '.join(shortfalls)}. Lower the host pool size (e.g. SGLang hicache-size), "
+            "exclude the node, or set host_memory_check.on_shortfall: warn"
+        )
+        if check.on_shortfall == "fail":
+            raise RuntimeError(message)
+        logger.warning("%s (on_shortfall: warn, continuing)", message)
+
     def _run_host_teardown(self) -> None:
         """Undo host_setup after workers stop.
 
@@ -850,6 +921,10 @@ class SweepOrchestrator(
             # Stage 0b: power runs compare clocks across nodes; refuse to spend
             # GPU time if any node is not NTP-synchronised.
             self._check_clock_sync()
+
+            # Stage 0c: refuse nodes whose free host memory cannot hold the host
+            # KV pools the recipe sizes, before any worker spends minutes loading.
+            self._check_host_memory()
 
             # Stage 1: the discovery plane (etcd, NATS) as services. Implied by the
             # dynamo frontend; static/direct frontends imply nothing here.

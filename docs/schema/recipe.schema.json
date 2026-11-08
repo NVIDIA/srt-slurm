@@ -1196,6 +1196,31 @@
       },
       "description": "Health check configuration."
     },
+    "HostMemoryCheckConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Probe ``/proc/meminfo`` on the bare host of every node with planned host memory.",
+          "default": true
+        },
+        "headroom_gib": {
+          "type": "number",
+          "description": "GiB per node kept free on top of the planned pools, for what the estimate does not count (worker processes, CUDA context, the container, other host pools).",
+          "default": 32.0
+        },
+        "on_shortfall": {
+          "enum": [
+            "fail",
+            "warn"
+          ],
+          "description": "``fail`` aborts the job before workers start; ``warn`` logs and continues.",
+          "default": "fail"
+        }
+      },
+      "description": "Before workers start, compare each node's MemAvailable with the host memory its workers will pin."
+    },
     "HostSetupConfig": {
       "type": "object",
       "additionalProperties": false,
@@ -2020,6 +2045,10 @@
           "$ref": "#/$defs/HostSetupConfig",
           "description": "Commands run on each node's bare host, outside the container, before any worker starts. Cluster-wide default lives in srtslurm.yaml as default_host_setup; a recipe that sets this block replaces that default."
         },
+        "host_memory_check": {
+          "$ref": "#/$defs/HostMemoryCheckConfig",
+          "description": "Before workers start, fail (or warn) when a node's MemAvailable cannot hold the host memory its workers will pin, such as SGLang `hicache-size` per GPU."
+        },
         "services": {
           "type": "array",
           "items": {
@@ -2244,6 +2273,10 @@
         "host_setup": {
           "$ref": "#/$defs/HostSetupConfig",
           "description": "Commands run on each node's bare host, outside the container, before any worker starts. Cluster-wide default lives in srtslurm.yaml as default_host_setup; a recipe that sets this block replaces that default."
+        },
+        "host_memory_check": {
+          "$ref": "#/$defs/HostMemoryCheckConfig",
+          "description": "Before workers start, fail (or warn) when a node's MemAvailable cannot hold the host memory its workers will pin, such as SGLang `hicache-size` per GPU."
         },
         "services": {
           "type": "array",

@@ -376,6 +376,28 @@ class HostSetupConfig:
         return bool(self.commands or self.teardown)
 
 
+@dataclass(frozen=True)
+class HostMemoryCheckConfig:
+    """Before workers start, compare each node's MemAvailable with the host memory its workers will pin.
+
+    The planned bytes are only what the recipe states explicitly (``Backend.pinned_host_bytes_per_gpu``,
+    e.g. SGLang ``hicache-size`` times the GPUs of each worker on the node). Nodes with nothing planned
+    are not probed, so recipes without a host KV cache are unaffected.
+
+    Attributes:
+        enabled: Probe ``/proc/meminfo`` on the bare host of every node with planned host memory.
+        headroom_gib: GiB per node kept free on top of the planned pools, for what the estimate
+            does not count (worker processes, CUDA context, the container, other host pools).
+        on_shortfall: ``fail`` aborts the job before workers start; ``warn`` logs and continues.
+    """
+
+    enabled: bool = True
+    headroom_gib: float = 32.0
+    on_shortfall: Literal["fail", "warn"] = "fail"
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
 @dataclass
 class ClusterConfig:
     """Cluster configuration from srtslurm.yaml."""
@@ -2853,6 +2875,10 @@ class SrtConfig:
     # worker starts. Cluster-wide default lives in srtslurm.yaml as
     # default_host_setup; a recipe that sets this block replaces that default.
     host_setup: HostSetupConfig = field(default_factory=HostSetupConfig)
+
+    # Before workers start, fail (or warn) when a node's MemAvailable cannot hold the host
+    # memory its workers will pin, such as SGLang `hicache-size` per GPU.
+    host_memory_check: HostMemoryCheckConfig = field(default_factory=HostMemoryCheckConfig)
 
     # Long-running processes launched next to the job: generic sidecars (an
     # experimental router built from a PR) and typed ones (a standalone Mooncake

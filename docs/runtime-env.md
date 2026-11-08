@@ -218,3 +218,18 @@ Fields: [HostSetupConfig](schema-reference.md#hostsetupconfig).
 - Set cluster-wide via `default_host_setup` in `srtslurm.yaml`; that's the right home when *the cluster's machines* need this, rather than one recipe. See [Cluster Config Fields](cluster-config.md#cluster-config-fields).
 - `srtctl dry-run -f config.yaml` renders the commands, their scope, and which file they came from.
 - For more than a couple of commands, or when you want each one logged with its exit code, point both lists at `configs/node-hooks.sh` and write the commands one per line in `HOOK_PRE` / `HOOK_POST` block scalars under `environment:`. The job script exports those, so the host sruns inherit them. See [examples/features/node-hooks.yaml](https://github.com/NVIDIA/srt-slurm/blob/main/examples/features/node-hooks.yaml).
+
+## host_memory_check
+
+Before any worker starts, srtctl reads `MemAvailable` from `/proc/meminfo` on the bare host of every node whose workers will pin host memory, and compares it with what they will pin plus a headroom. A node that cannot hold it fails the job in seconds, naming the node and the numbers, instead of a worker being OOM-killed minutes into warmup. Identical nodes can start a job with very different `MemAvailable` (page cache, leftover allocations), so a recipe sized on one node can overcommit another.
+
+```yaml
+host_memory_check:
+  enabled: true        # default
+  headroom_gib: 32     # default; kept free on top of the planned pools
+  on_shortfall: fail   # or warn: log and continue
+```
+
+Fields: [HostMemoryCheckConfig](schema-reference.md#hostmemorycheckconfig).
+
+**What is counted**: only host pools the role's args size explicitly, per GPU rank, times the GPUs of each worker on the node. Today that is SGLang `hicache-size` (GB, 10^9 bytes) when `enable-hierarchical-cache` is set: every scheduler rank allocates its own pool. SGLang checks a pool against its rank's share of `MemAvailable` only when it allocates it, after the weights load, and the worker processes' own memory comes on top of the pools. Pools sized by `hicache-ratio`, auxiliary host pools (such as a sparse-attention indexer cache), and worker process memory are not counted; `headroom_gib` is the margin for them. Recipes with nothing planned are not probed. Output lands in `<log_dir>/host_memory_<node>.out`; a node whose probe cannot be read is logged and not checked.
