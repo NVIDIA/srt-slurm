@@ -607,6 +607,9 @@ class VLLMBackend(Backend):
             if configured != value:
                 raise ValueError(f"discovery {key} conflicts with the allocated worker topology")
             extra[key] = value
+        # The Router's discovery flow serves both transfer modes; the recipe picks one.
+        if type(extra.setdefault("read_mode", True)) is not bool:
+            raise TypeError("discovery read_mode must be a JSON boolean")
         return json.dumps(payload)
 
     def _discovery_extra_config(self, process: Process, runtime: RuntimeContext) -> dict[str, Any]:
@@ -626,7 +629,6 @@ class VLLMBackend(Backend):
             "host_ip": get_hostname_ip(process.node, runtime.network_interface),
             "handshake_port": str(process.moriio_handshake_port),
             "notify_port": str(process.moriio_notify_port),
-            "read_mode": True,
         }
 
     def get_process_environment(self, process: Process) -> dict[str, str]:
