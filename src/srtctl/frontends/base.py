@@ -76,6 +76,10 @@ class Frontend(ABC):
     #: for such a frontend and refuses the deprecated per_gpu layout.
     expands_node_local_dp: ClassVar[bool] = False
 
+    def worker_scheme(self, backend: Any, mode: "WorkerMode") -> str | None:
+        """Static worker URL transport, or None when workers are not registered by URL."""
+        return None
+
     @property
     @abstractmethod
     def type(self) -> str:

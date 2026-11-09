@@ -186,6 +186,10 @@ class SGLangBackend(Backend):
         replicas, attn_dp = _dp_layout(self.get_config_for_mode(mode))
         return replicas * attn_dp
 
+    def owns_dp_ranks(self, process: "Process") -> bool:
+        """With attention DP, every physical process schedules distinct DP ranks and exports their metrics."""
+        return self.num_dp_ranks(process.endpoint_mode) > 1
+
     def get_served_model_name(self, default: str) -> str:
         """Get served model name from the roles' engine args, or return default."""
         for mode in ("prefill", "agg", "decode"):

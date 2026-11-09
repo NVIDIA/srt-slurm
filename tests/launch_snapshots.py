@@ -213,7 +213,9 @@ def render_launch_plan(recipe: Path) -> str:
                 str(output_dir): "<output>",
                 str(tmp_path): "<tmp>",
                 str(REPO_ROOT): "<repo>",
-                str(Path.home()): "<home>",
+                # /root is also a literal container path in recipes and
+                # install scripts; it must not depend on the test user's home.
+                **({f"{Path.home()}/": "<home>/"} if Path.home() != Path("/root") else {}),
             },
         )
     header = f"# {recipe.relative_to(REPO_ROOT).as_posix()}\n# exit_code: {exit_code}\n# srun calls: {len(calls)}\n"

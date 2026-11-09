@@ -120,8 +120,7 @@ The daemon service's log shows nothing during a relaunch; the tensors stay mappe
 - IPC-safe quantizations only: unquantized and block-wise FP8 as of v0.5.20. Per-tensor FP8, Marlin, AWQ/GPTQ and NVFP4 raise at daemon start.
 - Not with speculative decoding (`--speculative-algorithm`); the daemon does not export the draft model.
 - The daemon's argv is written by hand. It must carry the same model, parallelism, dtype and quantization flags as the engine; srtctl does not derive one from the other.
-- Workers spanning multiple nodes are not supported by this readiness-gated recipe. srtctl launches each per-worker service instance and waits for its readiness before launching the next. The daemon's distributed rendezvous needs all nodes to start before any node reports ready, so the first node times out while the other nodes are still unlaunched. Adding `--nnodes`, `--node-rank`, and `--dist-init-method` alone does not fix this. Multiple independent single-node workers are supported.
-- Per-worker service instances start one after another, each gated on its readiness probe, so a node with N workers pays N daemon start-ups in sequence.
+- Workers spanning multiple nodes have not been validated with this recipe; the daemon's distributed rendezvous needs at least `--nnodes`, `--node-rank`, and `--dist-init-method` per node. Multiple independent single-node workers are supported, and their daemons start concurrently.
 - The daemon is not relaunched. If it dies, its engines SIGKILL themselves (dangling mappings) and, with a restart policy, come back through a disk load or fail on a refused socket; `critical: true` on the service fails the run instead.
 
 ## Troubleshooting

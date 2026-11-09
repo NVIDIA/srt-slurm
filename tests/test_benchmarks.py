@@ -394,6 +394,7 @@ class TestCustomBenchmarkRunner:
         dynamo_sidecar=False,
         trtllm_config=None,
         engine_args=None,
+        backend=None,
     ):
         from types import SimpleNamespace
 
@@ -417,7 +418,9 @@ class TestCustomBenchmarkRunner:
         def get_environment_for_mode(mode):
             return dict(mode_environments.get(mode, {}))
 
-        if backend_type == "trtllm":
+        if backend is not None:
+            backend_type = backend.type
+        elif backend_type == "trtllm":
             from srtctl.core.schema import RoleConfig
 
             backend = TRTLLMBackend(
@@ -445,6 +448,7 @@ class TestCustomBenchmarkRunner:
                 aggregated_environment=aggregated_environment or {},
                 get_config_for_mode=get_config_for_mode,
                 get_environment_for_mode=get_environment_for_mode,
+                owns_dp_ranks=lambda process: False,
             )
 
         stage = Stage()
@@ -563,6 +567,75 @@ class TestCustomBenchmarkRunner:
         env = self._custom_env({"prefill": {"tp-size": 8}, "decode": {"tp-size": 8}})
 
         assert env["AIPERF_SERVER_METRICS_URLS"] == "http://ip-node-p0:7500/metrics,http://ip-node-d0:7504/metrics"
+
+    @pytest.mark.parametrize(
+        "dp_launch_mode,decode,nodes,owners",
+        [
+            # DEP8 on two 4-GPU nodes: each node's worker serves and counts DP ranks 0-3 or 4-7.
+            ("per_node", {"data-parallel-size": 8}, 2, [0, 1]),
+            ("per_gpu", {"data-parallel-size": 8}, 2, list(range(8))),
+            # A TP4 replica exactly fills a node.
+            ("per_node", {"tensor-parallel-size": 4, "data-parallel-size": 2}, 2, [0, 1]),
+            # Replicas spanning nodes, by TP, PP or PCP: the follower nodes run headless.
+            ("per_node", {"tensor-parallel-size": 8, "data-parallel-size": 2}, 4, [0]),
+            ("per_node", {"tensor-parallel-size": 2, "pipeline-parallel-size": 4, "data-parallel-size": 2}, 4, [0]),
+            (
+                "per_node",
+                {"tensor-parallel-size": 4, "prefill-context-parallel-size": 2, "data-parallel-size": 2},
+                4,
+                [0],
+            ),
+            # No data parallelism: one TP8 engine.
+            ("per_node", {"tensor-parallel-size": 8}, 2, [0]),
+            ("per_gpu", {"tensor-parallel-size": 8}, 2, [0]),
+        ],
+        ids=["dep8-per-node", "dep8-per-gpu", "tp4-dp2", "tp8-dp2", "pp4-dp2", "pcp2-dp2", "tp8", "tp8-per-gpu"],
+    )
+    def test_vllm_custom_metrics_scrape_followers_that_own_dp_ranks(self, dp_launch_mode, decode, nodes, owners):
+        from unittest.mock import patch
+
+        from srtctl.backends import VLLMBackend
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+        from srtctl.core.schema import RoleConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMBackend(
+            dp_launch_mode=dp_launch_mode,
+            roles={"prefill": RoleConfig(args={"tensor-parallel-size": 4}), "decode": RoleConfig(args=decode)},
+        )
+        endpoints = [
+            Endpoint("prefill", 0, ("node-p0",), frozenset(range(4))),
+            Endpoint("decode", 0, tuple(f"node-d{i}" for i in range(nodes)), frozenset(range(4))),
+        ]
+        processes = backend.endpoints_to_processes(endpoints, frontend_type="dynamo")
+        stage = self._benchmark_stage("dynamo", processes, backend=backend)
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            env = stage._get_benchmark_env(CustomBenchmarkRunner())
+
+        decode_processes = [p for p in processes if p.endpoint_mode == "decode"]
+        # Routing still targets logical leaders; only metrics include follower ranks.
+        assert env["SRT_DECODE_ENDPOINTS"] == f"ip-node-d0:{decode_processes[0].sys_port}"
+        assert env["AIPERF_SERVER_METRICS_URLS"].split(",") == [
+            f"http://ip-{p.node}:{p.sys_port}/metrics" for p in [processes[0], *(decode_processes[i] for i in owners)]
+        ]
+
+    @pytest.mark.parametrize("dp_launch_mode", ["per_node", "per_gpu"])
+    def test_vllm_engine_without_data_parallelism_owns_no_dp_ranks(self, dp_launch_mode):
+        from srtctl.backends import VLLMBackend
+        from srtctl.core.schema import RoleConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMBackend(
+            dp_launch_mode=dp_launch_mode, roles={"agg": RoleConfig(args={"tensor-parallel-size": 4})}
+        )
+        [process] = backend.endpoints_to_processes(
+            [Endpoint("agg", 0, ("node0",), frozenset(range(4)))], frontend_type="dynamo"
+        )
+
+        assert not backend.owns_dp_ranks(process)
 
     def test_disaggregated_worker_endpoints_use_logical_leaders(self):
         from unittest.mock import patch

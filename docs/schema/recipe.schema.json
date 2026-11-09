@@ -696,9 +696,10 @@
           "enum": [
             "auto",
             "acpi",
-            "dcgm"
+            "dcgm",
+            "rapl"
           ],
-          "description": "Power reading back-end passed through to the bundled Rust binary's own ``--source`` flag (``auto`` | ``acpi`` | ``dcgm``). ``auto`` tries ACPI first (the only source with the socket envelope) and falls back to DCGM when no ACPI power_meter hwmon sensors exist or no socket-total sensor reads positive on two probes; DCGM watches fields 1130+1132 and falls back to 1130 alone if this libdcgm refuses the pair, and is accepted only if some socket reads a positive 1130. DCGM mode reports field 1130 = the CPU rail (plus 1132 = SysIO), about half the ACPI envelope, and the energy report flags such runs as \"CPU rail only\". Has no effect when the Python stdlib fallback exporter is used instead of the binary -- that fallback is ACPI-only.",
+          "description": "Power reading back-end passed through to the bundled Rust binary's own ``--source`` flag (``auto`` | ``acpi`` | ``dcgm`` | ``rapl``). ``auto`` tries ACPI first (the only source with the socket envelope) and falls back to DCGM when no ACPI power_meter hwmon sensors exist or no socket-total sensor reads positive on two probes; DCGM watches fields 1130+1132 and falls back to 1130 alone if this libdcgm refuses the pair, and is accepted only if some socket reads a positive 1130. DCGM mode reports field 1130 = the CPU rail (plus 1132 = SysIO), about half the ACPI envelope, and the energy report flags such runs as \"CPU rail only\". ``rapl`` reads the x86 RAPL package energy counters (AMD EPYC, Intel Xeon), whose ``energy_uj`` files are root-only unless a cluster admin grants read access; ``auto`` never selects it. Has no effect when the Python stdlib fallback exporter is used instead of the binary -- that fallback is ACPI-only.",
           "default": "auto"
         }
       },
@@ -2624,7 +2625,7 @@
         },
         "mooncake_store_config": {
           "type": "object",
-          "description": "TRT-LLM only: Mooncake client config keys for this role's workers (`role`, `global_segment_size`, ...), layered over the `mooncake-master` service's `options.store_config`. Pool-wide keys stay there.",
+          "description": "TRT-LLM and vLLM: Mooncake store config keys for this role's workers (`global_segment_size`, `local_buffer_size`, TRT-LLM's `role`, ...), layered over the `mooncake-master` service's `options.store_config`, so prefill and decode can differ. Pool-wide keys stay there.",
           "default": {}
         },
         "sidecar": {
@@ -3500,7 +3501,7 @@
               "type": "null"
             }
           ],
-          "description": "GPU power exporter image, port, command, labels and metrics. When `enabled` with no exporter and no CPU leg, the cluster `default_gpu_exporter` is used.",
+          "description": "GPU power exporter image, port, command, labels and metrics. When `enabled` and this key is unset, the cluster `default_gpu_exporter` is used, with or without a CPU leg.",
           "default": null
         },
         "collect_interval_ms": {

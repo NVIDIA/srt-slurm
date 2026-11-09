@@ -343,7 +343,7 @@ def test_allowed_values_come_from_literals_and_validators() -> None:
 
     assert values(SweepConfig, "mode") == ("zip", "grid")
     assert values(ProfilingPhaseConfig, "capture_scope") == ("selected", "all")
-    assert values(CpuPowerExporterConfig, "source") == ("auto", "acpi", "dcgm")
+    assert values(CpuPowerExporterConfig, "source") == ("auto", "acpi", "dcgm", "rapl")
     assert values(AtomBackend, "mooncake_protocol") == ("rdma", "tcp")
     assert values(DynamoConfig, "request_plane") == DynamoConfig._VALID_REQUEST_PLANES
     assert values(SrtConfig, "schema") == (2,)

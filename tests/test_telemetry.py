@@ -168,7 +168,14 @@ class TestTachometerConfig:
         assert cmd[:3] == ["/bin/process-exporter", "-config.path", "/logs/process-exporter.yml"]
         assert "-threads=true" in cmd
         assert "-children=false" in cmd
+        # smaps_rollup walks every page table each scrape; seconds per scrape on hosts with large resident pools.
+        assert "-gather-smaps=false" in cmd
         assert "-web.listen-address=:9256" in cmd
+
+        # A recipe opts back into PSS through args, which follow the defaults (Go flags keep the last value).
+        service = ServiceConfig(name="process-exporter", type="process-exporter", args=["-gather-smaps=true"])
+        cmd = ProcessExporterService().build_command(service, ServiceLaunchContext.preview())
+        assert cmd.index("-gather-smaps=true") > cmd.index("-gather-smaps=false")
 
     @pytest.mark.parametrize(
         ("cmdline", "expected"),
@@ -610,7 +617,7 @@ class TestCpuPowerExporterConfig:
             )
 
     def test_accepts_each_valid_source(self):
-        for source in ("auto", "acpi", "dcgm"):
+        for source in ("auto", "acpi", "dcgm", "rapl"):
             config = _make_config(
                 telemetry=_dcgm_power(cpu_power_exporter=CpuPowerExporterConfig(port=9405, source=source)),
                 benchmark=_sa_bench(),

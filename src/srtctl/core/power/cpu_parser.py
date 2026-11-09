@@ -3,12 +3,14 @@
 
 """Parses ``cpu-power-exporter`` ``/metrics`` bodies into CPU power readings.
 
-The exporter resolves DCGM-vs-ACPI once at startup and only ever serves one
-metric family for its process lifetime, so a scrape body should never
-contain both. If it ever did, ACPI wins here: it reports the socket envelope
+The exporter resolves its source (ACPI, DCGM or RAPL) once at startup and
+only ever serves one base metric family for its process lifetime, so a
+scrape body should never contain more than one. If it ever did, ACPI wins
+here: it reports the socket envelope
 plus every component rail, while DCGM can only report the rails it has
 fields for (1130 = ``cpu_rail``, 1132 = ``soc``; no envelope), so ACPI is
-the more informative source when both exist.
+the more informative source when both exist. DCGM is tried before RAPL,
+which reports one ``package`` value per socket and no rails.
 
 DCGM bodies come in two shapes. Newer exporters label each sample with the
 DCGM ``field_id`` it read; older ones publish only field 1130 with no label.
@@ -36,6 +38,7 @@ from srtctl.core.power.cpu_rails import (
     DCGM_FIELD_RAIL_KINDS,
     DCGM_PRIMARY_FIELD_ID,
     MODULE_KIND,
+    PACKAGE_KIND,
     classify_acpi_label,
     normalize_kind,
     sensor_name,
@@ -52,6 +55,7 @@ DCGM_METRIC = "cpu_power_dcgm_watts"
 DCGM_FIELD_LABEL = "field_id"
 ACPI_METRIC = "cpu_power_acpi_watts"
 NVML_METRIC = "cpu_power_nvml_watts"
+RAPL_METRIC = "cpu_power_rapl_watts"
 
 
 @dataclass(frozen=True)
@@ -62,7 +66,7 @@ class CpuReading:
     sensor: str
     socket_id: int
     power_w: float
-    kind: str  # cpu_rails.DCGM_KIND for dcgm; an ACPI_RAIL_KINDS member for acpi; MODULE_KIND for nvml
+    kind: str  # cpu_rails.DCGM_KIND for dcgm; an ACPI_RAIL_KINDS member for acpi; PACKAGE_KIND for rapl; MODULE_KIND for nvml
 
 
 @dataclass(frozen=True)
@@ -75,7 +79,7 @@ class ParsedCpuScrape:
     ``total_power_w`` is ``node_total_watts`` over those sockets.
     """
 
-    mode: str = "unknown"  # "dcgm" | "acpi" | "unknown"
+    mode: str = "unknown"  # "dcgm" | "acpi" | "rapl" | "unknown"
     readings: tuple[CpuReading, ...] = ()
     sockets: tuple[CpuSample, ...] = ()
     total_power_w: float | None = None
@@ -103,6 +107,10 @@ def parse_cpu_scrape(text: str) -> ParsedCpuScrape:
     dcgm_readings = _parse_dcgm(families)
     if dcgm_readings:
         return _scrape("dcgm", dcgm_readings + module_readings)
+
+    rapl_readings = _parse_rapl(families)
+    if rapl_readings:
+        return _scrape("rapl", rapl_readings + module_readings)
 
     return ParsedCpuScrape()
 
@@ -178,6 +186,31 @@ def _parse_acpi(families) -> list[CpuReading]:
                     socket_id=socket_id,
                     power_w=value,
                     kind=kind,
+                )
+            )
+    return readings
+
+
+def _parse_rapl(families) -> list[CpuReading]:
+    readings: list[CpuReading] = []
+    for family in families:
+        for sample in family.samples:
+            if sample.name != RAPL_METRIC:
+                continue
+            socket_id = _parse_socket(sample.labels.get("socket"))
+            if socket_id is None:
+                continue
+            value = sample.value
+            # A zero delta means the counter did not advance: missing, not idle.
+            if not math.isfinite(value) or value <= 0:
+                continue
+            readings.append(
+                CpuReading(
+                    source="rapl",
+                    sensor=sensor_name(PACKAGE_KIND, socket_id),
+                    socket_id=socket_id,
+                    power_w=value,
+                    kind=PACKAGE_KIND,
                 )
             )
     return readings

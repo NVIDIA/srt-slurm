@@ -23,7 +23,7 @@ import sys
 import textwrap
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from srtctl.backends.base import WorkerMode
@@ -150,6 +150,12 @@ class SweepOrchestrator(
         """
         allocator = NodePortAllocator(bases={SIDECAR_GRPC_PORTS.name: self.config.dynamo.sidecar_port})
         return self.config.worker_processes(self.endpoints, port_allocator=allocator)
+
+    @functools.cached_property
+    def worker_runtime(self) -> RuntimeContext:
+        """Give engines the listener node selected by the frontend's topology resolver."""
+        topology = self._compute_frontend_topology()
+        return replace(self.runtime, frontend_node=topology.frontend_nodes[0])
 
     def start_head_infrastructure(self, registry: ProcessRegistry) -> None:
         """Start the discovery plane (etcd, NATS) as services.

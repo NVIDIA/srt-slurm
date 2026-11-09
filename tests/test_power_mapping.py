@@ -399,25 +399,56 @@ class TestClusterDefaultFlowsIntoPowerTelemetry:
         )
         assert resolved["telemetry"]["dcgm_exporter"] == recipe_exporter
 
+    def test_disabled_telemetry_is_untouched(self):
+        resolved = resolve_config_with_defaults(
+            _recipe({"enabled": False}), {"default_gpu_exporter": AMD_CLUSTER_EXPORTER}
+        )
+        assert "dcgm_exporter" not in resolved["telemetry"]
+
     @pytest.mark.parametrize(
         "telemetry",
         [
-            {"enabled": True, "cpu_power_exporter": {"port": 9405}},
+            {"enabled": True, "cpu_power_exporter": {"port": 9405, "source": "rapl"}},
             {"enabled": True, "cpu_power": {"enabled": True}},
-            {"enabled": False},
+            {"enabled": True, "cpu_power": {"enabled": False}},
         ],
-        ids=["cpu-exporter-leg", "cpu-host-leg", "disabled"],
+        ids=["cpu-exporter-leg", "cpu-host-leg", "cpu-host-leg-off"],
     )
-    def test_cpu_only_and_disabled_telemetry_are_untouched(self, telemetry):
+    def test_a_cpu_leg_still_inherits_the_gpu_exporter(self, telemetry):
         resolved = resolve_config_with_defaults(_recipe(telemetry), {"default_gpu_exporter": AMD_CLUSTER_EXPORTER})
-        assert "dcgm_exporter" not in resolved["telemetry"]
+        assert resolved["telemetry"]["dcgm_exporter"]["kind"] == "custom"
+        config = SrtConfig.Schema().load(resolved)
+        assert config.telemetry.dcgm_exporter is not None
 
-    def test_a_disabled_cpu_leg_still_inherits_the_gpu_exporter(self):
+    def test_an_explicit_null_exporter_keeps_a_cpu_only_recipe(self):
         resolved = resolve_config_with_defaults(
-            _recipe({"enabled": True, "cpu_power": {"enabled": False}}),
+            _recipe({"enabled": True, "dcgm_exporter": None, "cpu_power_exporter": {"port": 9405}}),
             {"default_gpu_exporter": AMD_CLUSTER_EXPORTER},
         )
-        assert resolved["telemetry"]["dcgm_exporter"]["kind"] == "custom"
+        config = SrtConfig.Schema().load(resolved)
+        assert config.telemetry.dcgm_exporter is None
+        assert config.telemetry.cpu_power_exporter.port == 9405
+
+    def test_a_cpu_only_recipe_failing_a_gpu_check_names_the_null_opt_out(self):
+        recipe = _recipe({"enabled": True, "cpu_power_exporter": {"port": 9405}})
+        recipe["benchmark"] = {"type": "trace-replay", "trace_file": "/trace.jsonl", "concurrencies": [8]}
+        cluster = {"default_gpu_exporter": AMD_CLUSTER_EXPORTER}
+        with pytest.raises(
+            ValidationError, match=r"benchmark\.type .*inherits the cluster default_gpu_exporter.*dcgm_exporter: null"
+        ):
+            SrtConfig.Schema().load(resolve_config_with_defaults(recipe, cluster))
+
+        recipe["telemetry"]["dcgm_exporter"] = None
+        config = SrtConfig.Schema().load(resolve_config_with_defaults(recipe, cluster))
+        assert config.telemetry.dcgm_exporter is None
+
+    def test_gpu_only_telemetry_errors_do_not_offer_the_cpu_only_fix(self):
+        recipe = _recipe({"enabled": True})
+        recipe["benchmark"] = {"type": "trace-replay", "trace_file": "/trace.jsonl", "concurrencies": [8]}
+        resolved = resolve_config_with_defaults(recipe, {"default_gpu_exporter": AMD_CLUSTER_EXPORTER})
+        with pytest.raises(ValidationError, match=r"benchmark\.type") as excinfo:
+            SrtConfig.Schema().load(resolved)
+        assert "dcgm_exporter: null" not in str(excinfo.value)
 
     def test_a_cluster_without_a_gpu_exporter_leaves_the_original_validation_error(self):
         resolved = resolve_config_with_defaults(_recipe({"enabled": True}), {"default_gpu_exporter": None})

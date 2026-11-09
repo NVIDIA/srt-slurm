@@ -113,7 +113,11 @@ def test_rail_columns_follow_component_kind_order():
 
 
 def test_every_acpi_kind_has_a_sensor_suffix():
-    assert set(SENSOR_SUFFIXES) == ACPI_RAIL_KINDS | {cpu_rails.DCGM_KIND, cpu_rails.MODULE_KIND}
+    assert set(SENSOR_SUFFIXES) == ACPI_RAIL_KINDS | {
+        cpu_rails.DCGM_KIND,
+        cpu_rails.MODULE_KIND,
+        cpu_rails.PACKAGE_KIND,
+    }
 
 
 def test_dcgm_fields_map_onto_acpi_component_rails():

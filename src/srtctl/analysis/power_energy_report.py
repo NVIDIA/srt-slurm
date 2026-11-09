@@ -52,6 +52,13 @@ DCGM_CPU_RAIL_ONLY_WARNING = (
     "roughly half of ACPI-mode CPU power): not comparable with ACPI-mode runs"
 )
 
+# RAPL-mode CPU power is the x86 package domain, a different boundary from the
+# Grace socket envelope, which includes the LPDDR5X memory.
+RAPL_PACKAGE_WARNING = (
+    "CPU power source is the x86 RAPL package domain (not the Grace socket envelope, which includes "
+    "memory): not comparable with ACPI-mode runs"
+)
+
 GPU_UTILIZATION_COLUMNS = tuple(metric.column for metric in UTILIZATION_METRICS)
 
 # Directory names whose samples.csv is CPU power: "cpu" is the head-node
@@ -457,8 +464,8 @@ class CpuSamples:
     per_socket: dict[tuple[str, int], tuple[np.ndarray, np.ndarray]]
     per_node: dict[str, tuple[np.ndarray, np.ndarray]]
     per_socket_utilization: dict[tuple[str, int], UtilizationSeries] = field(default_factory=dict)
-    # Origins seen in the CSV's ``source`` column ("acpi" / "dcgm"); drives
-    # the DCGM rail-only warning. Empty for hand-built fixtures.
+    # Origins seen in the CSV's ``source`` column ("acpi" / "dcgm" / "rapl");
+    # drive the DCGM and RAPL boundary warnings. Empty for hand-built fixtures.
     sources: frozenset[str] = frozenset()
 
 
@@ -888,6 +895,8 @@ def build_concurrency_report(
         cpu_total = sum(node.joules for node in cpu_per_node)
         if "dcgm" in cpu_samples.sources:
             warnings.append(DCGM_CPU_RAIL_ONLY_WARNING)
+        if "rapl" in cpu_samples.sources:
+            warnings.append(RAPL_PACKAGE_WARNING)
         cpu_utilization = _summarize_utilization(
             cpu_samples.per_socket_utilization,
             device_label="cpu/{host}/socket{index}",

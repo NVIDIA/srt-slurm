@@ -118,7 +118,7 @@ services:
       GLOO_SOCKET_IFNAME: bond0
 ```
 
-Instances launch in pool order, and when a service has a `readiness` probe each instance must pass it before the next one starts. A torchrun rendezvous with `--master-addr` is static: rank 0 waits for every node to join, so a probe on rank 0 that fires only once the rendezvous completes deadlocks against instances that have not been launched yet. Leave `readiness` off for a self-forming cluster, or probe for something rank 0 prints before the others join. Log probes are case-sensitive regular expressions; check the exact line the program prints. A typed kind can do the cluster shape for you, rendering the head and member commands and gating on the fleet as a whole after every instance is up; the kinds table in [services.md](services.md#service-types) lists what exists.
+Every instance of a service launches together, in pool order, and the instances' `readiness` probes are then checked concurrently; the service is ready when all of them pass. Nothing waits for instance 0 before the others start, so a member that needs the rendezvous up must retry until it is (torchrun's static rendezvous does). A probe that fires only once every rank has joined works, but it is bounded by `timeout_seconds` like any other. Log probes are case-sensitive regular expressions; check the exact line the program prints. A typed kind can do the cluster shape for you, rendering the head and member commands and gating on the fleet as a whole after every instance is up; the kinds table in [services.md](services.md#service-types) lists what exists.
 
 ## Ending the job with a pool
 

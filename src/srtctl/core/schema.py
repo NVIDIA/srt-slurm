@@ -55,6 +55,7 @@ from srtctl.backends.trtllm import (
     trtllm_mooncake_role_key_problem,
     trtllm_mooncake_store_config_problem,
 )
+from srtctl.backends.vllm import vllm_mooncake_role_key_problem
 from srtctl.core.formatting import (
     FormattablePath,
     FormattablePathField,
@@ -391,7 +392,8 @@ class ClusterConfig:
     # Default for ``ResourceConfig.gpu_type`` when the recipe omits it. Lets one
     # recipe move between clusters of different GPU types without an edit.
     default_gpu_type: str | None = None
-    # Interface whose IP address frontends use to reach workers (e.g. `ib0`). Unset resolves the hostname.
+    # Interface whose IP address frontends use to reach workers (e.g. `ib0`). Unset resolves the hostname; set it if
+    # hostnames resolve to a different network than the nodes route through.
     network_interface: str | None = None
     # GPU-subset mask passed to workers; ROCm clusters use ROCR_VISIBLE_DEVICES.
     visible_devices_env: str = "CUDA_VISIBLE_DEVICES"
@@ -872,8 +874,9 @@ class RoleConfig(RoleSettings):
     container: str | None = None
     # `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`.
     kv_events: bool | dict[str, Any] | None = None
-    # TRT-LLM only: Mooncake client config keys for this role's workers (`role`, `global_segment_size`,
-    # ...), layered over the `mooncake-master` service's `options.store_config`. Pool-wide keys stay there.
+    # TRT-LLM and vLLM: Mooncake store config keys for this role's workers (`global_segment_size`,
+    # `local_buffer_size`, TRT-LLM's `role`, ...), layered over the `mooncake-master` service's
+    # `options.store_config`, so prefill and decode can differ. Pool-wide keys stay there.
     mooncake_store_config: dict[str, Any] = field(default_factory=dict)
     # Run the native engine with a Dynamo sidecar (turns on `dynamo.sidecar`); every role must agree.
     sidecar: bool | None = field(
@@ -2018,6 +2021,9 @@ class CpuPowerConfig:
     Schema: ClassVar[type[Schema]] = Schema
 
 
+CpuPowerExporterSource = Literal["auto", "acpi", "dcgm", "rapl"]
+
+
 @dataclass(frozen=True)
 class CpuPowerExporterConfig:
     """Best-effort CPU power collection via the cpu-power-exporter binary.
@@ -2031,7 +2037,8 @@ class CpuPowerExporterConfig:
     Attributes:
         port: TCP port the per-node exporter listens on for ``/metrics``.
         source: Power reading back-end passed through to the bundled Rust
-            binary's own ``--source`` flag (``auto`` | ``acpi`` | ``dcgm``).
+            binary's own ``--source`` flag (``auto`` | ``acpi`` | ``dcgm`` |
+            ``rapl``).
             ``auto`` tries ACPI first (the only source with the socket
             envelope) and falls back to DCGM when no ACPI power_meter hwmon
             sensors exist or no socket-total sensor reads positive on two
@@ -2039,14 +2046,16 @@ class CpuPowerExporterConfig:
             if this libdcgm refuses the pair, and is accepted only if some
             socket reads a positive 1130. DCGM mode reports field 1130 = the
             CPU rail (plus 1132 = SysIO), about half the ACPI envelope, and
-            the energy report flags such runs as "CPU rail only". Has no
-            effect when the Python stdlib fallback exporter is used instead of
+            the energy report flags such runs as "CPU rail only". ``rapl``
+            reads the x86 RAPL package energy counters (AMD EPYC, Intel Xeon),
+            whose ``energy_uj`` files are root-only unless a cluster admin
+            grants read access; ``auto`` never selects it. Has no effect when the Python stdlib fallback exporter is used instead of
             the binary -- that fallback is ACPI-only.
     """
 
     # Port the exporter listens on and the head-node collector scrapes.
     port: int = 9405
-    source: Literal["auto", "acpi", "dcgm"] = "auto"
+    source: CpuPowerExporterSource = "auto"
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -2057,8 +2066,8 @@ class TelemetryConfig:
 
     # Collect GPU power over each benchmark concurrency window.
     enabled: bool = False
-    # GPU power exporter image, port, command, labels and metrics. When `enabled` with
-    # no exporter and no CPU leg, the cluster `default_gpu_exporter` is used.
+    # GPU power exporter image, port, command, labels and metrics. When `enabled` and this
+    # key is unset, the cluster `default_gpu_exporter` is used, with or without a CPU leg.
     dcgm_exporter: TelemetryExporterConfig | None = None
     # Milliseconds between collector cycles. Replaces the retired
     # ``default_frequency``, which despite its name was a period in seconds
@@ -3455,6 +3464,8 @@ class SrtConfig:
         if isinstance(self.backend, TRTLLMBackend):
             self._validate_trtllm_mooncake_store(self.backend)
             return
+        if isinstance(self.backend, VLLMBackend):
+            self._validate_vllm_role_mooncake_store(self.backend)
         mooncake_cfg = self.backend.mooncake_kv_store
         if mooncake_cfg is None:
             return
@@ -3518,14 +3529,48 @@ class SrtConfig:
                 )
 
     def _validate_role_mooncake_store_config(self) -> None:
-        """``roles.<role>.mooncake_store_config`` is read by a TRT-LLM role's engine only."""
+        """``roles.<role>.mooncake_store_config`` is read by a TRT-LLM or vLLM role's engine only."""
         for role, spec in self.roles.items():
-            if spec.mooncake_store_config and not isinstance(self.role_backends.get(role, self.backend), TRTLLMBackend):
+            backend = self.role_backends.get(role, self.backend)
+            if spec.mooncake_store_config and not isinstance(backend, TRTLLMBackend | VLLMBackend):
                 raise ValidationError(
-                    f"roles.{role}.mooncake_store_config is read by TRT-LLM only. For SGLang, set per-role Mooncake "
-                    "settings as MOONCAKE_* variables in roles.<role>.env; for vLLM, in the mooncake-master "
-                    "service's options.store_config."
+                    f"roles.{role}.mooncake_store_config is read by TRT-LLM and vLLM only. For SGLang, set "
+                    "per-role Mooncake settings as MOONCAKE_* variables in roles.<role>.env."
                 )
+
+    def _validate_vllm_role_mooncake_store(self, backend: VLLMBackend) -> None:
+        """A vLLM role's ``mooncake_store_config`` against the master srtslurm launches.
+
+        srtslurm renders the role's keys over the service's ``options.store_config`` into
+        ``/logs/mooncake_store_config_<role>.json`` and points that role's
+        ``MOONCAKE_CONFIG_PATH`` at it. Without a master there is no file to layer onto,
+        and a role without the store connector never reads one.
+        """
+        modes = backend.mooncake_store_role_modes()
+        if not modes:
+            return
+        store = backend.mooncake_kv_store
+        if store is None:
+            raise ValidationError(
+                f"roles.{modes[0]}.mooncake_store_config needs a mooncake-master service: srtslurm writes "
+                "it into the store config it renders for the master's pool"
+            )
+        for mode in modes:
+            if not backend.uses_mooncake_store(mode):
+                raise ValidationError(
+                    f"roles.{mode}.mooncake_store_config is set, but roles.{mode}.args has no kv-transfer-config "
+                    "with MooncakeStoreConnector (standalone or inside a MultiConnector), so its workers never "
+                    "read a Mooncake store config"
+                )
+            keys = self.roles[mode].mooncake_store_config
+            problem = vllm_mooncake_role_key_problem(keys)
+            if problem is None and "device_name" in keys and store.device_names_by_gpu:
+                problem = (
+                    "device_name conflicts with the mooncake-master service's device_names_by_gpu, which "
+                    "picks each process's devices"
+                )
+            if problem is not None:
+                raise ValidationError(f"roles.{mode}.mooncake_store_config: {problem}")
 
     def _validate_trtllm_mooncake_store(self, backend: TRTLLMBackend) -> None:
         """TRT-LLM's Mooncake Store connector against the master srtslurm launches.
@@ -3810,8 +3855,17 @@ class SrtConfig:
         exporter = telemetry.dcgm_exporter
         if exporter is None:
             raise ValidationError("telemetry.dcgm_exporter is required when telemetry is enabled")
+        # A recipe with a CPU leg inherits the cluster GPU exporter too, so a CPU-only
+        # recipe can reach the GPU-only checks below without naming a GPU exporter.
+        cpu_only_fix = ""
+        if telemetry.cpu_power_exporter is not None or telemetry.cpu_power.enabled:
+            cpu_only_fix = (
+                "; this check is for GPU power telemetry, which telemetry.dcgm_exporter enables (a recipe "
+                "that omits it inherits the cluster default_gpu_exporter). To collect CPU power only, set "
+                "telemetry.dcgm_exporter: null"
+            )
         if not exporter.container_image:
-            raise ValidationError("telemetry.dcgm_exporter.container_image must be non-empty")
+            raise ValidationError(f"telemetry.dcgm_exporter.container_image must be non-empty{cpu_only_fix}")
         if not 1 <= exporter.port <= 65535:
             raise ValidationError("telemetry.dcgm_exporter.port must be in 1..65535")
 
@@ -3836,19 +3890,21 @@ class SrtConfig:
         supported_benchmarks = {_BENCHMARK_TYPE_SA_BENCH, "agentic", "agentx", "custom", "manual"}
         if self.benchmark.type not in supported_benchmarks:
             supported = ", ".join(sorted(supported_benchmarks))
-            raise ValidationError(f"telemetry requires benchmark.type to be one of: {supported}")
+            raise ValidationError(f"telemetry requires benchmark.type to be one of: {supported}{cpu_only_fix}")
 
         # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
         if self.infra_dedicated_node:
             raise ValidationError(
                 "telemetry requires the discovery plane on the infra node (no etcd or nats service with "
                 "placement.node: dedicated), because a dedicated infra node moves nodes.head off the batch host "
-                "and power samples would no longer share the benchmark's clock"
+                f"and power samples would no longer share the benchmark's clock{cpu_only_fix}"
             )
 
         concurrencies = self.benchmark.get_concurrency_list()
         if not concurrencies or len(set(concurrencies)) != len(concurrencies) or any(c <= 0 for c in concurrencies):
-            raise ValidationError("telemetry requires a non-empty list of unique positive benchmark.concurrencies")
+            raise ValidationError(
+                f"telemetry requires a non-empty list of unique positive benchmark.concurrencies{cpu_only_fix}"
+            )
 
     def _frontend_profiling_control_is_leader_only(self) -> bool:
         """Whether the frontend's workers expose one profiler control server per logical endpoint."""
@@ -3919,8 +3975,9 @@ class SrtConfig:
             return
         if not 1 <= exporter.port <= 65535:
             raise ValidationError("telemetry.cpu_power_exporter.port must be in 1..65535")
-        if exporter.source not in ("auto", "acpi", "dcgm"):
-            raise ValidationError('telemetry.cpu_power_exporter.source must be one of: "auto", "acpi", "dcgm"')
+        sources = get_args(CpuPowerExporterSource)
+        if exporter.source not in sources:
+            raise ValidationError(f"telemetry.cpu_power_exporter.source must be one of: {', '.join(sources)}")
 
         neighbours = [("telemetry.dcgm_exporter", self.telemetry.dcgm_exporter)]
         if self.observability.tachometer_enabled:

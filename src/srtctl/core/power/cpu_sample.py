@@ -18,6 +18,8 @@ Origin (``source``) decides which rail is *primary*:
   through DCGM (``cpu_rails.DCGM_FIELD_RAIL_KINDS``), so the same value is
   also filed as the ``cpu_rail`` component, and field 1132 as ``soc``; see
   :func:`dcgm_rail_readings`. DCGM exposes no socket envelope.
+* ``rapl`` -- the ``package`` RAPL domain per socket, averaged from its
+  energy counter; no rails.
 
 The ``module`` rail (superchip module power, GPUs included) is a reference
 rail too and rides on the socket row under either origin.
@@ -35,12 +37,13 @@ from srtctl.core.power.cpu_rails import (
     DCGM_FIELD_RAIL_KINDS,
     DCGM_KIND,
     DCGM_PRIMARY_FIELD_ID,
+    PACKAGE_KIND,
     REFERENCE_RAIL_KINDS,
     TOTAL_KIND,
     sensor_name,
 )
 
-PRIMARY_KIND_BY_SOURCE: dict[str, str] = {"acpi": TOTAL_KIND, "dcgm": DCGM_KIND}
+PRIMARY_KIND_BY_SOURCE: dict[str, str] = {"acpi": TOTAL_KIND, "dcgm": DCGM_KIND, "rapl": PACKAGE_KIND}
 
 
 def primary_kind(source: str) -> str:
@@ -58,7 +61,7 @@ class RailReading:
     """One classified sensor value: which socket, which rail, from which sensor."""
 
     socket_id: int
-    kind: str  # cpu_rails.TOTAL_KIND / DCGM_KIND / a REFERENCE_RAIL_KINDS member
+    kind: str  # cpu_rails.TOTAL_KIND / DCGM_KIND / PACKAGE_KIND / a REFERENCE_RAIL_KINDS member
     sensor: str
     watts: float
 
