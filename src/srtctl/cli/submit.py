@@ -333,6 +333,14 @@ def show_config_details(config: SrtConfig) -> None:
         trtllm_statistics.append("(engine yaml; the iteration-level trtllm_* gauges need enable_iter_perf_stats: true)")
         console.print(Panel("\n".join(trtllm_statistics), title="TRT-LLM Engine Statistics", border_style="cyan"))
 
+    for role, backend in config.active_role_backends():
+        mode = cast(WorkerMode, role)
+        if isinstance(backend, VLLMBackend) and backend.numa_cpu_bind_for_mode(mode):
+            description = "CPU affinity to each worker's own GPU NUMA node(s) (numactl --cpunodebind=<nodes>)"
+            if policy := backend.numa_wrapper_policy_for_mode(mode):
+                description += f" and {policy.description} ({policy.flag})"
+            console.print(f"vLLM NUMA ({mode}): {description}", crop=False)
+
     if config.frontend.type == "vllm":
         from srtctl.backends.vllm import find_vllm_orchestration_recipe_flags
 
