@@ -1,0 +1,73 @@
+# One vLLM prefill (TP4) and one TileRT decode at TP8 across two GB300 NVL72 trays, KV over NVLink.
+# Configure these image aliases with prepared TileRT/vLLM images in srtslurm.yaml; see docs/tilert.md.
+schema: 2
+name: dsv41flash-tilert-gb300-multinode-decode
+model:
+  path: hf:deepseek-ai/DeepSeek-V4.1-Flash
+  container: tilert-decode
+  precision: fp4
+resources:
+  gpu_type: gb300
+  gpus_per_node: 4
+roles:
+  prefill:
+    engine:
+      type: vllm
+      set_visible_devices: true
+    container: tilert-prefill
+    nodes: 1
+    workers: 1
+    gpus: 4
+    env:
+      NCCL_MNNVL_ENABLE: "1"
+    args:
+      served-model-name: deepseek-ai/DeepSeek-V4.1-Flash
+      tensor-parallel-size: 4
+      max-model-len: 1048576
+      return-tokens-as-token-ids: true
+      trust-remote-code: true
+      language-model-only: true
+      tokenizer-mode: deepseek_v41
+      reasoning-parser: deepseek_v41
+      gpu-memory-utilization: 0.85
+      kv-cache-dtype: nvfp4_ds_mla
+      attention-config: '{"indexer_kv_dtype":"mxfp4"}'
+      speculative-config: '{"method":"dspark","num_speculative_tokens":5}'
+      kv-transfer-config: >-
+        {"kv_connector":"TileRTConnector","kv_connector_module_path":"tilert.pd_vllm.prefill_connector",
+         "kv_role":"kv_producer","kv_connector_extra_config":{
+           "tilert_model":"dsv41","tilert_max_seq_len":1048576,"tilert_transport":"nvlink"}}
+  decode:
+    engine:
+      type: tilert
+      # Each node runs one decode_server, which starts that node's 4 ranks; see docs/tilert.md#multi-node-decode.
+      multi_node_launch: node-env
+    container: tilert-decode
+    nodes: 2
+    workers: 1
+    gpus: 8
+    env:
+      TILERT_MP_GROUP_SIZE: "8"
+      TILERT_DSV41_TP8XN: "1"
+    args:
+      model: dsv41
+      # TileRT reads the Hugging Face checkpoint directly.
+      model-weights-dir: /model
+      max-seq-len: 1048576
+      transport: nvlink
+      with-mtp: true
+      num-mtp: 5
+frontend:
+  type: tilert-router
+  container_image: tilert-router
+  enable_multiple_frontends: false
+  args:
+    model: dsv41
+    parser: none
+    model-path: /model
+    queue-timeout: 1800
+health_check:
+  max_attempts: 2160
+  interval_seconds: 10
+benchmark:
+  type: manual

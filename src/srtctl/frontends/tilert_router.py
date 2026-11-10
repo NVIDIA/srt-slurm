@@ -20,6 +20,14 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Process
 
 ROUTER_MANAGED_ARGS = frozenset({"vllm-url", "decode", "host", "port"})
+ROUTER_WORKERS_REQUIRED = "TileRT router requires at least one prefill worker and at least one decode worker"
+
+
+def decode_spans_nodes(backend: Any) -> bool:
+    """Whether the decode engine may start one worker across several nodes."""
+    from srtctl.backends.tilert import TileRTBackend
+
+    return isinstance(backend, TileRTBackend) and backend.allows_multi_node_decode
 
 
 @register_frontend("tilert-router")
@@ -46,15 +54,19 @@ class TileRTRouterFrontend(StaticRouterFrontend):
         if config.backend_for_role("decode").type != "tilert":
             raise ValueError("tilert-router requires a TileRT decode engine")
         resources = config.topology
-        if resources.num_agg or resources.num_prefill != 1 or resources.num_decode < 1:
-            raise ValueError("TileRT router requires exactly one prefill worker and at least one decode worker")
+        if resources.num_agg or resources.num_prefill < 1 or resources.num_decode < 1:
+            raise ValueError(ROUTER_WORKERS_REQUIRED)
         if config.backend_for_role("prefill").type != "vllm":
             raise ValueError("tilert-router requires vLLM prefill with TileRTConnector")
         model_name = config.served_model_name
         if config.backend_for_role("decode").get_served_model_name(model_name) != model_name:
             raise ValueError("TileRT served_model_name must match the prefill served-model-name")
-        if resources.gpus_per_decode > resources.gpus_per_node:
-            raise ValueError("TileRT decode workers must fit on one node")
+        if resources.gpus_per_decode > resources.gpus_per_node and not decode_spans_nodes(
+            config.backend_for_role("decode")
+        ):
+            raise ValueError(
+                "TileRT decode workers must fit on one node unless roles.decode.engine.multi_node_launch is set"
+            )
         if config.profiling.is_torch:
             raise ValueError("TileRT does not support torch profiling")
 
@@ -98,8 +110,8 @@ class TileRTRouterFrontend(StaticRouterFrontend):
     def build_router_command(self, workers: list[RouterWorker], host: str, port: int, backend: Any) -> list[str]:
         prefills = [worker for worker in workers if worker.mode == "prefill"]
         decodes = [worker for worker in workers if worker.mode == "decode"]
-        if len(prefills) != 1 or not decodes or len(prefills) + len(decodes) != len(workers):
-            raise ValueError("TileRT router requires exactly one prefill worker and at least one decode worker")
+        if not prefills or not decodes or len(prefills) + len(decodes) != len(workers):
+            raise ValueError(ROUTER_WORKERS_REQUIRED)
 
         decode_specs: list[str] = []
         for worker in decodes:
@@ -108,10 +120,11 @@ class TileRTRouterFrontend(StaticRouterFrontend):
                 raise ValueError(f"Incomplete TileRT decode endpoint: {worker}")
             decode_specs.append(f"{parsed.hostname}:{worker.bootstrap_port}:{parsed.port}")
         # --decode is a single nargs="+" option; repeating the flag would keep only the last worker.
+        # --vllm-url takes every prefill worker as one comma-separated value; one worker renders its URL alone.
         return [
             *self.executable,
             "--vllm-url",
-            prefills[0].url,
+            ",".join(worker.url for worker in prefills),
             "--decode",
             *decode_specs,
             "--host",

@@ -35,15 +35,31 @@ tokenizer path or Hugging Face model ID, including when `parser: none`.
 
 ## Limits
 
-The router supports one prefill worker and one or more decode workers, each
-decode worker on a single node. TileRT requires transferred KV state and cannot
-serve aggregate requests through this adapter.
+The router supports one or more prefill workers and one or more decode workers.
+Each decode worker runs on a single node unless
+[multi-node decode](#multi-node-decode) is enabled. TileRT requires transferred
+KV state and cannot serve aggregate requests through this adapter.
 
 srtctl sets the decode HTTP/control ports and `--engine tilert`; other options
 come from `roles.decode.args`. Workers must pass `/health` before the router
 starts. TileRT decode has no `/metrics`, so only prefill metrics are scraped.
 
 The [role-engine restrictions](topology.md#roles) also apply.
+
+## Multi-node decode
+
+Set `roles.decode.engine.multi_node_launch` to let one decode worker span several
+nodes, for example TP8 across two GB300 NVL72 trays:
+
+- `node-env` (recommended) runs one `python -m tilert.pd_vllm.decode_server` per
+  node with `TILERT_PD_NNODES`, `TILERT_PD_NODE_RANK`, and `TILERT_PD_RDZV`; the
+  server starts that node's ranks.
+- `torchrun` runs `torchrun --nnodes --nproc-per-node --node-rank --master-addr
+  --master-port -m tilert.pd_vllm.decode_server` on each node.
+
+srtctl allocates one rendezvous port on the worker's first node and an HTTP port
+on every node. Only the first node is registered with and health-checked by the
+router. Unset, decode workers must fit on one node.
 
 ## Benchmarks
 

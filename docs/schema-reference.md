@@ -715,6 +715,7 @@ Launch TileRT's decode server with recipe-owned model and transport settings.
 |---|---|---|---|
 | `type` | one of `'tilert'` | `'tilert'` | Engine type discriminator. |
 | `served_model_name` | str \| None | `None` | Model name the server reports to clients; unset uses the default served name. |
+| `multi_node_launch` | one of `'node-env'`, `'torchrun'` \| None | `None` | How a decode worker that spans several nodes starts on each node; unset keeps decode workers single-node. `node-env` (recommended) runs one `python -m tilert.pd_vllm.decode_server ...` per node under TILERT_PD_NNODES, TILERT_PD_NODE_RANK and TILERT_PD_RDZV, and the server starts its local ranks; `torchrun` starts them with `torchrun --nnodes --nproc-per-node --node-rank --master-addr --master-port -m tilert.pd_vllm.decode_server ...`. Only the worker's first node is advertised to the router; see docs/tilert.md#multi-node-decode. |
 
 ### TokenSpeedBackend
 

@@ -3662,6 +3662,21 @@
           ],
           "description": "Model name the server reports to clients; unset uses the default served name.",
           "default": null
+        },
+        "multi_node_launch": {
+          "anyOf": [
+            {
+              "enum": [
+                "node-env",
+                "torchrun"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How a decode worker that spans several nodes starts on each node; unset keeps decode workers single-node. `node-env` (recommended) runs one `python -m tilert.pd_vllm.decode_server ...` per node under TILERT_PD_NNODES, TILERT_PD_NODE_RANK and TILERT_PD_RDZV, and the server starts its local ranks; `torchrun` starts them with `torchrun --nnodes --nproc-per-node --node-rank --master-addr --master-port -m tilert.pd_vllm.decode_server ...`. Only the worker's first node is advertised to the router; see docs/tilert.md#multi-node-decode.",
+          "default": null
         }
       },
       "description": "Launch TileRT's decode server with recipe-owned model and transport settings."
