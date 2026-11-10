@@ -25,6 +25,7 @@ identity:
 slurm:
   time_limit: 04:00:00
 extra_mount:
+- /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo:/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo
 - /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/dynamo_wheels:/dynamo_wheels
 health_check:
   max_attempts: 540
@@ -308,7 +309,7 @@ benchmark:
     AIPERF_REF: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/agentx-harness
     AIPERF_DATASET_CONFIGURATION_TIMEOUT: '1800'
     AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT: '1800'
-    AIPERF_DATASET_MMAP_CACHE_DIR: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/xiaomingc/qwen35_e2e/hf_cache/aiperf_mmap
+    AIPERF_DATASET_MMAP_CACHE_DIR: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/aiperf_mmap_cache
     AIPERF_REQUIRED_SERVER_METRIC_PREFIX: trtllm_kv_cache_utilization
   command: |
     set -euo pipefail
