@@ -316,10 +316,12 @@ class PostEvalConfig:
             the placeholders ``{endpoint}`` (the frontend URL) and
             ``{infmax_workspace}`` (the InferenceMAX workspace mount). Not
             shell-interpreted; wrap in ``bash -lc`` yourself if you need a shell.
+        container_image: Image the eval process runs in; unset uses ``model.container``.
     """
 
     passthrough_env: list[str] = field(default_factory=list)
     command: list[str] | None = None
+    container_image: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 

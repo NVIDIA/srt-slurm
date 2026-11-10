@@ -785,7 +785,7 @@ class SweepOrchestrator(
             step_name="eval",
             nodelist=[eval_node],
             output=str(eval_log),
-            container_image=str(self.runtime.container_image),
+            container_image=str(self.config.post_eval.container_image or self.runtime.container_image),
             container_mounts=self.runtime.container_mounts,
             reuse_container=self.runtime.reuse_container,
             container_prepare_timeout_seconds=self.runtime.container_prepare_timeout_seconds,

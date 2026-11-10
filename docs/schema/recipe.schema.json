@@ -1652,6 +1652,18 @@
           ],
           "description": "Argv that replaces the built-in lm-eval runner command. May use the placeholders ``{endpoint}`` (the frontend URL) and ``{infmax_workspace}`` (the InferenceMAX workspace mount). Not shell-interpreted; wrap in ``bash -lc`` yourself if you need a shell.",
           "default": null
+        },
+        "container_image": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Image the eval process runs in; unset uses ``model.container``.",
+          "default": null
         }
       },
       "description": "How the post-benchmark (or eval-only) accuracy evaluation is dispatched."

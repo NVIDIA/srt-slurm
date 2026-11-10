@@ -362,6 +362,7 @@ How the post-benchmark (or eval-only) accuracy evaluation is dispatched.
 |---|---|---|---|
 | `passthrough_env` | list[str] | `[]` | Extra environment variable names forwarded from the orchestrator's environment into the eval process when set (on top of the built-in list: RUN_EVAL, EVAL_ONLY, MODEL, ISL, OSL, ...). |
 | `command` | list[str] \| None | `None` | Argv that replaces the built-in lm-eval runner command. May use the placeholders ``{endpoint}`` (the frontend URL) and ``{infmax_workspace}`` (the InferenceMAX workspace mount). Not shell-interpreted; wrap in ``bash -lc`` yourself if you need a shell. |
+| `container_image` | str \| None | `None` | Image the eval process runs in; unset uses ``model.container``. |
 
 ### IdentityConfig
 
