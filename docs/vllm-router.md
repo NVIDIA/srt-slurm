@@ -170,11 +170,11 @@ roles:
 
 | Piece | srtctl sets | Why |
 | --- | --- | --- |
-| Router command | `--vllm-pd-disaggregation --kv-connector moriio --vllm-discovery-address 0.0.0.0:36367`, no `--prefill`/`--decode` | Discovery mode in vllm-project/router (`RouterArgs.vllm_discovery_address`); the address is the one listener workers register with |
+| Router command | `--vllm-pd-disaggregation --kv-connector moriio --vllm-discovery-address 0.0.0.0:8200`, no `--prefill`/`--decode` | Discovery mode in vllm-project/router (`RouterArgs.vllm_discovery_address`); the address is the one listener workers register with |
 | `kv_connector` / `kv_role` | `MoRIIOConnector`; `kv_producer` on prefill, `kv_consumer` on decode | The connector's role follows the worker's mode |
-| `proxy_ip`, `proxy_ping_port` | the head node's IP on the cluster interface, `36367` | Where the worker registers; hence one Router, on the head node |
+| `proxy_ip`, `proxy_ping_port` | the head node's IP on the cluster interface, `8200` | Where the worker registers; hence one Router, on the head node |
 | `http_port`, `host_ip` | the worker's allocated HTTP port and its own routable IP | What the Router routes to and what peers connect to; upstream falls back to its own interface guess for `host_ip`, which is wrong on multi-homed nodes |
-| `handshake_port`, `notify_port` | allocated per process by `NodePortAllocator` (`moriio_handshake`, `moriio_notify` kinds); both reserve one port per local rank | vLLM adds rank offsets to both bases, so colocated workers need disjoint blocks. Defaults start at 26000/27000, below Linux's default ephemeral range, to avoid MoRI's other dynamically allocated listeners |
+| `handshake_port`, `notify_port` | allocated per process by `NodePortAllocator` (`moriio_handshake`, `moriio_notify` kinds); both reserve one port per local rank | vLLM adds rank offsets to both bases, so colocated workers need disjoint blocks. Defaults start at 4900/5560, below the ephemeral range, to avoid MoRI's other dynamically allocated listeners |
 | `read_mode` | `true` | The Router's discovery flow drives reads |
 | `VLLM_PORT` | unset for these workers | MoRI-IO opens its other listeners inside the TP child processes, which inherit `VLLM_PORT`; a fixed scan base there hands several ranks the same unbound port, so vLLM takes ephemeral ports from the kernel |
 

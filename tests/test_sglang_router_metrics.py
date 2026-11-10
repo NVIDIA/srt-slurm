@@ -65,7 +65,7 @@ def test_sglang_router_targets_worker_http_ports_and_gateway_prometheus_port(_ip
 
     assert 'url = "http://ip-node-a:6100/metrics"' in text
     assert 'url = "http://ip-node-a:6101/metrics"' in text
-    assert 'url = "http://ip-head:29000/metrics"' in text  # the gateway's Prometheus listener, not the routing port
+    assert 'url = "http://ip-head:8190/metrics"' in text  # the gateway's Prometheus listener, not the routing port
     assert ":8000" not in text
     assert ":7500" not in text and ":7501" not in text and ":7502" not in text
     assert "ip-node-b" not in text
@@ -79,7 +79,7 @@ def test_gateway_gets_prometheus_flags_unless_the_recipe_set_them() -> None:
     config = SimpleNamespace(frontend=SimpleNamespace(args={"policy": "cache_aware"}))
     assert frontend.get_managed_frontend_args(config, None, []) == [
         "--prometheus-port",
-        "29000",
+        "8190",
         "--prometheus-host",
         "0.0.0.0",
     ]

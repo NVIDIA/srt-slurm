@@ -39,6 +39,7 @@ from srtctl.cli.mixins import (
 from srtctl.core.config import load_config
 from srtctl.core.health import wait_for_port
 from srtctl.core.lockfile import write_lockfile
+from srtctl.core.port_preflight import ephemeral_conflicts, probe_nodes, process_ports
 from srtctl.core.processes import (
     ProcessRegistry,
     setup_signal_handlers,
@@ -56,7 +57,8 @@ from srtctl.ports import (
     FRONTEND_PUBLIC_PORT,
     SIDECAR_GRPC_PORTS,
 )
-from srtctl.services.implicit import uses_discovery_plane
+from srtctl.services.implicit import effective_services, uses_discovery_plane
+from srtctl.services.registry import get_service_kind
 
 logger = logging.getLogger(__name__)
 
@@ -526,6 +528,32 @@ class SweepOrchestrator(
         self._clock_sync_failures = failures
         logger.warning("%s (telemetry.required is false; continuing, artifacts will be marked unpublishable)", message)
 
+    def _check_ephemeral_ports(self) -> None:
+        """Warn, or fail under ``health_check.fail_on_ephemeral_ports``, when a port this job
+        assigned lies inside its node's ephemeral range, where another socket can hold it first."""
+        try:
+            assigned = [(p.node, owner, port) for p in self.backend_processes for owner, port in process_ports(p)]
+        except ValueError as exc:  # the worker stage reports a topology it cannot build
+            logger.warning("Ephemeral port check skipped: %s", exc)
+            return
+        for effective in effective_services(self.config):
+            service = effective.service
+            for metrics in get_service_kind(service.type).metrics(service):
+                assigned.extend((node, f"{service.name} metrics", metrics.port) for node in self.service_nodes(service))
+        groups: dict[int | None, list[str]] = {}
+        for node in dict.fromkeys(node for node, _, _ in assigned):
+            groups.setdefault(self.runtime.nodes.het_group_for(node), []).append(node)
+        job_id = get_slurm_job_id() or self.runtime.job_id
+        output = "".join(probe_nodes(nodes, job_id, group) for group, nodes in groups.items())
+        logger.info("Ephemeral port ranges: %s", "; ".join(output.split("\n")).strip("; ") or "unavailable")
+        conflicts = ephemeral_conflicts(output, assigned)
+        for message in conflicts:
+            logger.warning("Port inside the ephemeral range, another socket can hold it: %s", message)
+        if conflicts and self.config.health_check.fail_on_ephemeral_ports:
+            raise RuntimeError(
+                f"{len(conflicts)} assigned port(s) inside the ephemeral range (fail_on_ephemeral_ports)"
+            )
+
     def _run_host_teardown(self) -> None:
         """Undo host_setup after workers stop.
 
@@ -850,6 +878,9 @@ class SweepOrchestrator(
             # Stage 0b: power runs compare clocks across nodes; refuse to spend
             # GPU time if any node is not NTP-synchronised.
             self._check_clock_sync()
+
+            # Stage 0c: assigned ports a node's outbound sockets can take first.
+            self._check_ephemeral_ports()
 
             # Stage 1: the discovery plane (etcd, NATS) as services. Implied by the
             # dynamo frontend; static/direct frontends imply nothing here.

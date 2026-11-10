@@ -143,7 +143,7 @@ Set `frontend.enable_multiple_frontends: false` and leave frontend placement on
 `head`. A ZMQ engine connects to one gateway, so multiple frontend replicas and
 non-head frontend placement are rejected at configuration load.
 
-For each endpoint, srtctl allocates one gateway handshake port (31000 and up,
+For each endpoint, srtctl allocates one gateway handshake port (2200 and up,
 unique across the job). SMG receives `tcp://<head-ip>:<handshake-port>` in
 `--worker-urls`, or `--prefill` / `--decode` for disaggregation, together with
 `--backend tokenspeed`. Its input and output sockets use OS-assigned TCP ports on

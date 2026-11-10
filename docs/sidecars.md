@@ -28,7 +28,7 @@ roles:
 dynamo:
   source:
     wheel: "<nightly-with-sidecars>"
-  sidecar_port: 19000
+  sidecar_port: 2400
   sidecar_args:
     - --grpc-connections
     - "4"

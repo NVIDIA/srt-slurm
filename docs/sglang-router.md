@@ -183,7 +183,7 @@ Tachometer (on by default) scrapes this frontend like any other, but the Model G
 `sglang.launch_server` workers need two flags that srtctl now passes for you:
 
 - The gateway only starts its Prometheus listener when `--prometheus-port` is given. srtctl adds
-  `--prometheus-port 29000 --prometheus-host 0.0.0.0` (the router's own default port) unless your
+  `--prometheus-port 8190 --prometheus-host 0.0.0.0` unless your
   `frontend.args` set `prometheus-port` / `prometheus-host`, and points tachometer's `frontend*`
   target at that port, not at the routing port.
 - Workers serve Prometheus `/metrics` on their HTTP port only with `--enable-metrics`. srtctl adds it

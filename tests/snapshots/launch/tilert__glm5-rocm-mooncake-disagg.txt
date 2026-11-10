@@ -17,7 +17,7 @@ env_to_set:
     RDMAV_FORK_SAFE: 1
     VLLM_ENGINE_READY_TIMEOUT_S: 10800
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20000
     VLLM_ROCM_USE_AITER: 1
     VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS: 1
@@ -51,7 +51,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python -m tilert.pd_vllm.decode_server --engine tilert --http-port 6100 --ctrl-port 5401 --model glm5_2 --model-weights-dir /models/GLM-5.3-tilert-tp8 --max-seq-len 1048576 --kv-cache-dtype bf16 --transport mooncake --with-mtp --num-mtp 3
+    python -m tilert.pd_vllm.decode_server --engine tilert --http-port 6100 --ctrl-port 6821 --model glm5_2 --model-weights-dir /models/GLM-5.3-tilert-tp8 --max-seq-len 1048576 --kv-cache-dtype bf16 --transport mooncake --with-mtp --num-mtp 3
 
 ## tilert_router_0
 nodelist: node-01
@@ -65,7 +65,7 @@ container_mounts:
 env_to_set:
     RDMAV_FORK_SAFE: 1
 command: |
-    python -m tilert.pd_vllm.pd_router --vllm-url http://127.0.0.1:6100 --decode 127.0.0.1:5401:6100 --host 0.0.0.0 --port 8000 --parser none --model-path /model --queue-timeout 1800
+    python -m tilert.pd_vllm.pd_router --vllm-url http://127.0.0.1:6100 --decode 127.0.0.1:6821:6100 --host 0.0.0.0 --port 8000 --parser none --model-path /model --queue-timeout 1800
 
 ## service_dcgm-exporter_node-01
 nodelist: node-01

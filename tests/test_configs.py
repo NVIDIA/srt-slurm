@@ -3161,7 +3161,7 @@ class TestVLLMDataParallelMode:
             "kv_role": role,
             "kv_connector_extra_config": {
                 "proxy_ip": "10.20.30.40",
-                "proxy_ping_port": "36367",
+                "proxy_ping_port": "8200",
                 "http_port": "6100",
                 "host_ip": "10.20.30.41",
                 "handshake_port": "40000",

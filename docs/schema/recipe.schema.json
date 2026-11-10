@@ -763,7 +763,7 @@
         "sidecar_port": {
           "type": "integer",
           "description": "Base gRPC port between engine and sidecar; co-located workers get deterministic offsets. The sidecar dials it on loopback; vLLM and SGLang bind it on the engine's host (0.0.0.0).",
-          "default": 19000
+          "default": 2400
         },
         "sidecar_binary": {
           "anyOf": [
@@ -1192,6 +1192,11 @@
           },
           "description": "Additional regular expressions, matched against every new worker log line, that fail the run the same way.",
           "default": []
+        },
+        "fail_on_ephemeral_ports": {
+          "type": "boolean",
+          "description": "Fail before workers start, instead of warning, when a port the job assigned lies inside its node's unreserved ip_local_port_range.",
+          "default": false
         }
       },
       "description": "Health check configuration."

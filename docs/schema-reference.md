@@ -156,7 +156,7 @@ Dynamo installation configuration.
 | `request_plane` | one of `'nats'`, `'tcp'`, `'http'` | `'tcp'` | Transport frontends use to send requests to workers. |
 | `event_plane` | one of `'nats'`, `'zmq'` \| None | `None` | Sets DYN_EVENT_PLANE for KV and worker events; unset follows the Dynamo image's default. |
 | `sidecar` | bool | `False` | Job-wide native sidecar mode; prefer `roles.<role>.sidecar: true`. |
-| `sidecar_port` | int | `19000` | Base gRPC port between engine and sidecar; co-located workers get deterministic offsets. The sidecar dials it on loopback; vLLM and SGLang bind it on the engine's host (0.0.0.0). |
+| `sidecar_port` | int | `2400` | Base gRPC port between engine and sidecar; co-located workers get deterministic offsets. The sidecar dials it on loopback; vLLM and SGLang bind it on the engine's host (0.0.0.0). |
 | `sidecar_binary` | str \| None | `None` | Standalone sidecar executable; unset runs `python3 -m dynamo.<framework>.sidecar`. |
 | `sidecar_startup_timeout` | int | `3600` | Seconds to wait for the native engine's gRPC endpoint. |
 | `sidecar_context_length` | int \| None | `None` | Context length the sidecar advertises (TRT-LLM); unset reads it from the engine. |
@@ -272,6 +272,7 @@ Health check configuration.
 | `interval_seconds` | int | `10` | Seconds between readiness polls. |
 | `fatal_log_markers` | bool | `True` | Fail the run as soon as a worker's log prints a line the engine names as fatal (for TRT-LLM, the launcher's ``Rank<N> Task exit code: <non-zero>`` and ``Failed to initialize executor``), even while its srun step is still running. Without it a worker whose engine died behind a live launcher is only noticed when this health window runs out. |
 | `extra_fatal_log_patterns` | list[str] | `[]` | Additional regular expressions, matched against every new worker log line, that fail the run the same way. |
+| `fail_on_ephemeral_ports` | bool | `False` | Fail before workers start, instead of warning, when a port the job assigned lies inside its node's unreserved ip_local_port_range. |
 
 ### ObservabilityConfig
 

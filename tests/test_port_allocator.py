@@ -110,6 +110,13 @@ class TestNodePortAllocator:
         assert len({kind.name for kind in kinds}) == len(kinds)
         assert len({kind.base for kind in kinds}) == len(kinds)
 
+    def test_a_counter_stops_at_its_cap(self):
+        allocator = NodePortAllocator()
+        assert allocator.next(HTTP_PORTS, "node0", size=HTTP_PORTS.cap) == HTTP_PORTS.base
+        with pytest.raises(ValueError, match=f"more than {HTTP_PORTS.cap} ports on node0"):
+            allocator.next(HTTP_PORTS, "node0")
+        assert allocator.next(HTTP_PORTS, "node1") == HTTP_PORTS.base
+
 
 def _example_processes(config: SrtConfig) -> list[Process]:
     """The process topology srtctl would launch for a recipe, on synthetic nodes."""

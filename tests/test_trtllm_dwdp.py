@@ -16,11 +16,12 @@ from unittest.mock import MagicMock, patch
 
 import yaml
 
-from srtctl.backends.trtllm import DWDP_MASTER_PORT, DWDP_RENDEZVOUS_TIMEOUT_S, TRTLLMBackend
+from srtctl.backends.trtllm import DWDP_RENDEZVOUS_TIMEOUT_S, TRTLLMBackend
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import RoleConfig, SrtConfig
 from srtctl.core.topology import Process
+from srtctl.ports import TRTLLM_DWDP_MASTER_PORT as DWDP_MASTER_PORT
 
 SRUN_WORKER = "srtctl.cli.mixins.worker_stage.start_srun_process"
 HOST_IP_WORKER = "srtctl.cli.mixins.worker_stage.get_hostname_ip"

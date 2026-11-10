@@ -14,8 +14,8 @@ and the llm-d [no-Kubernetes guide](https://github.com/llm-d/llm-d/tree/7fb84b0a
 
 | Process | Where | Launched as | Port |
 | --- | --- | --- | --- |
-| Envoy | router node | the frontend (`llm-d-envoy_0`) | the public port (8000); admin `/ready` on 9901 |
-| EPP | router node | the frontend (`llm-d-epp_0`) | ext_proc gRPC 9002, gRPC health 9003, Prometheus 9090 |
+| Envoy | router node | the frontend (`llm-d-envoy_0`) | the public port (8000); admin `/ready` on 8213 |
+| EPP | router node | the frontend (`llm-d-epp_0`) | ext_proc gRPC 8210, gRPC health 8211, Prometheus 8212 |
 | P/D sidecar | every routable decode worker (prefill/decode jobs only) | the implied `llm-d-sidecar` service | `Process.proxy_port`, from the allocator |
 | vLLM | every worker | the backend, as for the other static routers | `Process.http_port` |
 

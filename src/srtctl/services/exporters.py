@@ -34,6 +34,7 @@ import yaml
 
 from srtctl.backends.base import ProcessGroup
 from srtctl.core.power.mapping import TACHOMETER_SCRAPE
+from srtctl.ports import DCGM_EXPORTER_PORT, NODE_EXPORTER_PORT, PROCESS_EXPORTER_PORT
 from srtctl.services.config import ServiceMetricsConfig
 from srtctl.services.registry import ServiceKind, ServiceLaunchContext, register_service
 
@@ -45,10 +46,6 @@ if TYPE_CHECKING:
 
 DCGM_EXPORTER_IMAGE = "nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04"
 NODE_EXPORTER_IMAGE = "quay.io#prometheus/node-exporter:v1.8.2"
-# Deliberately off the conventional 9400/9100: managed clusters may run host exporters there.
-DCGM_EXPORTER_PORT = 9401
-NODE_EXPORTER_PORT = 9101
-PROCESS_EXPORTER_PORT = 9256
 
 # Node-exporter collectors for host CPU, process state and scheduler pressure.
 #   stat         -> node_procs_running / node_procs_blocked / node_context_switches_total

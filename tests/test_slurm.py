@@ -1299,7 +1299,7 @@ def test_endpoint_launch_partial_nodes(tmp_path: Path, worker: int, visibility_e
                 "MASTER_PORT": "64739",
             },
         )
-        assert result.stdout == f"{process.cuda_visible_devices}|10.0.0.1|29500"
+        assert result.stdout == f"{process.cuda_visible_devices}|10.0.0.1|2050"
 
 
 @pytest.mark.parametrize("override", [False, True])
@@ -1330,7 +1330,7 @@ def test_trtllm_endpoint_rendezvous_is_unique_and_preserves_overrides(tmp_path: 
             mixin.start_endpoint_worker([process])
     envs = [call.kwargs["env_to_set"] for call in mock_srun.call_args_list]
     assert [env["MASTER_ADDR"] for env in envs] == ["custom-host" if override else "10.0.0.1"] * 2
-    assert [env["MASTER_PORT"] for env in envs] == (["12345"] * 2 if override else ["29500", "29501"])
+    assert [env["MASTER_PORT"] for env in envs] == (["12345"] * 2 if override else ["2050", "2051"])
 
 
 @pytest.mark.parametrize("gpu_count, nodes, per_node", [(32, 8, 4), (2, 1, 2)])

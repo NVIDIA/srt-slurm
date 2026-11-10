@@ -21,7 +21,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python3 -m sglang.launch_server --model-path /model --served-model-name model --host 0.0.0.0 --port 8000 --nccl-port 17500 --enable-metrics
+    python3 -m sglang.launch_server --model-path /model --served-model-name model --host 0.0.0.0 --port 8000 --nccl-port 4400 --enable-metrics
 
 ## service_dcgm-exporter_node-01
 nodelist: node-01

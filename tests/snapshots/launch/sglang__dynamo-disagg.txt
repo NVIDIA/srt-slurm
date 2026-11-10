@@ -58,7 +58,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python3 -m dynamo.sglang --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17500 --enable-metrics --disaggregation-mode prefill --disaggregation-bootstrap-port 7200 --dump-config-to /logs/node-01_config.json --request-plane tcp --context-length 4096 --disable-piecewise-cuda-graph --mem-fraction-static 0.5 --tensor-parallel-size 1
+    python3 -m dynamo.sglang --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 4400 --enable-metrics --disaggregation-mode prefill --disaggregation-bootstrap-port 7200 --dump-config-to /logs/node-01_config.json --request-plane tcp --context-length 4096 --disable-piecewise-cuda-graph --mem-fraction-static 0.5 --tensor-parallel-size 1
 
 ## decode_0_node-02
 nodelist: node-02
@@ -92,7 +92,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python3 -m dynamo.sglang --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17501 --enable-metrics --disaggregation-mode decode --dump-config-to /logs/node-02_config.json --request-plane tcp --context-length 4096 --disable-piecewise-cuda-graph --mem-fraction-static 0.5 --tensor-parallel-size 1
+    python3 -m dynamo.sglang --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 4401 --enable-metrics --disaggregation-mode decode --dump-config-to /logs/node-02_config.json --request-plane tcp --context-length 4096 --disable-piecewise-cuda-graph --mem-fraction-static 0.5 --tensor-parallel-size 1
 
 ## frontend_0
 nodelist: node-01

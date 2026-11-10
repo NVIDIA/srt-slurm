@@ -150,7 +150,7 @@ and [`examples/sglang/smg-disagg.yaml`](https://github.com/NVIDIA/srt-slurm/blob
   ([route](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/server.rs#L993),
   [response](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/worker/service.rs#L204-L241)).
 - **Metrics.** SMG serves Prometheus on its own listener. srtctl passes
-  `--prometheus-port 29000` (on every interface, SMG's default host) and points
+  `--prometheus-port 8191` (on every interface, SMG's default host) and points
   tachometer's frontend target there
   ([`main.rs`](https://github.com/smg-project/smg/blob/3be823a700fabaff3add8a390cf78f163479d686/model_gateway/src/main.rs#L741-L748)).
   Workers are scraped on their own HTTP ports, as with the other static routers, at

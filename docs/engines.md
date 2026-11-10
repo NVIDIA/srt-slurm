@@ -306,7 +306,7 @@ roles:
 Before loading weights the workers join a TCPStore rendezvous that TRT-LLM reads from
 the environment, so when a role's args have `dwdp_config` srtctl gives every worker of
 that role `TRTLLM_DWDP_RANK=<worker index>`, `TRTLLM_DWDP_MASTER_ADDR=<node of worker
-0>`, `TRTLLM_DWDP_MASTER_PORT=29600` and `TRTLLM_DWDP_RENDEZVOUS_TIMEOUT_S=3600`
+0>`, `TRTLLM_DWDP_MASTER_PORT=8220` and `TRTLLM_DWDP_RENDEZVOUS_TIMEOUT_S=3600`
 (the port and timeout, and the master address, can be pinned in the role env). The N
 processes would otherwise also share the model's `trust_remote_code` module cache and
 the CuTe DSL autotuner cache and race on them, so each worker gets a private `HOME`,

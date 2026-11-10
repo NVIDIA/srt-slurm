@@ -15,7 +15,7 @@ env_to_set:
     DYN_VLLM_KV_EVENT_PORT: 3000
     HEAD_NODE_IP: 127.0.0.1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
-    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 6820
     VLLM_PORT: 20000
 bash_preamble: |
     ( python3 <(cat <<'__FINGERPRINT_EOF__'
@@ -44,7 +44,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python -m tilert.pd_vllm.decode_server --engine tilert --http-port 6100 --ctrl-port 5401 --model glm5 --model-weights-dir /tilert_weights/glm5.1-fp8 --max-seq-len 202752 --kv-cache-dtype fp8 --transport nixl --with-mtp
+    python -m tilert.pd_vllm.decode_server --engine tilert --http-port 6100 --ctrl-port 6821 --model glm5 --model-weights-dir /tilert_weights/glm5.1-fp8 --max-seq-len 202752 --kv-cache-dtype fp8 --transport nixl --with-mtp
 
 ## tilert_router_0
 nodelist: node-01
@@ -56,7 +56,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 command: |
-    python -m tilert.pd_vllm.pd_router --vllm-url http://127.0.0.1:6100 --decode 127.0.0.1:5401:6100 --host 0.0.0.0 --port 8000 --parser none --model-path zai-org/GLM-5.1-FP8 --queue-timeout 1800
+    python -m tilert.pd_vllm.pd_router --vllm-url http://127.0.0.1:6100 --decode 127.0.0.1:6821:6100 --host 0.0.0.0 --port 8000 --parser none --model-path zai-org/GLM-5.1-FP8 --queue-timeout 1800
 
 ## service_dcgm-exporter_node-01
 nodelist: node-01

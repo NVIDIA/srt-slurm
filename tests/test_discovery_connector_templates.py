@@ -89,7 +89,7 @@ def test_offload_template_receives_discovery_topology_without_mutating_input(enc
         "backend": "rdma",
         "read_mode": True,
         "proxy_ip": "10.0.0.1",
-        "proxy_ping_port": "36367",
+        "proxy_ping_port": "8200",
         "host_ip": "10.0.0.2",
         "http_port": "6101",
         "handshake_port": "26008",
@@ -177,7 +177,7 @@ def test_nested_template_binds_only_the_discovery_child() -> None:
 def test_matching_explicit_bindings_are_accepted(integer_ports: bool) -> None:
     expected = {
         "proxy_ip": "10.0.0.1",
-        "proxy_ping_port": "36367",
+        "proxy_ping_port": "8200",
         "host_ip": "10.0.0.2",
         "http_port": "6101",
         "handshake_port": "26008",
@@ -186,7 +186,7 @@ def test_matching_explicit_bindings_are_accepted(integer_ports: bool) -> None:
     }
     extra = dict(expected)
     if integer_ports:
-        extra.update(proxy_ping_port=36367, http_port=6101, handshake_port=26008, notify_port=27008)
+        extra.update(proxy_ping_port=8200, http_port=6101, handshake_port=26008, notify_port=27008)
     template = {"kv_connector": "MoRIIOConnector", "kv_connector_extra_config": extra}
     original = copy.deepcopy(template)
     command = _command(template)
