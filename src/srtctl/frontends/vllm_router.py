@@ -174,6 +174,13 @@ class VLLMRouterFrontend(StaticRouterFrontend):
                 "a discovery connector must be set on both prefill and decode so the roles find each other "
                 f"through the Router; got {names}"
             )
+        # Each worker reads its own read_mode; a READ decode never pulls what a WRITE prefill waits to push.
+        read_modes = {mode: backend.discovery_read_mode(mode) for mode in rows}
+        if read_modes["prefill"] != read_modes["decode"]:
+            raise ValueError(
+                "MoRI-IO prefill and decode must set the same read_mode; "
+                f"got prefill={read_modes['prefill']}, decode={read_modes['decode']}"
+            )
         if config.topology.num_agg:
             raise ValueError(
                 "a discovery connector requires a prefill/decode topology; aggregate workers transfer no KV"

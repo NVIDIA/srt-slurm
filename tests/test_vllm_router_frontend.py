@@ -129,6 +129,41 @@ def test_discovery_connector_recipe_rules(recipe: dict, message: str) -> None:
         )
 
 
+def _write_mode_args(read_mode: bool | None) -> dict:
+    extra = {} if read_mode is None else {"read_mode": read_mode}
+    return {
+        "tensor-parallel-size": 1,
+        "kv-transfer-config": {"kv_connector": "MoRIIOConnector", "kv_connector_extra_config": extra},
+    }
+
+
+def _moriio_config(prefill_read_mode: bool | None, decode_read_mode: bool | None) -> SrtConfig:
+    return SrtConfig(
+        name="moriio",
+        model={"path": "model", "container": "image", "precision": "bf16"},
+        resources=ResourceConfig(gpu_type="mi300x", gpus_per_node=8),
+        roles={
+            "prefill": RoleConfig(nodes=1, workers=1, args=_write_mode_args(prefill_read_mode)),
+            "decode": RoleConfig(nodes=1, workers=1, args=_write_mode_args(decode_read_mode)),
+        },
+        frontend=FrontendConfig(type="vllm-router", enable_multiple_frontends=False),
+        engine=VLLMBackend(connector="moriio"),
+    )
+
+
+@pytest.mark.parametrize(("prefill", "decode"), [(False, None), (None, False), (True, False)])
+def test_discovery_read_mode_mismatch_fails_before_launch(prefill: bool | None, decode: bool | None) -> None:
+    """Prefill and decode must agree on RDMA READ or WRITE; an unset role defaults to READ."""
+    with pytest.raises(ValidationError, match="same read_mode"):
+        _moriio_config(prefill, decode)
+
+
+@pytest.mark.parametrize(("prefill", "decode"), [(False, False), (None, True), (None, None)])
+def test_discovery_read_mode_agreement_loads(prefill: bool | None, decode: bool | None) -> None:
+    config = _moriio_config(prefill, decode)
+    assert config.backend.discovery_read_mode("prefill") == config.backend.discovery_read_mode("decode")
+
+
 def test_discovery_connector_recipe_loads_and_allocates_listeners() -> None:
     """The example MoRI-IO recipe passes validation and every worker gets its own handshake and notify ports."""
     config = SrtConfig.from_yaml(Path("examples/vllm/vllm-router-moriio-disagg.yaml"))

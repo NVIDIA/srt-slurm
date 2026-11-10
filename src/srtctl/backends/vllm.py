@@ -572,6 +572,31 @@ class VLLMBackend(Backend):
                 f"connector {connector!r} registers workers with the vLLM Router and needs the worker topology; "
                 "it is only available with frontend.type: vllm-router"
             )
+        payload, extra = self._discovery_template(mode, connector, row)
+        for key, value in self._discovery_extra_config(process, runtime).items():
+            configured = extra.get(key, value)
+            if key.endswith("_port") and type(configured) is int:
+                configured = str(configured)
+            if configured != value:
+                raise ValueError(f"discovery {key} conflicts with the allocated worker topology")
+            extra[key] = value
+        extra.setdefault("read_mode", True)
+        return json.dumps(payload)
+
+    def discovery_read_mode(self, mode: WorkerMode) -> bool:
+        """MoRI-IO transfer mode of a discovery role: True for RDMA READ, False for RDMA WRITE."""
+        connector = self._effective_connector_for_mode(mode)
+        row = self.kv_connector_for_mode(mode)
+        if connector is None or row is None or not row.discovery:
+            raise ValueError(f"{mode} does not run a discovery connector")
+        _, extra = self._discovery_template(mode, connector, row)
+        return extra.get("read_mode", True)
+
+    def _discovery_template(
+        self, mode: WorkerMode, connector: str, row: KVConnector
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """The role's transfer payload and its discovery connector's ``kv_connector_extra_config``, before binding."""
+        config = self.get_config_for_mode(mode)
         if "kv-transfer-config" in config and "kv_transfer_config" in config:
             raise ValueError("discovery template must not set both kv-transfer-config and kv_transfer_config")
         payload = json.loads(_connector_to_kv_transfer_config(connector, mode))
@@ -600,17 +625,10 @@ class VLLMBackend(Backend):
             raise ValueError(f"discovery kv_role must be {expected_role} for {mode}")
         target["kv_role"] = expected_role
         extra = target.setdefault("kv_connector_extra_config", {})
-        for key, value in self._discovery_extra_config(process, runtime).items():
-            configured = extra.get(key, value)
-            if key.endswith("_port") and type(configured) is int:
-                configured = str(configured)
-            if configured != value:
-                raise ValueError(f"discovery {key} conflicts with the allocated worker topology")
-            extra[key] = value
         # The Router's discovery flow serves both transfer modes; the recipe picks one.
-        if type(extra.setdefault("read_mode", True)) is not bool:
+        if type(extra.get("read_mode", True)) is not bool:
             raise TypeError("discovery read_mode must be a JSON boolean")
-        return json.dumps(payload)
+        return payload, extra
 
     def _discovery_extra_config(self, process: Process, runtime: RuntimeContext) -> dict[str, Any]:
         """MoRI-IO's ``kv_connector_extra_config`` (the keys ``moriio_common.py`` reads, vllm-project/vllm 9679173788)."""
