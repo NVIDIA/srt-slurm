@@ -176,7 +176,7 @@ def test_sglang_sidecar_respects_an_explicit_enable_metrics_setting() -> None:
     assert _targets(backend, processes) == [("backend_agg0_rank0", "node0", processes[0].sys_port, "/metrics")]
 
 
-def test_sglang_attention_dp_relay_followers_expose_both_endpoints() -> None:
+def test_sglang_attention_dp_listener_nodes_expose_both_endpoints() -> None:
     backend = SGLangBackend(
         roles={"agg": RoleConfig(args={"tp-size": 8, "dp-size": 2, "enable-dp-attention": True}, kv_events=True)}
     )
@@ -184,7 +184,7 @@ def test_sglang_attention_dp_relay_followers_expose_both_endpoints() -> None:
 
     names = [name for name, *_ in _targets(backend, processes)]
 
-    # Nodes 0 and 2 own an attention-DP group's first rank and publish KV events.
+    # Nodes 0 and 2 own an attention-DP group's first rank, so they host its Rust listener and a sidecar.
     assert names == [
         "backend_agg0_rank0",
         "backend_agg0_rank0_engine",
@@ -288,7 +288,7 @@ def _mock_worker_targets(recipe: Path) -> list[tuple[str, str, str]]:
             [
                 ("backend_agg0_rank0", "node-01", "7500/metrics"),
                 ("backend_agg0_rank0_engine", "node-01", "6100/metrics"),
-                # Node 1 relays its KV events through a telemetry sidecar.
+                # Node 1 hosts DP rank 1's Rust listener and runs its own sidecar.
                 ("backend_agg0_rank1", "node-02", "7501/metrics"),
                 ("backend_agg0_rank1_engine", "node-02", "6100/metrics"),
             ],
@@ -298,7 +298,8 @@ def _mock_worker_targets(recipe: Path) -> list[tuple[str, str, str]]:
             [
                 ("backend_decode0_rank0", "node-03", "7502/metrics"),
                 ("backend_decode0_rank0_engine", "node-03", "6100/metrics"),
-                # Decode publishes no KV events: its follower runs the engine only.
+                # Every node of an attention-DP2 group over two nodes hosts a listener and a sidecar.
+                ("backend_decode0_rank1", "node-04", "7503/metrics"),
                 ("backend_decode0_rank1_engine", "node-04", "6100/metrics"),
                 ("backend_prefill0_rank0", "node-01", "7500/metrics"),
                 ("backend_prefill0_rank0_engine", "node-01", "6100/metrics"),

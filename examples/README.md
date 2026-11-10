@@ -25,8 +25,8 @@ Every example is written in the 2.0 layout: `engine:` names the engine (a string
 
 | File | Shows |
 | --- | --- |
-| [features/sglang-sidecar-multinode-dp.yaml](features/sglang-sidecar-multinode-dp.yaml) | One SGLang aggregate worker across two one-GPU nodes, global TP2/attention DP2, a serving leader sidecar and a telemetry-only follower, with KV routing |
-| [features/sglang-sidecar-multinode-disagg-dp.yaml](features/sglang-sidecar-multinode-disagg-dp.yaml) | One TP2/attention DP2 prefill worker and one TP2/attention DP2 decode worker across four one-GPU nodes, with a prefill telemetry relay, NIXL transfer, and KV routing |
+| [features/sglang-sidecar-multinode-dp.yaml](features/sglang-sidecar-multinode-dp.yaml) | One SGLang aggregate worker across two one-GPU nodes, global TP2/attention DP2, one sidecar per node, with KV routing |
+| [features/sglang-sidecar-multinode-disagg-dp.yaml](features/sglang-sidecar-multinode-disagg-dp.yaml) | One TP2/attention DP2 prefill worker and one TP2/attention DP2 decode worker across four one-GPU nodes, with one sidecar per node, NIXL transfer, and KV routing |
 | `features/sweep.yaml` | `sweep:` plus `{placeholder}` substitution; one job per combination |
 | `features/override.yaml` | `base` plus `override_*` and `zip_override_*` variants in one file |
 | `features/profiling.yaml` | `profiling:` torch capture on an aggregated worker |
