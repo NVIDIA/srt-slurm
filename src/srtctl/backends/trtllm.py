@@ -650,6 +650,7 @@ class TRTLLMBackend(Backend):
             )
             return self._build_sidecar_command(
                 process=process,
+                endpoint_processes=endpoint_processes,
                 config=config,
                 model_arg=model_arg,
                 sidecar_model_arg=sidecar_model_arg,
@@ -729,17 +730,47 @@ class TRTLLMBackend(Backend):
         starts the sidecar only where ``SLURM_PROCID`` is 0 (``rank_zero_only``), with the
         leader's ``DYN_SYSTEM_PORT``.
 
-        No ``sidecar_engine_metrics_port``: ``tensorrt_llm.commands.serve --grpc`` replaces
-        the OpenAI server and serves no Prometheus or iteration-stats endpoint; its only
-        load signal is the OpenEngine ``GetLoad`` RPC (NVIDIA/TensorRT-LLM 7695494b8f,
-        ``tensorrt_llm/commands/serve.py``), and the Dynamo sidecar does not bridge it.
+        The engine's own metrics are a separate listener on the same node
+        (``sidecar_engine_metrics_port``); the sidecar bridges neither them nor the
+        OpenEngine ``GetLoad`` RPC.
         """
         return process.is_leader
+
+    @staticmethod
+    def _collects_perf_metrics(config: dict[str, Any]) -> bool:
+        """TensorRT-LLM's serving-frontend opt-in for performance metrics.
+
+        ``return_perf_metrics: true`` or a ``perf_metrics_output_dir`` turns on
+        request-metrics collection and, under OpenEngine, the Prometheus listener
+        (``tensorrt_llm/serve/_perf_metrics_config.py``, ``resolve_perf_metrics_config``).
+        """
+        return bool(config.get("return_perf_metrics")) or config.get("perf_metrics_output_dir") is not None
+
+    def sidecar_engine_metrics_port(self, process: "Process", endpoint_processes: list["Process"]) -> int | None:
+        """The leader's HTTP port, where OpenEngine serves ``/prometheus/metrics`` once it collects performance metrics.
+
+        ``tensorrt_llm.commands.serve --grpc --grpc-protocol openengine`` replaces the
+        OpenAI HTTP server, so its ``trtllm_*`` families come from a separate Prometheus
+        listener (``--openengine-metrics-host`` / ``--openengine-metrics-port``,
+        NVIDIA/TensorRT-LLM#21034, ``tensorrt_llm/grpc/openengine/metrics.py``) that the
+        engine starts only with the performance-metrics opt-in (``_collects_perf_metrics``).
+        It serves the shared ``MetricsCollector``: the per-request histograms and counters,
+        plus the iteration gauges (``trtllm_kv_cache_*``) when the role also sets
+        ``enable_iter_perf_stats: true``. Rank zero owns the engine and the listener, so
+        only the endpoint leader's node serves. A container older than that commit rejects
+        the flags, so a recipe for it must leave the opt-in off.
+        """
+        if not self.runs_dynamo_sidecar(process, endpoint_processes) or process.http_port <= 0:
+            return None
+        if not self._collects_perf_metrics(self.get_config_for_mode(process.endpoint_mode)):
+            return None
+        return process.http_port
 
     def _build_sidecar_command(
         self,
         *,
         process: "Process",
+        endpoint_processes: list["Process"],
         config: dict[str, Any],
         model_arg: str,
         sidecar_model_arg: str,
@@ -777,6 +808,12 @@ class TRTLLMBackend(Backend):
         ):
             if config.get(key) is not None:
                 engine.extend([flag, str(config[key])])
+        metrics_port = self.sidecar_engine_metrics_port(process, endpoint_processes)
+        if metrics_port is not None:
+            # The listener defaults to --host (loopback here) and port 8001. Bind it on
+            # every interface at the allocated HTTP port so Tachometer and AIPerf reach
+            # it from other nodes and colocated workers never collide.
+            engine.extend(["--openengine-metrics-host", "0.0.0.0", "--openengine-metrics-port", str(metrics_port)])
 
         sidecar = (
             [sidecar_config.sidecar_binary]

@@ -427,6 +427,12 @@ def test_the_process_that_runs_a_sidecar_is_the_one_whose_command_starts_it(shap
             # One sidecar per endpoint, gated to global MPI rank zero.
             assert 'if [[ "${SLURM_PROCID:-0}" != "0" ]]' in command[2]
             assert not any(backend.runs_dynamo_sidecar(p, group) for p in group[1:])
+            # The OpenEngine Prometheus listener rides the engine command exactly where the
+            # backend reports an engine metrics port (the performance-metrics opt-in).
+            engine = _engine_line(backend, command)
+            port = backend.sidecar_engine_metrics_port(process, group)
+            assert _flag(engine, "--openengine-metrics-port") == (None if port is None else str(port))
+            assert _flag(engine, "--openengine-metrics-host") == (None if port is None else "0.0.0.0")
             continue
         engine = _engine_line(backend, command)
         port = backend.sidecar_engine_metrics_port(process, group)
@@ -454,6 +460,40 @@ def test_trtllm_publication_gate_hides_urls_from_builtin_aiperf_only() -> None:
     assert result.aiperf_builtin == []
     # Custom runners are not gated (docs/benchmarks.md): drain detection keeps a live URL.
     assert result.aiperf_custom == [workers[0]["url"]]
+
+
+@pytest.mark.parametrize("publish", [False, True], ids=["gate-closed", "gate-open"])
+def test_trtllm_perf_metrics_opt_in_advertises_the_openengine_listener(publish: bool) -> None:
+    """With TensorRT-LLM's performance-metrics opt-in the leader's OpenEngine listener is a second target."""
+    recipe = _recipe(
+        {"type": "trtllm", "publish_events_and_metrics": publish},
+        {
+            "agg": {
+                "nodes": 2,
+                "workers": 1,
+                "gpus": 8,
+                "args": {"tensor_parallel_size": 8, "return_perf_metrics": True},
+            }
+        },
+        gpus_per_node=4,
+    )
+    result = probe(recipe)
+
+    workers = result.tachometer_workers()
+    assert [block["name"] for block in workers] == ["backend_agg0_rank0", "backend_agg0_rank0_engine"]
+    runtime_url, engine_url = (block["url"] for block in workers)
+    leader = next(process for process in result.processes if process.is_leader)
+    assert engine_url == f"http://{_node_ip(leader.node)}:{leader.http_port}/prometheus/metrics"
+    # Built-in AIPerf keeps the publication gate; behind it, exactly what Tachometer scrapes (sorted).
+    assert result.aiperf_builtin == (sorted([runtime_url, engine_url]) if publish else [])
+    # Custom runners get one URL per logical worker, on the SRT_*_ENDPOINTS port: now the engine's own.
+    assert result.aiperf_custom == [engine_url]
+    assert [port for _, _, port in result.logical_endpoints] == [leader.http_port]
+    # The engine command binds the listener exactly there.
+    ((_, command),) = result.commands.items()
+    engine = _engine_line(result.backend, command)
+    assert _flag(engine, "--openengine-metrics-host") == "0.0.0.0"
+    assert _flag(engine, "--openengine-metrics-port") == str(leader.http_port)
 
 
 # --- Rendering: IPv6, metadata, ordering -------------------------------------------------------
