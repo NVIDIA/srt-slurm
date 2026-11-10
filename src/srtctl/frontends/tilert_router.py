@@ -23,13 +23,6 @@ ROUTER_MANAGED_ARGS = frozenset({"vllm-url", "decode", "host", "port"})
 ROUTER_WORKERS_REQUIRED = "TileRT router requires at least one prefill worker and at least one decode worker"
 
 
-def decode_spans_nodes(backend: Any) -> bool:
-    """Whether the decode engine may start one worker across several nodes."""
-    from srtctl.backends.tilert import TileRTBackend
-
-    return isinstance(backend, TileRTBackend) and backend.allows_multi_node_decode
-
-
 @register_frontend("tilert-router")
 class TileRTRouterFrontend(StaticRouterFrontend):
     """Launch ``tilert.pd_vllm.pd_router`` once every worker answers ``/health``."""
@@ -61,8 +54,9 @@ class TileRTRouterFrontend(StaticRouterFrontend):
         model_name = config.served_model_name
         if config.backend_for_role("decode").get_served_model_name(model_name) != model_name:
             raise ValueError("TileRT served_model_name must match the prefill served-model-name")
-        if resources.gpus_per_decode > resources.gpus_per_node and not decode_spans_nodes(
-            config.backend_for_role("decode")
+        if (
+            resources.gpus_per_decode > resources.gpus_per_node
+            and not config.backend_for_role("decode").allows_multi_node_decode
         ):
             raise ValueError(
                 "TileRT decode workers must fit on one node unless roles.decode.engine.multi_node_launch is set"
@@ -120,7 +114,8 @@ class TileRTRouterFrontend(StaticRouterFrontend):
                 raise ValueError(f"Incomplete TileRT decode endpoint: {worker}")
             decode_specs.append(f"{parsed.hostname}:{worker.bootstrap_port}:{parsed.port}")
         # --decode is a single nargs="+" option; repeating the flag would keep only the last worker.
-        # --vllm-url takes every prefill worker as one comma-separated value; one worker renders its URL alone.
+        # --vllm-url takes every prefill worker as one comma-separated value (TileRT 0.1.8 pd_router splits it on
+        # commas; 0.1.6 accepts one URL); one worker renders its URL alone.
         return [
             *self.executable,
             "--vllm-url",

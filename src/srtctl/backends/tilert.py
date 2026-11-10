@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 DECODE_SERVER_MODULE = "tilert.pd_vllm.decode_server"
 SINGLE_NODE_ONLY = "TileRT supports single-node decode workers only"
+DECODE_ONLY = "TileRT serves decode workers only"
 
 
 @plain_dataclass(frozen=True)
@@ -40,7 +41,12 @@ class DecodeRendezvous:
 
 
 def _torchrun_launcher(rdzv: DecodeRendezvous) -> list[str]:
-    """torchrun starts one decode-server rank per local GPU and sets RANK / LOCAL_RANK itself."""
+    """torchrun starts one decode-server rank per local GPU and sets RANK / LOCAL_RANK itself.
+
+    Every rank gets the same --http-port. TileRT 0.1.8's dsv41 profile builds the engine with `start_node`, whose
+    followers (global rank != 0) return before `decode_server.main` binds the HTTP socket, so only the leader
+    listens. A profile without `start_node` builds and binds on every rank; use `node-env` for those.
+    """
     return [
         "torchrun",
         "--nnodes",
@@ -61,8 +67,10 @@ def _torchrun_launcher(rdzv: DecodeRendezvous) -> list[str]:
 def _node_env_launcher(rdzv: DecodeRendezvous) -> list[str]:
     """One decode server per node; it re-executes itself under torch.distributed.run with a static rendezvous.
 
-    TileRT reads the node count, this node's rank and the rendezvous address from these variables and starts its
-    local ranks itself; with LOCAL_RANK already set (the torchrun form) it does not.
+    TileRT 0.1.8's `decode_server.main` reads the node count, this node's rank and the rendezvous address from these
+    variables when the profile needs more than one rank per node, and re-executes under `torch.distributed.run
+    --rdzv-backend static`; with LOCAL_RANK already set (the torchrun form) it does not. TileRT 0.1.6 has no such
+    contract.
     """
     return [
         "env",
@@ -157,9 +165,9 @@ class TileRTBackend(Backend):
 
         if dynamo_sidecar:
             raise ValueError("TileRT does not support Dynamo sidecars")
-        if any(ep.mode != "decode" for ep in endpoints) or (
-            not self.allows_multi_node_decode and any(ep.is_multi_node for ep in endpoints)
-        ):
+        if any(ep.mode != "decode" for ep in endpoints):
+            raise ValueError(DECODE_ONLY)
+        if not self.allows_multi_node_decode and any(ep.is_multi_node for ep in endpoints):
             raise ValueError(SINGLE_NODE_ONLY)
         allocator = port_allocator_for(port_allocator, base_sys_port)
         processes = endpoints_to_processes(endpoints, port_allocator=allocator)
@@ -218,7 +226,7 @@ class TileRTBackend(Backend):
         profiling: ProfilingConfig | None = None,
     ) -> list[str]:
         if process.endpoint_mode != "decode":
-            raise ValueError(SINGLE_NODE_ONLY)
+            raise ValueError(DECODE_ONLY)
         if process.nixl_port is None:
             raise ValueError("TileRT decode worker needs an allocated control port")
         config = self.get_config_for_mode("decode")

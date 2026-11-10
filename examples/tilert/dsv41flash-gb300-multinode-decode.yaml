@@ -1,5 +1,7 @@
 # One vLLM prefill (TP4) and one TileRT decode at TP8 across two GB300 NVL72 trays, KV over NVLink.
 # Configure these image aliases with prepared TileRT/vLLM images in srtslurm.yaml; see docs/tilert.md.
+# Every image needs TileRT 0.1.8 (PyPI tilert==0.1.8, sha256 17ae5570...f838) for the dsv41 profile and the
+# multi-node decode launch.
 schema: 2
 name: dsv41flash-tilert-gb300-multinode-decode
 model:

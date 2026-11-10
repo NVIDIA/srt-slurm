@@ -144,6 +144,16 @@ def test_decode_spanning_nodes_requires_multi_node_launch() -> None:
         _load(data)
 
 
+@pytest.mark.parametrize("launch", ["node-env", "torchrun"])
+def test_multi_node_decode_rejects_a_partial_node(launch) -> None:
+    data = _recipe()
+    data["resources"]["gpus_per_node"] = 4
+    data["roles"]["decode"].update(nodes=2, gpus=6)
+    data["roles"]["decode"]["engine"] = {"type": "tilert", "multi_node_launch": launch}
+    with pytest.raises(ValidationError, match="whole-node multi-node workers"):
+        _load(data)
+
+
 @pytest.mark.parametrize(
     "launch,expected",
     [
