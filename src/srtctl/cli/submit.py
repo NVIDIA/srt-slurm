@@ -826,7 +826,10 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")
             if isinstance(mooncake_cfg, VLLMMooncakeKVStoreConfig) and mooncake_cfg.device_names_by_gpu:
                 details.add_row("mooncake", "device_names_by_gpu", str(mooncake_cfg.device_names_by_gpu))
-                details.add_row("mooncake", "process config", "/logs/mooncake_store_config_gpu<physical-ids>.json")
+                role = "[_<role>]" if isinstance(backend, VLLMBackend) and backend.mooncake_store_role_modes() else ""
+                details.add_row(
+                    "mooncake", "process config", f"/logs/mooncake_store_config{role}_gpu<physical-ids>.json"
+                )
             details.add_row("mooncake", "master_port", f"{MOONCAKE_MASTER_PORT} (auto)")
             if mooncake_cfg.master_extra_args:
                 details.add_row("mooncake", "master_extra_args", shlex.join(mooncake_cfg.master_extra_args))
@@ -847,6 +850,15 @@ def show_config_details(config: SrtConfig) -> None:
                     "MOONCAKE_CONFIG_PATH",
                     "/logs/mooncake_store_config.json (auto)",
                 )
+                # A role with its own roles.<role>.mooncake_store_config reads its own file.
+                for mode in backend.mooncake_store_role_modes():
+                    path = f"/logs/{backend.mooncake_store_config_filename(mode)}"
+                    details.add_row("mooncake", f"MOONCAKE_CONFIG_PATH ({mode})", f"{path} (auto)")
+                    details.add_row(
+                        "mooncake",
+                        f"store_config ({mode})",
+                        json.dumps(backend.build_mooncake_store_config("<infra_ip>", mode), indent=2),
+                    )
             elif isinstance(backend, TRTLLMBackend):
                 # One client config per role using the mooncake-store connector; the
                 # role's workers read it through MOONCAKE_CONFIG_PATH. model_key defaults

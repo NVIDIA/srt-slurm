@@ -169,6 +169,31 @@ srtslurm stamps `MOONCAKE_MASTER`, `MOONCAKE_TE_META_DATA_SERVER`, `MOONCAKE_LOC
 
 The role `env:` maps are injected on the vLLM workers (not on the standalone `mooncake_master` daemon; the master gets the service entry's own `env`). Use them for in-process Mooncake C++ knobs like `MC_ENABLE_DEST_DEVICE_AFFINITY`, `MC_STORE_CLIENT_METRIC`, `MC_TE_METRIC`.
 
+### Per-role store config (vLLM)
+
+Prefill and decode often need different store settings, most commonly how much host memory each rank lends to the pool. Set those keys in `roles.<role>.mooncake_store_config`; they are layered over the service's `options.store_config` for that role only:
+
+```yaml
+roles:
+  prefill:
+    mooncake_store_config:
+      global_segment_size: "64GB"      # each prefill rank lends 64 GiB
+  decode:
+    mooncake_store_config:
+      global_segment_size: "128GB"     # each decode rank lends 128 GiB
+services:
+  - name: mooncake-master
+    type: mooncake-master
+    options:
+      store_config:                    # shared by every role
+        metadata_server: "P2PHANDSHAKE"
+        protocol: "rdma"
+        device_name: "mlx5_0,mlx5_1"
+        local_buffer_size: "4GB"
+```
+
+A role with its own keys reads `/logs/mooncake_store_config_<role>.json` (its `MOONCAKE_CONFIG_PATH` points there); a role without them reads the shared `/logs/mooncake_store_config.json` as before, so recipes that set only `options.store_config` render unchanged. With `device_names_by_gpu`, the process-local file of such a role is `/logs/mooncake_store_config_<role>_gpu<physical-ids>.json` and keeps the role's keys. Sizes are read by vLLM's `_parse_size` (`GB`, `MB` and `KB` are powers of 1024). The role must run `MooncakeStoreConnector` (standalone or inside a `MultiConnector`), and keys every client of the pool must agree on (`metadata_server`, `protocol`, `tenant_id`, `master_server_address`) stay in `options.store_config`. See [`examples/vllm/dynamo-disagg-mooncake.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/dynamo-disagg-mooncake.yaml).
+
 ## Quick Start (TensorRT-LLM)
 
 TensorRT-LLM's `mooncake-store` KV connector shares one Mooncake Store pool between context and generation servers. Use a TensorRT-LLM build that supports loading the connector's client JSON through `MOONCAKE_CONFIG_PATH` and the `capacity` role. Every rank reads that file before it looks at `kv_connector_config.mooncake_store`. srtslurm runs the same `mooncake_master` it runs for SGLang and vLLM, and gives each role its own client config:
@@ -238,7 +263,7 @@ Keys every server of the pool must agree on (`model_key`, `namespace`, `metadata
 | `MOONCAKE_MASTER` env var on workers            | srtslurm  | Always computed as `<infra_node_ip>:8700`. User values in role `env` are overridden.                  |
 | `MOONCAKE_TE_META_DATA_SERVER` env var          | srtslurm  | Always computed as `http://<infra_node_ip>:8701/metadata`.                                            |
 | `MOONCAKE_LOCAL_HOSTNAME` env var               | srtslurm  | Auto-resolved per-worker via `runtime.network_interface`. User can override in role `env` for custom NICs. |
-| `MOONCAKE_CONFIG_PATH` (vLLM, TensorRT-LLM)      | srtslurm  | Always points to the JSON file srtslurm renders from `options.store_config:` (TensorRT-LLM: one file per role, `/logs/mooncake_store_config_<role>.json`). Mounted under `/logs` in every worker. |
+| `MOONCAKE_CONFIG_PATH` (vLLM, TensorRT-LLM)      | srtslurm  | Always points to the JSON file srtslurm renders from `options.store_config:` (TensorRT-LLM: one file per role, `/logs/mooncake_store_config_<role>.json`; vLLM: that file only for a role with its own `mooncake_store_config`). Mounted under `/logs` in every worker. |
 | `master_server_address` in `store_config`       | srtslurm  | (vLLM, TensorRT-LLM) Always overridden with `<infra_node_ip>:8700`. User values are ignored.          |
 | `role` in the TensorRT-LLM client config        | srtslurm  | Defaults to `both` for prefill and agg and `capacity` for decode; set it in `roles.<role>.mooncake_store_config` to override. |
 | `model_key` in the TensorRT-LLM client config   | srtslurm  | Defaults to the served model name; set it in `options.store_config` to override. |
@@ -323,7 +348,7 @@ On the `mooncake-master` service entry (the generic service fields such as `plac
 
 On the roles:
 
-- **`roles.<role>.mooncake_store_config`** (TensorRT-LLM only, `dict[str, Any]`, optional): Client config keys for that role's workers, layered over `options.store_config`, for example `role` or a larger `global_segment_size`. The role must select the `mooncake-store` connector, and keys every server of the pool must agree on (`model_key`, `namespace`, `metadata_server`, `protocol`, `master_server_address`) stay in `options.store_config`. SGLang takes per-role Mooncake settings in `roles.<role>.env` instead.
+- **`roles.<role>.mooncake_store_config`** (TensorRT-LLM and vLLM, `dict[str, Any]`, optional): Store config keys for that role's workers, layered over `options.store_config`, for example a larger `global_segment_size` (or TensorRT-LLM's `role`). The role must select the store connector (TensorRT-LLM: `mooncake-store`; vLLM: `MooncakeStoreConnector`), and keys every client of the pool must agree on stay in `options.store_config` (TensorRT-LLM: `model_key`, `namespace`, `metadata_server`, `protocol`, `master_server_address`; vLLM: `metadata_server`, `protocol`, `tenant_id`, `master_server_address`). SGLang takes per-role Mooncake settings in `roles.<role>.env` instead.
 - **`roles.<role>.env`** (`dict[str, str]`, optional): Env vars injected on that role's workers.
   - For **SGLang**, keys map directly to mooncake's environment variable names. See the [SGLang server_args.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/environ.py) and [mooncake_store.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py) for the full list.
   - For **vLLM**, this is for in-process Mooncake C++ knobs (`MC_*`) read by the transfer engine / store client. vLLM's connector itself reads configuration from `MOONCAKE_CONFIG_PATH` (the JSON rendered from `options.store_config:`), not from these env vars.
@@ -395,7 +420,7 @@ For TensorRT-LLM, srtslurm checks at load what the workers would otherwise rejec
 - A `mooncake-master` service needs at least one role with `kv_connector_config.connector: mooncake-store`, and those roles must not also set a `mooncake_store` block: TensorRT-LLM would read the srtslurm config instead of it.
 - Each rendered config needs a non-empty `model_key` and a known `role`; sizes must be byte counts or binary units (`local_buffer_size` at least 1, `global_segment_size` at least 0), `transfer_batch_size` must be positive, and `stage_through_host` must not be a string (TensorRT-LLM reads `"false"` as true).
 - `store_config` and `roles.<role>.mooncake_store_config` must not carry `mooncake_store`-block keys (`segment_size`, `pool`, `run_dir`, `master_timeout`), which the client config would ignore.
-- `roles.<role>.mooncake_store_config` needs a `mooncake-master` service and a role that selects the connector, must not set keys the whole pool shares, and is refused on SGLang and vLLM roles.
+- `roles.<role>.mooncake_store_config` needs a `mooncake-master` service and a role that selects the connector, must not set keys the whole pool shares, and is refused on SGLang roles. The same holds for vLLM roles, which must run `MooncakeStoreConnector` and, with `device_names_by_gpu`, must not set `device_name`.
 - A role that selects the connector without a `mooncake-master` service must name its pool itself: `MOONCAKE_CONFIG_PATH` in its `env`, or, when trtllm-serve runs the engine (`frontend.type: trtllm_serve`, or a Dynamo sidecar), a `mooncake_store` block with its own `run_dir` and one worker. Every TensorRT-LLM rank runs under `trtllm-llmapi-launch`, so it reads a config trtllm-serve rendered only back from `run_dir`, which one server owns; `dynamo.trtllm` renders none.
 - `external` on the `mooncake-master` service is refused for TensorRT-LLM: the rendered `master_server_address` always names the infra node.
 

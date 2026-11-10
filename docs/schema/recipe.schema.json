@@ -2407,7 +2407,7 @@
         },
         "spread_workers": {
           "type": "boolean",
-          "description": "If True, place each partial-node worker on its own node instead of packing multiple onto the same node. Caller must reserve enough nodes (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node).",
+          "description": "If True, place each partial-node worker on its own node instead of packing multiple onto the same node. Caller must reserve enough nodes (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node). With roles.decode.nodes: colocate, the decode workers go one per prefill node in turn, each on that node's highest free GPUs.",
           "default": false
         },
         "het_jobs": {
@@ -2625,7 +2625,7 @@
         },
         "mooncake_store_config": {
           "type": "object",
-          "description": "TRT-LLM only: Mooncake client config keys for this role's workers (`role`, `global_segment_size`, ...), layered over the `mooncake-master` service's `options.store_config`. Pool-wide keys stay there.",
+          "description": "TRT-LLM and vLLM: Mooncake store config keys for this role's workers (`global_segment_size`, `local_buffer_size`, TRT-LLM's `role`, ...), layered over the `mooncake-master` service's `options.store_config`, so prefill and decode can differ. Pool-wide keys stay there.",
           "default": {}
         },
         "sidecar": {

@@ -85,7 +85,7 @@
           "type": "null"
         }
       ],
-      "description": "Interface whose IP address frontends use to reach workers (e.g. `ib0`). Unset resolves the hostname.",
+      "description": "Interface whose IP address frontends use to reach workers (e.g. `ib0`). Unset resolves the hostname; set it if hostnames resolve to a different network than the nodes route through.",
       "default": null
     },
     "visible_devices_env": {

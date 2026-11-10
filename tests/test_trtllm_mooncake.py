@@ -132,13 +132,12 @@ def test_shared_model_key_overrides_the_served_name_for_every_role(tmp_path: Pat
         assert _written(outputs, f"mooncake_store_config_{mode}.json")["model_key"] == "qwen3-pool"
 
 
-@pytest.mark.parametrize("engine", ["sglang", "vllm"])
-def test_role_mooncake_store_config_is_read_by_trtllm_only(tmp_path: Path, engine: str) -> None:
-    recipe = yaml.safe_load((EXAMPLES.parent / engine / "dynamo-disagg.yaml").read_text())
-    recipe["model"].update(path="hf:Qwen/Qwen3-0.6B", container=f"{engine}.sqsh")
+def test_role_mooncake_store_config_is_not_read_by_sglang(tmp_path: Path) -> None:
+    recipe = yaml.safe_load((EXAMPLES.parent / "sglang" / "dynamo-disagg.yaml").read_text())
+    recipe["model"].update(path="hf:Qwen/Qwen3-0.6B", container="sglang.sqsh")
     _load(recipe, tmp_path)
     recipe["roles"]["decode"]["mooncake_store_config"] = {"global_segment_size": "16GiB"}
-    with pytest.raises(ValidationError, match="roles.decode.mooncake_store_config is read by TRT-LLM only"):
+    with pytest.raises(ValidationError, match="roles.decode.mooncake_store_config is read by TRT-LLM and vLLM only"):
         _load(recipe, tmp_path)
 
 

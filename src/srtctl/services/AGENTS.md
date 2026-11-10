@@ -54,8 +54,8 @@ services:
     command: ["torchrun", "--nnodes={pool_node_count}", "--nproc-per-node={gpus_per_node}",
               "--node-rank={index}", "--master-addr={pool_ip}", "train.py"]
     nodes: 2                   # pool "train": 2 nodes; instance 0 is the rendezvous; no readiness probe
-                               # (instances launch one after another, gated on readiness, and a static
-                               # torchrun rendezvous only completes once every node has joined)
+                               # (instances launch together; a static torchrun rendezvous only
+                               # completes once every node has joined)
     terminal: true             # the job ends when every instance has exited, worst exit code; no benchmark block
   - name: watcher
     type: generic

@@ -1,0 +1,86 @@
+# vLLM disaggregated prefill/decode with a shared Mooncake Store pool, behind the
+# Dynamo frontend.
+#
+# Each role's kv-transfer-config wraps NixlConnector (prefill-to-decode transfer) and
+# MooncakeStoreConnector (the shared pool) in a MultiConnector. The `mooncake-master`
+# service runs the upstream `mooncake_master` on the infra node; srtctl renders its
+# `options.store_config` into the JSON vLLM reads from MOONCAKE_CONFIG_PATH. Each rank
+# lends `global_segment_size` of host memory to the pool: prefill keeps the shared
+# 8GB, and decode lends 16GB through `roles.decode.mooncake_store_config`, so decode
+# workers read their own /logs/mooncake_store_config_decode.json. See
+# docs/mooncake-kv-store.md.
+#
+# Aliases (`qwen3-0.6b`, `vllm`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-vllm-dynamo-disagg-mooncake"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "vllm"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+dynamo:
+  source:
+    pypi: "1.4.2"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: "kv"
+
+engine:
+  type: vllm
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    env:
+      DYN_HEALTH_CHECK_ENABLED: "false"
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+      kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both"},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}]}}'
+  decode:
+    nodes: colocate
+    workers: 1
+    gpus: 1
+    env:
+      DYN_HEALTH_CHECK_ENABLED: "false"
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+      kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both"},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}]}}'
+    mooncake_store_config:           # this role's keys, over options.store_config
+      global_segment_size: "16GB"
+
+services:
+  - name: mooncake-master
+    type: mooncake-master
+    options:
+      store_config:                  # rendered into the MOONCAKE_CONFIG_PATH JSON
+        metadata_server: "P2PHANDSHAKE"
+        protocol: "rdma"
+        device_name: ""
+        global_segment_size: "8GB"
+        local_buffer_size: "4GB"
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

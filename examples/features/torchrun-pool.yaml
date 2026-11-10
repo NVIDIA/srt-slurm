@@ -43,7 +43,7 @@ services:
     env:
       NCCL_SOCKET_IFNAME: bond0
       GLOO_SOCKET_IFNAME: bond0
-    # No readiness probe: instances launch back to back, and a static torchrun
+    # No readiness probe: instances launch together, and a static torchrun
     # rendezvous only completes once every node has joined.
 
 extra_mount:
