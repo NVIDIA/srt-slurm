@@ -251,7 +251,6 @@ roles:
       max_batch_size: 128
       max_num_tokens: 896
       max_seq_len: 262148
-      mnnvl_allreduce_fp8_payload: true
       moe_config:
         backend: TRTLLM
         use_low_precision_moe_combine: true
@@ -271,7 +270,6 @@ roles:
         capacity_scheduler_policy: GUARANTEED_NO_EVICT
       speculative_config:
         decoding_type: MTP
-        draft_lm_head_dtype: mxfp8
         max_draft_len: 6
       stream_interval: 20
       tensor_parallel_size: 8
@@ -292,6 +290,7 @@ frontend:
     node: first_decode
 benchmark:
   type: custom
+  concurrencies: [392]
   placement:
     node: last_decode
   env:
@@ -313,6 +312,8 @@ benchmark:
     mkdir -p /logs/agentic/concurrency_392
     : "${AIPERF_SERVER_METRICS_URLS:?Worker metrics URLs must be provided by srtctl}"
     IFS=',' read -r -a SERVER_METRICS_URLS <<< "$AIPERF_SERVER_METRICS_URLS"
+    python3 /benchmarks/aiperf_power_window.py running --concurrency 392 --result-dir /logs/agentic/concurrency_392
+    aiperf_rc=0
     aiperf profile \
       --server-metrics "${SERVER_METRICS_URLS[@]}" \
       --server-metrics-formats json csv parquet jsonl \
@@ -339,7 +340,11 @@ benchmark:
       --num-dataset-entries 393 \
       --slice-duration 1.0 \
       --stats-interval 30 \
-      --trace-idle-gap-cap-seconds 300
+      --trace-idle-gap-cap-seconds 300 || aiperf_rc=$?
+    if [ "$aiperf_rc" -eq 0 ]; then
+      python3 /benchmarks/aiperf_power_window.py completed --concurrency 392 --result-dir /logs/agentic/concurrency_392
+    fi
+    exit "$aiperf_rc"
 dynamo:
   install: true
   source:
@@ -350,3 +355,21 @@ services:
 - name: otel-collector
   type: otel-collector
   enabled: false
+# Power collection matching InferenceX's gb300-nv default (SemiAnalysisAI/InferenceX#3670):
+# dcgm-exporter sampling every 100 ms on port 19401 (gb300-nv's power-exporter-port, reused here), and the
+# per-node CPU power exporter (Grace ACPI + NVML module power) on :9405, which srtctl also adds to
+# AIPERF_SERVER_METRICS_URLS so aiperf scrapes it during the run. The benchmark command stamps
+# the formal window with /benchmarks/aiperf_power_window.py. Best-effort: required: false.
+telemetry:
+  enabled: true
+  collect_interval_ms: 1000
+  storage_subdir: power
+  required: false
+  startup_timeout_seconds: 120
+  request_timeout_seconds: 2
+  dcgm_exporter:
+    container_image: nvcr.io#nvidia/k8s/dcgm-exporter:4.6.0-4.8.3-distroless
+    port: 19401
+    command: dcgm-exporter --collect-interval=100 --address :{port} -f /configs/dcgm-counters-noprof.csv
+  cpu_power_exporter:
+    source: acpi
