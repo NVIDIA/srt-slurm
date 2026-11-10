@@ -22,6 +22,8 @@ identity:
     dynamo: 1.6.0.dev20261010
 slurm:
   time_limit: 04:00:00
+sbatch_directives:
+  exclude: im-gb300-r02-c007
 extra_mount:
 - /data/home/rihuo:/data/home/rihuo
 - /data/home/rihuo/dynamo_wheels:/dynamo_wheels
