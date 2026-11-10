@@ -1,6 +1,6 @@
 # Dynamo counterpart of ../trtllm-serve-final-sa-2/disagg-gb300-1p1d-tep4-tep16-c16-b4-mnt28-mtp6-kvoffload.yaml
 # Same image, topology, NUMA binding, engine args and worker env; dynamo.trtllm workers and the Dynamo
-# frontend installed from the ai-dynamo 1.6.0.dev20261010 wheels (dynamo.source.wheel).
+# frontend installed from the mounted /dynamo_wheels (configs/install_dynamo_wheel.sh).
 # Dropped trtllm-serve-only settings: frontend process pools, per-conversation frontend affinity,
 # incremental tokenization, the ctx/gen routers, server_config_extra and engine perf-metrics output.
 # Frontend uses the Dynamo KV router with 14400 s session affinity; gen_router load_balancing maps to least-loaded
@@ -24,6 +24,7 @@ slurm:
   time_limit: 04:00:00
 extra_mount:
 - /data/home/rihuo:/data/home/rihuo
+- /data/home/rihuo/dynamo_wheels:/dynamo_wheels
 health_check:
   max_attempts: 540
   interval_seconds: 10
@@ -314,10 +315,9 @@ benchmark:
       python3 /benchmarks/aiperf_power_window.py completed --concurrency 16 --result-dir /logs/agentic/concurrency_16
     fi
     exit "$aiperf_rc"
+setup_script: install_dynamo_wheel.sh
 dynamo:
-  install: true
-  source:
-    wheel: 1.6.0.dev20261010
+  install: false
 observability:
   enable_otel: false
 services:
