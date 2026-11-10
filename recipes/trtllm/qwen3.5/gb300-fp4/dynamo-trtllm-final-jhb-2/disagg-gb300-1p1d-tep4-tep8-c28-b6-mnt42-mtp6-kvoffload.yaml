@@ -6,7 +6,7 @@
 # Frontend uses the Dynamo KV router with 14400 s session affinity; gen_router load_balancing maps to least-loaded
 # advertised by the decode workers (DYN_ROUTER_MODE).
 # Not yet measured under Dynamo.
-# jhb cluster settings (model path, NIC names, compile caches)
+# jhb cluster settings (model path, NIC names)
 # follow ../trtllm-serve-final-jhb-2; the rc3 image path is a placeholder to import before running.
 schema: 2
 name: disagg-gb300-1p1d-tep4-tep8-c28-b6-mnt42-mtp6-kvoffload-dynamo
@@ -70,13 +70,6 @@ roles:
       DYN_ENGINE_CONV_AFFINITY: '1'
       DYN_ROUTER_MODE: kv
       DYN_ROUTER_SESSION_AFFINITY_TTL_SECS: '14400'
-      CUDA_CACHE_PATH: /tmp/cuda_cache_qwen35
-      CUTE_DSL_CACHE_DIR: /tmp/cute_dsl_cache_qwen35
-      TRITON_CACHE_DIR: /tmp/triton_cache_qwen35
-      FLASHINFER_WORKSPACE_BASE: /tmp/fi_ws_qwen35
-      XDG_CACHE_HOME: /tmp/xdg_cache_qwen35
-      TORCHINDUCTOR_CACHE_DIR: /tmp/inductor_qwen35
-      FLASHINFER_CUBIN_DIR: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/xiaomingc/qwen35_e2e/fi_cubins
     args:
       allreduce_strategy: TWOSHOT
       attention_dp_config:
@@ -196,13 +189,6 @@ roles:
       TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS: '3.80'
       DYN_ENGINE_CONV_AFFINITY: '1'
       DYN_ROUTER_MODE: least-loaded
-      CUDA_CACHE_PATH: /tmp/cuda_cache_qwen35
-      CUTE_DSL_CACHE_DIR: /tmp/cute_dsl_cache_qwen35
-      TRITON_CACHE_DIR: /tmp/triton_cache_qwen35
-      FLASHINFER_WORKSPACE_BASE: /tmp/fi_ws_qwen35
-      XDG_CACHE_HOME: /tmp/xdg_cache_qwen35
-      TORCHINDUCTOR_CACHE_DIR: /tmp/inductor_qwen35
-      FLASHINFER_CUBIN_DIR: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/xiaomingc/qwen35_e2e/fi_cubins
     args:
       cache_transceiver_config:
         backend: NIXL
