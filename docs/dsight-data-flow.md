@@ -163,7 +163,7 @@ merge, and a family's catalog entry lists only the endpoints that served it.
 | Endpoint | Serves | vLLM | SGLang | TRT-LLM |
 | --- | --- | --- | --- | --- |
 | `backend_{mode}{index}_rank{rank}` | The sidecar's Dynamo system status server | Yes | Ranks that run a sidecar | Yes |
-| `backend_{mode}{index}_rank{rank}_engine` | The engine's native Prometheus server | `vllm:*` families and the API server's `http_*` families | `sglang:*` families from every node | Not available |
+| `backend_{mode}{index}_rank{rank}_engine` | The engine's native Prometheus server | `vllm:*` families and the API server's `http_*` families | `sglang:*` families from every node | `trtllm_*` families from the leader, only with the performance-metrics opt-in |
 
 What each endpoint contributes to **Metrics**:
 
@@ -184,10 +184,15 @@ What each endpoint contributes to **Metrics**:
   labels. Request histograms and token counters from SGLang's tokenizer carry an
   `is_streaming` label instead of scheduler ranks.
 - **TRT-LLM engine.** In sidecar mode TRT-LLM serves its engine over OpenEngine
-  gRPC, which starts no HTTP or Prometheus server (TRT-LLM `7695494b8f`,
-  `tensorrt_llm/commands/serve.py`). A sidecar-mode capture therefore has no
-  `trtllm_*` families. TRT-LLM iteration lines in worker logs, when recorded,
-  remain the only source of engine iteration and KV utilization evidence.
+  gRPC, which starts a Prometheus listener only when the role's `args` opt into
+  performance metrics (`return_perf_metrics: true` or `perf_metrics_output_dir`,
+  [NVIDIA/TensorRT-LLM#21034](https://github.com/NVIDIA/TensorRT-LLM/pull/21034)).
+  With the opt-in the leader's engine endpoint serves the `trtllm_*` families,
+  including the KV-cache gauges when the role also sets
+  `enable_iter_perf_stats: true`. Without it a sidecar-mode capture has no
+  `trtllm_*` families, and TRT-LLM iteration lines in worker logs, when
+  recorded, remain the only source of engine iteration and KV utilization
+  evidence.
 
 Engine families share groups, units and titles by concept: running and queued
 requests are under Engine scheduling, KV usage and prefix-cache counters under

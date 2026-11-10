@@ -771,8 +771,9 @@ class BenchmarkStageMixin:
                     urls.append(f"http://{url_host(host)}:{target.port}{target.path}")
         elif self.config.dynamo.sidecar:
             # Only processes that run a sidecar serve its runtime metrics, and the
-            # native engine serves its own on a separate port (none for TRT-LLM's
-            # gRPC server). TRT-LLM sidecars do not receive --publish-metrics, so
+            # native engine serves its own on a separate port (for TRT-LLM, the
+            # OpenEngine Prometheus listener, only with the performance-metrics
+            # opt-in). TRT-LLM sidecars do not receive --publish-metrics, so
             # only the legacy combined flag opens the gate above; runtime-only
             # metrics are not advertised as an engine-metrics capture.
             if not dynamo_trtllm_metrics_disabled:
