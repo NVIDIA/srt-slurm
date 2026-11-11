@@ -621,6 +621,72 @@ def test_sglang_pd_spread_prefill_workers_across_nodes_succeeds() -> None:
     assert sidecar_kv_connector(config.backend) == "sglang"
 
 
+def _sglang_dp_prefill_recipe(force_query: bool = True) -> dict:
+    recipe = _sglang_disagg_recipe()
+    recipe["roles"]["prefill"]["gpus"] = 4
+    recipe["roles"]["prefill"]["args"].update(
+        {"tensor-parallel-size": 4, "data-parallel-size": 4, "enable-dp-attention": True}
+    )
+    if force_query:
+        for role in ("prefill", "decode"):
+            recipe["roles"][role]["env"] = {"SGLANG_DISAGGREGATION_FORCE_QUERY_PREFILL_DP_RANK": "1"}
+    return recipe
+
+
+def test_sglang_dp_prefill_ranks_are_endpoints_behind_a_proxy_on_their_node(tmp_path: Path) -> None:
+    """SGLang serves every DP rank on one port: each rank is an endpoint, pinned by a proxy on the server's node."""
+    from srtctl.ports import LLM_D_DP_RANK_PORT_BASE
+
+    config = _load(_sglang_dp_prefill_recipe())
+    runtime = SimpleNamespace(
+        network_interface=None,
+        log_dir=tmp_path,
+        container_image="sglang.sqsh",
+        reuse_container=False,
+        container_prepare_timeout_seconds=1800.0,
+        container_mounts={},
+        environment={},
+        srun_options={},
+        nodes=SimpleNamespace(het_group_for=lambda node: None),
+        model_path=Path("/model"),
+    )
+    processes = [
+        Process("node0", frozenset(range(4)), 7500, 6100, "prefill", 0),
+        Process("node1", frozenset({0}), 7501, 6100, "decode", 0, proxy_port=9600),
+    ]
+    ips = {"node0": "10.0.0.1", "node1": "10.0.0.2"}
+    with (
+        patch("srtctl.frontends.static_router.get_hostname_ip", side_effect=lambda node, _: ips[node]),
+        patch.object(LLMDFrontend, "wait_for_workers"),
+        patch.object(LLMDFrontend, "start_process", return_value=MagicMock()) as start,
+    ):
+        managed = LLMDFrontend().start_frontends(
+            SimpleNamespace(frontend_nodes=["node1"], frontend_port=8000), runtime, config, config.backend, processes
+        )
+
+    endpoints = yaml.safe_load((tmp_path / ENDPOINTS_FILE).read_text())["endpoints"]
+    # The prefill host stays the server's: the P/D sidecar dials SGLang's bootstrap server there.
+    assert [(e["name"], e["address"], e["port"]) for e in endpoints] == [
+        *[(f"prefill-0-0-dp{rank}", "10.0.0.1", str(LLM_D_DP_RANK_PORT_BASE + rank)) for rank in range(4)],
+        ("decode-0-0", "10.0.0.2", "9600"),
+    ]
+    assert [p.name for p in managed] == ["llm-d-dp-rank-proxy_0", "llm-d-epp_0", "llm-d-envoy_0"]
+    proxy = start.call_args_list[0].kwargs
+    assert proxy["nodelist"] == ["node0"] and proxy["container_image"] == "sglang.sqsh"
+    assert proxy["command"] == [
+        "python3",
+        "/srtctl-runtime/llm_d_dp_rank_proxy.py",
+        *[f"{LLM_D_DP_RANK_PORT_BASE + rank}=http://10.0.0.1:6100#{rank}" for rank in range(4)],
+    ]
+
+
+def test_sglang_dp_prefill_requires_force_query_prefill_dp_rank() -> None:
+    with pytest.raises(
+        ValidationError, match="SGLANG_DISAGGREGATION_FORCE_QUERY_PREFILL_DP_RANK=1 in roles.prefill.env"
+    ):
+        _load(_sglang_dp_prefill_recipe(force_query=False))
+
+
 DP_RANKS = EXAMPLES_DIR / "vllm/llm-d-dp-ranks.yaml"
 
 
