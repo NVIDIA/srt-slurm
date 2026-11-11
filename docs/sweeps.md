@@ -51,7 +51,7 @@ benchmark:
   type: "sa-bench"
   isl: 1024
   osl: 1024
-  concurrencies: "{concurrency}" # <-- placeholder
+  concurrencies: ["{concurrency}"] # <-- placeholder
 
 sweep:
   concurrency: [128, 256, 512] # <-- sweep values
@@ -84,7 +84,7 @@ roles:
       mem-fraction-static: "{mem}"
 
 benchmark:
-  concurrencies: "{conc}"
+  concurrencies: ["{conc}"]
 
 sweep:
   mem: [0.85, 0.90]
@@ -106,6 +106,10 @@ This generates 4 jobs (2 x 2):
 
 Placeholders work anywhere in the YAML, quoted so YAML reads them as strings:
 
+An exact placeholder keeps the sweep value's type, including numbers, booleans,
+and lists. Embedded placeholders such as `run-{param}` produce strings. For a
+list-valued field such as `concurrencies`, put a scalar placeholder inside a list.
+
 ```yaml
 name: "sweep-{param}"
 roles:
@@ -114,7 +118,7 @@ roles:
       mem-fraction-static: "{mem}"
       dp-size: "{dp}"
 benchmark:
-  concurrencies: "{conc}"
+  concurrencies: ["{conc}"]
 ```
 
 A value that is exactly one placeholder takes the swept value with its original type (an integer stays an integer); a placeholder inside a longer string is interpolated as text. Each job is named `<name>_<param><value>_<param><value>...` and is otherwise the recipe with `sweep:` removed. To combine a sweep with override variants, see [Combining All Modes](overrides.md#combining-all-modes).
