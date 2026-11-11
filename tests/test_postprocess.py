@@ -7,6 +7,8 @@ import json
 import logging
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from srtctl.core.schema import (
     DEFAULT_AI_ANALYSIS_PROMPT,
     AIAnalysisConfig,
@@ -1081,3 +1083,49 @@ class TestArchiveScript:
         assert result.stdout.strip() == ""
         assert "no file matched" in result.stderr
         assert list(out_dir.iterdir()) == []
+
+
+class TestAIAnalysisGhInstall:
+    """The gh CLI download in the AI-analysis container matches the node's architecture."""
+
+    def _gh_install_section(self, tmp_path):
+        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
+
+        mixin = PostProcessStageMixin()
+        mixin.runtime = MagicMock()
+        mixin.runtime.log_dir = tmp_path
+        mixin._postprocess_node = MagicMock(return_value=("node001", None))
+        proc = MagicMock()
+        proc.poll.return_value = 0
+        proc.returncode = 0
+        with patch("srtctl.cli.mixins.postprocess_stage.start_srun_process", return_value=proc) as mock_srun:
+            mixin._run_ai_analysis(AIAnalysisConfig(enabled=True, openrouter_api_key="sk-or-test"))
+        lines = mock_srun.call_args.kwargs["command"][2].splitlines()
+        start = next(i for i, line in enumerate(lines) if "Installing GitHub CLI" in line)
+        end = next(i for i, line in enumerate(lines) if "Dependencies installed" in line)
+        return "\n".join(["set -e", *lines[start:end]])
+
+    @pytest.mark.parametrize(("machine", "asset"), [("x86_64", "linux_amd64"), ("aarch64", "linux_arm64")])
+    def test_gh_tarball_matches_node_arch(self, tmp_path, machine, asset):
+        import subprocess
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        urls = tmp_path / "urls.txt"
+        stubs = {
+            "uname": f'echo "{machine}"',
+            "curl": f'echo "$*" >> "{urls}"; echo \'  "tag_name": "v2.0.0",\'',
+            "tar": "cat > /dev/null",
+        }
+        for name, body in stubs.items():
+            stub = bin_dir / name
+            stub.write_text(f"#!/bin/bash\n{body}\n")
+            stub.chmod(0o755)
+
+        section = self._gh_install_section(tmp_path)
+        env = {"PATH": f"{bin_dir}:/usr/bin:/bin"}
+        subprocess.run(["bash", "-c", section], env=env, check=True, capture_output=True, text=True)
+
+        downloads = [line for line in urls.read_text().splitlines() if "releases/download" in line]
+        assert len(downloads) == 1
+        assert f"gh_2.0.0_{asset}.tar.gz" in downloads[0]
