@@ -250,6 +250,15 @@ def test_taxonomy_retains_reference_categories(name, component, group):
     assert isinstance(info["order"], int)
 
 
+def test_default_metric_is_the_engines_running_request_count():
+    from srtctl.dsight.engines import default_metric
+
+    assert default_metric({"vllm:num_requests_running", "gpu_util"}) == "vllm:num_requests_running"
+    assert default_metric({"sglang:num_running_reqs"}) == "sglang:num_running_reqs"
+    assert default_metric({"trtllm_num_requests_running"}) == "trtllm_num_requests_running"
+    assert default_metric({"gpu_util", "vllm:num_requests_waiting"}) is None
+
+
 def test_semantic_exceptions_and_unknown_category_are_preserved():
     assert describe_metric("cpu_time_user")["counter"] is False
     assert describe_metric("FI_DEV_NVLINK_BANDWIDTH_TOTAL")["counter"] is False

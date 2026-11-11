@@ -197,7 +197,8 @@ suffix is accepted. Unknown
 names remain unmapped. Imported NVTX categories are the frontend
 `preprocess.*`/`route.*`/`transport.*` ranges, TRT-LLM executor and scheduling
 ranges, SGLang `scheduler.*` stages, vLLM per-step `schedule: *` and
-`gpu_model_runner: *` stages, and TokenSpeed forward/graph-replay,
+`gpu_model_runner: *` stages (the latter only from vLLM's V1 model runner; the
+V2 runner, which logs `Using V2 Model Runner`, emits no model-runner ranges), and TokenSpeed forward/graph-replay,
 input preparation, sampling, cache and commit annotations. OS PID/TID, GPU device
 sets and distributed ranks stay separate; a GPU-set filename does not imply rank 0.
 The default
@@ -447,7 +448,9 @@ sources, unknown IDs and timing precision; use the optional-source browser matri
 below. Introduce a new common observation kind only when existing kinds cannot
 represent the evidence. Do not infer IDs/ranks/timings to satisfy a shape.
 SGLang batch and request logs contribute metric observations, not GPU execution
-intervals or a client-request identity join. There is no vLLM-specific vocabulary.
+intervals or a client-request identity join. vLLM supplies NVTX names, `vllm:*`
+gauge definitions and its periodic `Engine NNN:` stats line, which also contribute
+metric observations only.
 
 ## Development checks
 
