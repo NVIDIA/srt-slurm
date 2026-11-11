@@ -2042,6 +2042,25 @@ class TestCpuPowerHostCollectorLaunch:
         assert (tmp_path / "cpu_power" / "manifest.json").is_file()
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_unresolvable_het_node_fails_the_leg_not_the_sweep(self, mock_srun, tmp_path):
+        harness = _power_harness(
+            tmp_path,
+            [_worker("node-a", range(4)), _worker("node-b", range(4), index=1)],
+            het=True,
+            het_groups={},
+        )
+        harness.config = _make_config(
+            telemetry=_dcgm_power(cpu_power=CpuPowerConfig(enabled=True, required=True)),
+            benchmark=_sa_bench(),
+        )
+        registry = ProcessRegistry(job_id="12345")
+
+        assert harness.start_cpu_power_host_telemetry(registry) is not None
+        mock_srun.assert_not_called()
+        assert harness.power_telemetry_blocks_benchmark()
+        assert harness.finalize_cpu_power_host_telemetry(0) == 1
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_disabled_block_is_a_noop(self, mock_srun, tmp_path):
         harness = _power_harness(tmp_path, [_worker("node-a", range(4))])
         harness.config = _make_config(
