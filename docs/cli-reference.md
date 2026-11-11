@@ -43,6 +43,7 @@ Build an offline HTML from existing run artifacts
 | `logs` | required | Run directory or its logs/ directory |
 | `--output, -o OUTPUT` | required | New or previously generated dashboard directory |
 | `--client CLIENT` |  | Select one AIPerf profile_export.jsonl or AgentPerf requests.jsonl |
+| `--each-client` |  | Build one report per client export (each concurrency of a sweep) under OUTPUT; skips warmup |
 | `--metrics METRICS` |  | One raw Tachometer capture leaf or file (default: logs/tachometer/local) |
 | `--nsys-sqlite SQLITES` |  | Existing Nsight SQLite exports; does not enable profiling |
 | `--no-otel` |  | Skip OTel import and request lifecycle breakdowns |
