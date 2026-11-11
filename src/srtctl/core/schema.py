@@ -1704,16 +1704,28 @@ class TelemetryExporterConfig:
     gpu_labels: GpuLabelsConfig | None = None
     # GPU power telemetry: per-GPU metrics to record; unset means DCGM.
     gpu_metrics: GpuMetricsConfig | None = None
+    # GPU power telemetry: the bare-host probe that proves which GPUs each worker holds,
+    # so idle GPUs on a partly used node can be excused. `kfd` reports the PCI
+    # `serial_number`, the identity the AMD device-metrics-exporter labels.
+    # A `kind: dcgm` exporter always uses `nvidia-smi`; unset on `kind: custom` means no probe.
+    worker_gpu_probe: Literal["kfd"] | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
     def __post_init__(self) -> None:
         if self.kind == "dcgm" and self.gpu_labels is not None:
             raise ValidationError("`gpu_labels` needs `kind: custom`; a `kind: dcgm` exporter uses DCGM's labels")
+        if self.kind == "dcgm" and self.worker_gpu_probe is not None:
+            raise ValidationError("`worker_gpu_probe` needs `kind: custom`; a `kind: dcgm` exporter uses `nvidia-smi`")
         if self.kind == "custom" and (
             (self.command is None and self.binary is None) or self.gpu_labels is None or self.gpu_metrics is None
         ):
             raise ValidationError("a `kind: custom` GPU exporter needs `command`, `gpu_labels` and `gpu_metrics`")
+
+    @property
+    def worker_probe(self) -> str | None:
+        """The ``WORKER_PROBES`` key for this exporter, or None when none can prove worker GPUs."""
+        return "nvidia-smi" if self.kind == "dcgm" else self.worker_gpu_probe
 
     @property
     def power_mapping(self) -> PowerMetricMapping:

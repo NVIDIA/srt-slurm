@@ -3632,6 +3632,20 @@
           ],
           "description": "GPU power telemetry: per-GPU metrics to record; unset means DCGM.",
           "default": null
+        },
+        "worker_gpu_probe": {
+          "anyOf": [
+            {
+              "enum": [
+                "kfd"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GPU power telemetry: the bare-host probe that proves which GPUs each worker holds, so idle GPUs on a partly used node can be excused. `kfd` reports the PCI `serial_number`, the identity the AMD device-metrics-exporter labels. A `kind: dcgm` exporter always uses `nvidia-smi`; unset on `kind: custom` means no probe.",
+          "default": null
         }
       },
       "description": "Configuration for a metrics exporter deployed on worker nodes.",

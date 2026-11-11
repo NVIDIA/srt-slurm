@@ -20,7 +20,13 @@ from srtctl.core.cpu_power_session import CpuPowerTelemetrySession
 from srtctl.core.git_state import head_commit
 from srtctl.core.power.contract import Reason
 from srtctl.core.power.cpu_session import CpuPowerCollector, CpuPowerSessionSettings
-from srtctl.core.power.identity import WORKER_PROBE_SCRIPTS, WorkerGpuIdentity, WorkerIdentityProof, parse_node_probe
+from srtctl.core.power.identity import (
+    WORKER_PROBES,
+    WorkerGpuIdentity,
+    WorkerIdentityProof,
+    WorkerProbe,
+    parse_node_probe,
+)
 from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.power.mapping import DCGM_EXPORTER_COMMAND_TEMPLATE, TACHOMETER_SCRAPE
 from srtctl.core.power.session import PowerSessionSettings, PowerTelemetrySession
@@ -271,15 +277,15 @@ class TelemetryStageMixin:
             return
         captured_at = time.time()
         exporter = self.config.telemetry.dcgm_exporter
-        kind = None if exporter is None else exporter.kind
-        script = None if kind is None else WORKER_PROBE_SCRIPTS.get(kind)
-        if script is None:
+        probe_name = None if exporter is None else exporter.worker_probe
+        if probe_name is None:
+            kind = None if exporter is None else exporter.kind
             session.record_worker_identity(
                 WorkerIdentityProof(captured_at_unix=captured_at, error=f"no worker GPU probe for exporter kind {kind}")
             )
             return
         try:
-            workers = self.probe_worker_gpus(registry, session.power_dir, script)
+            workers = self.probe_worker_gpus(registry, session.power_dir, WORKER_PROBES[probe_name])
         except Exception as error:
             logger.exception("Worker GPU identity could not be established")
             reason = str(error) or type(error).__name__
@@ -288,7 +294,7 @@ class TelemetryStageMixin:
         session.record_worker_identity(WorkerIdentityProof(captured_at_unix=captured_at, workers=workers))
 
     def probe_worker_gpus(
-        self, registry: ProcessRegistry, power_dir: Path, script: str
+        self, registry: ProcessRegistry, power_dir: Path, worker_probe: WorkerProbe
     ) -> tuple[WorkerGpuIdentity, ...]:
         """One bare-host probe per worker node, started together and joined back to the workers planned there."""
         workers = [process for process in registry.get_all_processes().values() if process.worker_assignments]
@@ -312,7 +318,7 @@ class TelemetryStageMixin:
             step_name = f"power_worker_identity_{hostname}"
             log_path = power_dir / f"{step_name}.out"
             child = start_srun_process(
-                command=["python3", "-c", script, *step_ids],
+                command=["python3", "-c", worker_probe.script, *step_ids],
                 nodelist=[hostname],
                 output=str(log_path),
                 container_image=None,
@@ -336,7 +342,7 @@ class TelemetryStageMixin:
                 raise ValueError(f"worker GPU probe timed out on {hostname}") from None
             if exit_code != 0:
                 raise ValueError(f"worker GPU probe exited {exit_code} on {hostname}")
-            held = parse_node_probe(log_path.read_text())
+            held = parse_node_probe(log_path.read_text(), worker_probe.is_identity)
             for managed, process in by_host[hostname]:
                 step_id = steps[managed.step_name or ""]
                 identities.append(
