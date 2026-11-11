@@ -12,6 +12,7 @@ drives the real SweepOrchestrator under `srtctl.mock`.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -163,3 +164,41 @@ def test_apply_mock_does_not_call_real_sbatch(monkeypatch, tmp_path: Path) -> No
         submit_cli.main()
 
     assert seen_sbatch == [], f"Expected --mock to stub sbatch entirely, but saw real sbatch calls: {seen_sbatch}"
+
+
+def test_apply_records_the_job_when_the_output_directory_refuses_mode_changes(
+    monkeypatch, tmp_path: Path, capsys: Any
+) -> None:
+    """A share mounted with fixed modes (SMB/CIFS) refuses chmod to non-owners.
+
+    sbatch has already accepted the job when the recipe and script are copied
+    into its output directory, so those copies must not need a mode change, or
+    the submission is never recorded.
+    """
+    cfg = _write_config(tmp_path)
+    output_base = tmp_path / "outputs"
+    output_base.mkdir()
+    real_chmod = os.chmod
+
+    def chmod_refused_on_the_share(path, mode, *args, **kwargs):
+        if Path(path).resolve().is_relative_to(output_base):
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", chmod_refused_on_the_share)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["srtctl", "apply", "-f", str(cfg), "-o", str(output_base), "--mock", "--mock-tick-s", "0.05", "--json"],
+    )
+    with (
+        patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None),
+        patch("srtctl.cli.submit._assert_preflight_passed"),
+    ):
+        submit_cli.main()
+
+    record = json.loads(capsys.readouterr().out.strip())
+    assert record["status"] == "submitted"
+    output_dir = Path(record["output_dir"])
+    assert yaml.safe_load((output_dir / "config.yaml").read_text())["name"] == "apply-mock-smoke"
+    assert (output_dir / "sbatch_script.sh").read_text().startswith("#!")
