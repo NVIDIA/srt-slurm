@@ -168,6 +168,9 @@ class Backend(ABC):
     #: Environment that turns on the engine's own NVTX ranges; the automatic nsys
     #: preset (``observability.nsys``) sets it on every worker it wraps.
     nvtx_environment: ClassVar[Mapping[str, str]] = {}
+    #: Whether the engine's upstream serving image ships ``nsys`` on PATH. When it does
+    #: not, submit warns if nsys would run and no absolute nsys path is configured.
+    upstream_image_has_nsys: ClassVar[bool] = True
 
     @property
     @abstractmethod
