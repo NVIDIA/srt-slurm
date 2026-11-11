@@ -10,7 +10,7 @@
 #            squeue --steps -j <job> -h -o "%i %j"      # find agg_0_<node>
 #            scancel --signal=KILL <job>.<step>         # SIGKILL the engine
 #   t+5    sweep log: "Worker agg_0_<node> exited with code 137; relaunching agg_0 in 10s (restart 1/2)"
-#   t+10   frontend /health drops from 2 generate instances to 1 (the dead worker's lease expires)
+#   t+10   frontend /health?instances=true drops from 2 generate instances to 1 (the dead worker's lease expires)
 #   t+15   "Relaunched agg_0 as agg_0_<node>_r1 (restart 1/2); waiting up to 1800s for /health"
 #            same node, same GPU, same ports; the old log moved to <node>_agg_w0.out.1
 #   t+90   "Relaunched agg_0 is serving again after 74s (<ip>:7500/health)"
