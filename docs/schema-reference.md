@@ -84,7 +84,7 @@ Cluster facts and allocation knobs; the worker topology is the `roles:` block.
 |---|---|---|---|
 | `gpu_type` | str \| None | `None` | GPU type (h100, gb200, ...). Cluster fact, not a topology choice. Optional: a recipe that omits it inherits `default_gpu_type` from srtslurm.yaml, and `gpus_per_node` inherits the cluster `gpus_per_node`. Both are still worth setting in a recipe so it is self-describing for result rollups. |
 | `gpus_per_node` | int | `4` | GPUs on each node. Inherits the cluster `gpus_per_node` when omitted, else 4. |
-| `spread_workers` | bool | `False` | If True, place each partial-node worker on its own node instead of packing multiple onto the same node. Caller must reserve enough nodes (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node). |
+| `spread_workers` | bool | `False` | If True, place each partial-node worker on its own node instead of packing multiple onto the same node. Caller must reserve enough nodes (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node). With roles.decode.nodes: colocate, the decode workers go one per prefill node in turn, each on that node's highest free GPUs. |
 | `het_jobs` | bool \| None | `None` | SLURM heterogeneous-job opt-in. Tri-state: None defers to the cluster default `use_het_jobs` on ClusterConfig; True/False overrides per recipe. When effectively True (and we are in disaggregated mode), the prefill and decode sides are submitted as two het components each with their own `--segment`. See HetComponent above and docs/slurm-faq.md. |
 
 ### SlurmConfig

@@ -2407,7 +2407,7 @@
         },
         "spread_workers": {
           "type": "boolean",
-          "description": "If True, place each partial-node worker on its own node instead of packing multiple onto the same node. Caller must reserve enough nodes (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node).",
+          "description": "If True, place each partial-node worker on its own node instead of packing multiple onto the same node. Caller must reserve enough nodes (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node). With roles.decode.nodes: colocate, the decode workers go one per prefill node in turn, each on that node's highest free GPUs.",
           "default": false
         },
         "het_jobs": {
