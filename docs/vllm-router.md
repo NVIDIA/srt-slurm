@@ -175,7 +175,7 @@ roles:
 | `proxy_ip`, `proxy_ping_port` | the head node's IP on the cluster interface, `36367` | Where the worker registers; hence one Router, on the head node |
 | `http_port`, `host_ip` | the worker's allocated HTTP port and its own routable IP | What the Router routes to and what peers connect to; upstream falls back to its own interface guess for `host_ip`, which is wrong on multi-homed nodes |
 | `handshake_port`, `notify_port` | allocated per process by `NodePortAllocator` (`moriio_handshake`, `moriio_notify` kinds); both reserve one port per local rank | vLLM adds rank offsets to both bases, so colocated workers need disjoint blocks. Defaults start at 26000/27000, below Linux's default ephemeral range, to avoid MoRI's other dynamically allocated listeners |
-| `read_mode` | `true` | The Router's discovery flow drives reads |
+| `read_mode` | `true` unless the recipe's template sets it | The Router's discovery flow serves both modes: `true` has decode pull the KV (RDMA READ), `false` has prefill push it into blocks decode allocated first (RDMA WRITE, vllm-router 0.1.15 or later). A non-boolean, or prefill and decode disagreeing, fails when srtctl loads the config |
 | `VLLM_PORT` | unset for these workers | MoRI-IO opens its other listeners inside the TP child processes, which inherit `VLLM_PORT`; a fixed scan base there hands several ranks the same unbound port, so vLLM takes ephemeral ports from the kernel |
 
 Readiness is the Router's `/health`: it answers 503 `Waiting for discovered workers` until a prefill and a decode have registered, then 200 (vllm-project/router 43140bc8e2). This is a workaround for a gap in the Router, not a MoRI-IO property: in discovery mode the Router keeps registered workers in a separate registry but still serves `/workers` and `/get_server_info` from the static URL list, which is empty, so the count-based `/workers` gate srtctl uses for static routing has nothing to count. `/health` is the only endpoint that reads the discovery registry, and it only proves one worker of each role, so with several workers per role the benchmark can start before the Router knows all of them; the per-worker `/health` gate that follows proves the workers are up, not that they registered. The upstream fix is for `/workers` to merge the discovery registry (`src/routers/router_manager.rs`); when it does, `VLLMRouterFrontend.probe_ready` loses its discovery branch and the count-based probe covers both modes.
@@ -194,6 +194,11 @@ values that conflict with the allocated topology are rejected when the worker co
 is built. Matching port values may be integers or decimal strings; rendered ports use
 the allocator's string values.
 Do not hard-code worker addresses or listener ports in a reusable recipe.
+`read_mode` is not a binding: it defaults to `true` (RDMA READ), and a template may
+set `false` (RDMA WRITE, which needs vllm-router 0.1.15 or later). Set the same
+value in both roles; srtctl rejects a mismatch when it loads the config. This
+default is the opposite of vLLM's, which runs WRITE when the key is missing, and
+srtctl takes only a JSON boolean where vLLM also parses strings.
 
 For example, a prefill template can combine RDMA READ with CPU offload:
 
