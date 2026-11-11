@@ -3,7 +3,9 @@
 """`srtctl render`: the sbatch script `apply` would submit, written out for someone else to submit."""
 
 import logging
+import shutil
 import stat
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -215,3 +217,30 @@ def test_the_ready_marker_records_the_health_gate(tmp_path: Path) -> None:
     assert marker == tmp_path / SERVER_READY_FILENAME
     assert json.loads(marker.read_text())["ready_at_unix"] > 0
     assert write_server_ready_marker(tmp_path / "missing" / "dir") is None
+
+
+@pytest.mark.skipif(shutil.which("flock") is None, reason="needs util-linux flock")
+@pytest.mark.parametrize("compute_venv", [None, "node-local/venv"])
+def test_the_compute_venv_and_its_lock_follow_srtctl_compute_venv(
+    recipe: Path, tmp_path: Path, compute_venv: str | None
+) -> None:
+    body = submit.generate_minimal_sbatch_script(config=SrtConfig.from_yaml(recipe), config_path=recipe)
+    venv_setup = body[
+        body.index("export UV_PROJECT_ENVIRONMENT") : body.index("uv run --python 3.12 --no-dev --no-sync")
+    ]
+    source = tmp_path / "srt-slurm"
+    source.mkdir()
+    stub = tmp_path / "bin" / "uv"
+    stub.parent.mkdir()
+    stub.write_text('#!/bin/sh\necho "$* -> $UV_PROJECT_ENVIRONMENT" >> "$UV_CALLS"\n')
+    stub.chmod(0o755)
+    calls = tmp_path / "uv-calls"
+    env = {"PATH": f"{stub.parent}:/usr/bin:/bin", "SRTCTL_SOURCE": str(source), "UV_CALLS": str(calls)}
+    if compute_venv:
+        env["SRTCTL_COMPUTE_VENV"] = str(tmp_path / compute_venv)
+
+    subprocess.run(["bash", "-c", f"set -e\n{venv_setup}"], env=env, check=True)
+
+    venv = tmp_path / compute_venv if compute_venv else source / ".venv-compute"
+    assert calls.read_text().splitlines()[-1] == f"sync --python 3.12 --no-dev -> {venv}"
+    assert Path(f"{venv}.lock").exists()
