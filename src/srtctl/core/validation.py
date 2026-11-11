@@ -23,6 +23,7 @@ import requests
 from marshmallow import ValidationError as MarshmallowValidationError
 
 from srtctl.core.config import (
+    container_runtime,
     generate_override_configs,
     resolve_config_with_defaults,
 )
@@ -217,6 +218,21 @@ def _preflight_container(
                 message=issue.message,
             ),
             [issue],
+        )
+
+    # Under container_runtime host the job's sandbox provides the environment and
+    # the alias only names it, so no file or registry is checked.
+    if container_runtime(cluster_config) == "host":
+        return (
+            PreflightResolution(
+                field="model.container",
+                raw=raw,
+                resolved=str(resolved),
+                source=source,
+                ok=True,
+                message=f"container_runtime host: {resolved} is not checked, the job's sandbox provides it",
+            ),
+            [],
         )
 
     # Container image URIs (e.g. "nvcr.io/nvidia/sglang-runtime:0.8.1",

@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from srtctl.core.slurm import AllocationShrink
+from srtctl.core.slurm import AllocationShrink, effective_launch
 
 __all__ = [
     "FakePopen",
@@ -232,7 +232,7 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
         if not isinstance(cmd, list):
             cmd = [str(cmd)]
         if options.on_srun is not None:
-            options.on_srun({**kwargs, "command": cmd})
+            options.on_srun({**effective_launch(kwargs), "command": cmd})
         return FakePopen(
             cmd=cmd,
             output=kwargs.get("output"),
