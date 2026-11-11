@@ -73,3 +73,6 @@ health_check:
   interval_seconds: 10
 benchmark:
   type: manual
+# With RUN_EVAL or EVAL_ONLY, run the eval in the vLLM prefill image instead of model.container.
+post_eval:
+  container_image: tilert-prefill

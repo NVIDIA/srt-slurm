@@ -1186,6 +1186,12 @@ class TestDryRunPostEval:
         assert "bash run.sh" in output
         assert "EVAL_FRAMEWORK, EVAL_SUITE" in output
 
+    def test_post_eval_container_image_shown(self, capsys):
+        show_config_details(_make_config({"post_eval": {"container_image": "/images/eval.sqsh"}}))
+        output = capsys.readouterr().out
+        assert "Post-eval dispatch:" in output
+        assert "container_image: /images/eval.sqsh" in output
+
     def test_default_post_eval_is_silent(self, capsys):
         show_config_details(_make_config())
         assert "Post-eval dispatch" not in capsys.readouterr().out
