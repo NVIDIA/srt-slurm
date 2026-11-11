@@ -114,6 +114,23 @@ def test_kv_aware_routing_needs_a_role_that_publishes_kv_events() -> None:
     assert config.frontend.type == "infera"
 
 
+def test_kv_aware_for_decode_input_demand_alone_warns_instead(caplog: pytest.LogCaptureFixture) -> None:
+    """decode-input-demand only runs under kv-aware and balances decode without KV events."""
+    with caplog.at_level("WARNING", logger="srtctl.frontends.infera"):
+        _pd_config(SGLangBackend(), prefill_kv_events=False, frontend_args={"decode-input-demand": "on"})
+    assert "no role publishes KV events" in caplog.text
+    # The router reads the env when the arg is unset, and the arg when both are set.
+    config = _pd_config(SGLangBackend(), prefill_kv_events=False, frontend_env={"INFERA_DECODE_INPUT_DEMAND": "shadow"})
+    assert config.frontend.type == "infera"
+    with pytest.raises(ValidationError, match="no role publishes"):
+        _pd_config(
+            SGLangBackend(),
+            prefill_kv_events=False,
+            environment={"INFERA_DECODE_INPUT_DEMAND": "on"},
+            frontend_args={"decode-input-demand": "off"},
+        )
+
+
 def test_router_and_workers_must_install_one_infera_release() -> None:
     with pytest.raises(ValidationError, match="environment=0.3.3, roles.decode.env=0.3.4"):
         _pd_config(SGLangBackend(), environment={"INFERA_VERSION": "0.3.3"}, decode_env={"INFERA_VERSION": "0.3.4"})

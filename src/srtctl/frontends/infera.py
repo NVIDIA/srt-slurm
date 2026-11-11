@@ -62,11 +62,20 @@ READINESS_PORT_ENV = "INFERA_READINESS_PORT"
 VERSION_ENV = "INFERA_VERSION"
 # `python3 -m infera.server` routes kv-aware unless frontend.args says otherwise.
 DEFAULT_ROUTER_POLICY = "kv-aware"
+# kv-aware's decode balancing by in-flight input tokens, which needs no KV events; the
+# router reads this env when frontend.args leaves decode-input-demand unset.
+DECODE_INPUT_DEMAND_ENV = "INFERA_DECODE_INPUT_DEMAND"
 
 
 def etcd_endpoint(runtime: RuntimeContext) -> str:
     """The job's etcd on the infra node; workers and the router must name the same one."""
     return f"http://{runtime.infra_node_ip}:{ETCD_CLIENT_PORT}"
+
+
+def decode_input_demand(config: Any) -> str:
+    """The router's decode-input-demand mode: frontend.args, else the router's env, else off."""
+    env = {**(config.environment or {}), **(config.frontend.env or {})}
+    return str((config.frontend.args or {}).get("decode-input-demand", env.get(DECODE_INPUT_DEMAND_ENV, "off")))
 
 
 @register_frontend("infera")
@@ -101,11 +110,18 @@ class InferaFrontend(DynamicFrontend):
             role for role, backend in config.active_role_backends() if backend.get_kv_events_config_for_mode(role)
         ]
         if policy == "kv-aware" and not publishing:
-            raise ValueError(
-                "frontend.type: infera routes kv-aware (infera.server's default router-policy) on KV events, "
-                "but no role publishes them, so the router would route on load alone; set kv_events: true "
-                "on the prefill (or agg) role, or set frontend.args.router-policy"
-            )
+            if decode_input_demand(config) in ("on", "shadow"):
+                logger.warning(
+                    "frontend.type: infera: no role publishes KV events, so kv-aware picks prefill workers "
+                    "on load (and session affinity) alone; decode-input-demand still balances decode"
+                )
+            else:
+                raise ValueError(
+                    "frontend.type: infera routes kv-aware (infera.server's default router-policy) on KV events, "
+                    "but no role publishes them, so the router would route on load alone; set kv_events: true "
+                    "on the prefill (or agg) role, set frontend.args.router-policy, or turn on "
+                    "decode-input-demand if kv-aware is there for decode balancing"
+                )
         versions = {
             source: env[VERSION_ENV]
             for source, env in (
