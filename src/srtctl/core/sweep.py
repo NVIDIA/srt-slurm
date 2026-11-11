@@ -11,7 +11,40 @@ expanding all combinations of sweep parameters.
 
 import copy
 import itertools
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+def _vllm_parallelism_fits_allocation(config: dict[str, Any]) -> bool:
+    """Check vLLM worlds against the resolved schema-2 worker allocations."""
+    from dataclasses import replace
+
+    from srtctl.backends.vllm import VLLMProtocol
+    from srtctl.core.schema import BackendConfigField, ResourceConfig, RoleConfig, Topology
+    from srtctl.frontends import get_frontend
+
+    resources = ResourceConfig.Schema().load(config.get("resources", {}))
+    roles = {name: RoleConfig.Schema().load(spec) for name, spec in config.get("roles", {}).items()}
+    topology = Topology(roles, resources.gpus_per_node, resources.het_jobs)
+    engine = BackendConfigField().deserialize(config["engine"]) if "engine" in config else None
+    frontend = get_frontend((config.get("frontend") or {}).get("type", "dynamo"))
+
+    for mode, role in roles.items():
+        backend = role.engine if role.engine is not None else engine
+        if not isinstance(backend, VLLMProtocol) or topology.workers(mode) < 1:
+            continue
+        backend = replace(backend, roles=roles)
+        dp_size = backend._get_parallel_size(mode, "data-parallel-size")
+        required_gpus = dp_size * backend._get_model_parallel_size(mode)
+        allocated_gpus = topology.gpus_per_worker(mode)
+        if required_gpus > allocated_gpus:
+            return False
+        if frontend.worker_api_port(mode) == "allocated" and dp_size > 1 and required_gpus != allocated_gpus:
+            return False
+
+    return True
 
 
 def expand_template(template: Any, values: dict[str, Any]) -> Any:
@@ -88,6 +121,7 @@ def generate_sweep_configs(sweep_config: dict) -> list[tuple[dict, dict]]:
     param_values_list = [sweep_params[name] for name in param_names]
 
     configs = []
+    filtered_count = 0
     for values in itertools.product(*param_values_list):
         # Create parameter dict for this combination
         params = dict(zip(param_names, values, strict=False))
@@ -106,8 +140,24 @@ def generate_sweep_configs(sweep_config: dict) -> list[tuple[dict, dict]]:
         # Validate the point exactly as load_config will when it is submitted.
         resolved = resolve_config_with_defaults(config, cluster_config)
         expand_engine_config_defaults(resolved)
+        # A Cartesian vLLM topology sweep can request a larger parallel world
+        # than the GPUs allocated to a worker. Drop those variants before full
+        # schema validation so one impossible combination does not abort the
+        # entire sweep (notably for vllm-router, which validates DP eagerly).
+        if not _vllm_parallelism_fits_allocation(resolved):
+            filtered_count += 1
+            continue
+
         schema.load(resolved)
 
         configs.append((config, params))
+
+    if filtered_count:
+        logger.warning(
+            "Filtered %d vLLM sweep combination(s) incompatible with worker GPU allocations",
+            filtered_count,
+        )
+    if filtered_count and not configs:
+        raise ValueError("Sweep has no runnable configurations after filtering vLLM parallelism")
 
     return configs

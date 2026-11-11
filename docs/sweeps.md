@@ -20,6 +20,12 @@ Parameter sweeps let you run multiple configurations with a single command. Swee
 3. Run `srtctl apply -f <config>` - sweep mode is auto-detected
 4. `srtctl` generates and submits one job per parameter combination
 
+For vLLM, combinations whose TP × DP × PP × PCP exceed the GPUs allocated per
+worker are skipped. Distributed DP behind a frontend also requires an exact
+allocation match. The check uses resolved cluster defaults and per-role GPU
+limits. If every combination is filtered out, the sweep fails with an error.
+Other configuration errors still fail validation.
+
 ## Simple Walkthrough
 
 ### Step 1: Create a sweep config
