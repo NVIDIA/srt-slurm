@@ -364,6 +364,7 @@ post_eval:
     - bash
     - /infmax-workspace/benchmarks/evals/run.sh
     - "{endpoint}"
+  container_image: eval-image  # optional; the eval's image (alias or URI), default model.container
 ```
 
 Fields: [PostEvalConfig](schema-reference.md#postevalconfig). `command` may use `{endpoint}` (the frontend URL) and `{infmax_workspace}`; it is not shell-interpreted.

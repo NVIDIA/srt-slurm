@@ -564,12 +564,14 @@ def show_config_details(config: SrtConfig) -> None:
         )
 
     # --- post_eval (RUN_EVAL / EVAL_ONLY dispatch) ---
-    if config.post_eval.passthrough_env or config.post_eval.command:
+    if config.post_eval.passthrough_env or config.post_eval.command or config.post_eval.container_image:
         console.print("[bold cyan]Post-eval dispatch:[/]")
         if config.post_eval.command:
             console.print(f"    [yellow]command:[/] {shlex.join(config.post_eval.command)}", crop=False)
         if config.post_eval.passthrough_env:
             console.print(f"    [yellow]passthrough_env:[/] {', '.join(config.post_eval.passthrough_env)}", crop=False)
+        if config.post_eval.container_image:
+            console.print(f"    [yellow]container_image:[/] {config.post_eval.container_image}", crop=False)
 
     # --- services (see docs/services.md) ---
     # Plain lines, not a Table: repo URLs and long argv overflow a narrow console and a

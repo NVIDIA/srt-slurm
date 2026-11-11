@@ -2258,6 +2258,20 @@ class TestRunPostEval:
         assert launch["command"][2] == f"http://localhost:{topology.public_port}"
         assert launch["command"][1] == ("/eval.sh" if custom_command else "/srtctl-benchmarks/lm-eval/bench.sh")
 
+    @pytest.mark.parametrize("image", [None, "/images/eval.sqsh"], ids=["model-container", "post-eval-image"])
+    def test_eval_runs_in_the_post_eval_image(self, image):
+        """post_eval.container_image replaces model.container for the eval step only."""
+        from dataclasses import replace
+
+        from srtctl.core.schema import PostEvalConfig
+
+        orch = self._make_orchestrator()
+        orch.config = replace(orch.config, post_eval=PostEvalConfig(container_image=image))
+
+        _, _, launch = self._run_eval_with_endpoint_probes(orch, eval_only=True)
+
+        assert launch["container_image"] == (image or str(orch.runtime.container_image))
+
     def test_eval_uses_the_frontend_heterogeneous_component(self):
         """A frontend on the decode side launches eval in the decode Slurm component."""
         from dataclasses import replace
