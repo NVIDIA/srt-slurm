@@ -105,6 +105,9 @@ class InferaFrontend(DynamicFrontend):
                     "frontend.type: infera registers workers in the job's own etcd; "
                     "an external etcd service is not supported"
                 )
+        for role, backend in config.active_role_backends():
+            if backend.is_grpc_mode(role):
+                raise ValueError(f"frontend.type: infera routes HTTP workers; roles.{role} serves gRPC")
         policy = (config.frontend.args or {}).get("router-policy", DEFAULT_ROUTER_POLICY)
         publishing = [
             role for role, backend in config.active_role_backends() if backend.get_kv_events_config_for_mode(role)

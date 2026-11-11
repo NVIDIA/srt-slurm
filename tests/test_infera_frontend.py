@@ -59,6 +59,7 @@ def _pd_config(
     environment: dict | None = None,
     frontend_env: dict | None = None,
     decode_env: dict | None = None,
+    decode_args: dict | None = None,
 ) -> SrtConfig:
     return SrtConfig(
         name="infera",
@@ -66,7 +67,7 @@ def _pd_config(
         resources=ResourceConfig(gpu_type="mi355x", gpus_per_node=8),
         roles={
             "prefill": RoleConfig(nodes=1, workers=1, gpus=4, kv_events=prefill_kv_events),
-            "decode": RoleConfig(nodes=1, workers=1, gpus=4, env=decode_env or {}),
+            "decode": RoleConfig(nodes=1, workers=1, gpus=4, env=decode_env or {}, args=decode_args or {}),
         },
         frontend=FrontendConfig(type="infera", enable_multiple_frontends=False, args=frontend_args, env=frontend_env),
         engine=engine,
@@ -102,6 +103,12 @@ def test_an_external_etcd_is_rejected() -> None:
     external = ServiceConfig(name="etcd", type="etcd", external="http://etcd.example:2379")
     with pytest.raises(ValidationError, match="external etcd"):
         _pd_config(SGLangBackend(), services=[external])
+
+
+def test_a_grpc_role_is_rejected() -> None:
+    """The launcher waits for SGLang's HTTP /health before registering, so a gRPC server never registers."""
+    with pytest.raises(ValidationError, match="roles.decode serves gRPC"):
+        _pd_config(SGLangBackend(), decode_args={"grpc-mode": True})
 
 
 def test_kv_aware_routing_needs_a_role_that_publishes_kv_events() -> None:
