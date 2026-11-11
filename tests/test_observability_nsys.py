@@ -31,8 +31,11 @@ def config(**overrides):
     ("observability", "expected"),
     [
         ({}, False),
+        ({"enabled": "default", "nsys": {"enabled": True}}, False),
         ({"enabled": False, "nsys": {"enabled": True}}, False),
+        ({"enabled": "minimal", "nsys": {"enabled": True}}, False),
         ({"enabled": True}, True),
+        ({"enabled": "full"}, True),
         ({"enabled": True, "nsys": {"enabled": False}}, False),
     ],
 )

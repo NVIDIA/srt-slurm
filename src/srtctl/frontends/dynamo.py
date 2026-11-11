@@ -139,12 +139,13 @@ class DynamoFrontend(DynamicFrontend):
         return process.sys_port
 
     def implied_services(self, config: Any) -> list[EffectiveService]:
-        """Discovery and lifecycle tracing, independent of the observability preset.
+        """Discovery and lifecycle tracing.
 
         The default request plane is tcp and KV events go over direct ZMQ, so a
         plain Dynamo job needs only etcd for discovery; a recipe declares a
         ``nats`` service to force one anyway. The collector is independent of
-        the discovery planes and the observability preset.
+        the discovery planes; ``observability.enabled: minimal`` drops it unless
+        the recipe declares it.
         """
         placement = infra_placement(config)
         implied = [
@@ -153,12 +154,15 @@ class DynamoFrontend(DynamicFrontend):
                 implicit=True,
                 reason="frontend.type dynamo",
             ),
-            EffectiveService(
-                ServiceConfig(name=OTEL_SERVICE_NAME, type="otel-collector"),
-                implicit=True,
-                reason="Dynamo lifecycle tracing (independent of observability.enabled)",
-            ),
         ]
+        if config.observability.lifecycle_tracing:
+            implied.append(
+                EffectiveService(
+                    ServiceConfig(name=OTEL_SERVICE_NAME, type="otel-collector"),
+                    implicit=True,
+                    reason="Dynamo lifecycle tracing (observability.enabled default or full)",
+                )
+            )
         nats_reasons = nats_implied_reasons(config)
         if nats_reasons:
             nats_options = {}
@@ -272,8 +276,17 @@ class DynamoFrontend(DynamicFrontend):
                 env_to_set["DYN_EVENT_PLANE"] = config.dynamo.event_plane
 
             # Add OTEL env vars (before frontend env so OTEL_SERVICE_NAME can be overridden)
-            env_to_set.update(lifecycle_otel_env(config.services, runtime.head_node_ip, "frontend"))
+            env_to_set.update(
+                lifecycle_otel_env(
+                    config.services,
+                    runtime.head_node_ip,
+                    "frontend",
+                    implied=config.observability.lifecycle_tracing,
+                )
+            )
             env_to_set.update(build_otel_env(config.observability, "frontend"))
+            if dynamo_log := config.observability.dynamo_log:
+                env_to_set["DYN_LOG"] = dynamo_log
             env_to_set.update(nsys_env)
 
             # Add global recipe environment, including values derived from

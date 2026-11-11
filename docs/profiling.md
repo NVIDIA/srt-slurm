@@ -111,7 +111,7 @@ report and fails validation because the stop boundary was missing. Use
 An enabled top-level `profiling` mode (`torch`, `nsys`, or `nsys-time`) takes
 precedence and disables this automatic preset, including automatic frontend
 capture. `profiling.type: none` leaves the preset active. With
-`observability.enabled: false`, `nsys.enabled` has no effect.
+`observability.enabled` other than `full` (or `true`), `nsys.enabled` has no effect.
 
 **Container requirements.** The serving image must include `nsys` (or mount it
 and set `SRTCTL_NSYS_BIN` on the submitting/orchestrating host) and Python 3.

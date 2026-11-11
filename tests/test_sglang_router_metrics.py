@@ -76,7 +76,8 @@ def test_sglang_router_targets_worker_http_ports_and_gateway_prometheus_port(_ip
 
 def test_gateway_gets_prometheus_flags_unless_the_recipe_set_them() -> None:
     frontend = SGLangRouterFrontend()
-    config = SimpleNamespace(frontend=SimpleNamespace(args={"policy": "cache_aware"}))
+    tachometer_on = SimpleNamespace(tachometer_enabled=True)
+    config = SimpleNamespace(frontend=SimpleNamespace(args={"policy": "cache_aware"}), observability=tachometer_on)
     assert frontend.get_managed_frontend_args(config, None, []) == [
         "--prometheus-port",
         "29000",
@@ -84,10 +85,21 @@ def test_gateway_gets_prometheus_flags_unless_the_recipe_set_them() -> None:
         "0.0.0.0",
     ]
 
-    config = SimpleNamespace(frontend=SimpleNamespace(args={"prometheus_port": 31000, "prometheus-host": "::"}))
+    config = SimpleNamespace(
+        frontend=SimpleNamespace(args={"prometheus_port": 31000, "prometheus-host": "::"}), observability=tachometer_on
+    )
     assert frontend.get_managed_frontend_args(config, None, []) == []
     assert router_metrics_port(config.frontend.args) == 31000
     assert router_metrics_port(None) == SGLANG_ROUTER_METRICS_PORT
+
+
+def test_gateway_metrics_listener_follows_tachometer() -> None:
+    """Tachometer is the listener's only reader, so a run without it opens none."""
+    config = SimpleNamespace(
+        frontend=SimpleNamespace(args={"policy": "cache_aware"}),
+        observability=SimpleNamespace(tachometer_enabled=False),
+    )
+    assert SGLangRouterFrontend().get_managed_frontend_args(config, None, []) == []
 
 
 # --- worker --enable-metrics ---------------------------------------------------------------

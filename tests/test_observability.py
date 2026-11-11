@@ -16,7 +16,7 @@ from srtctl.core.config import (
     legacy_keys_present,
     load_config,
 )
-from srtctl.core.schema import SrtConfig
+from srtctl.core.schema import ObservabilityMode, SrtConfig
 
 BASE_CONFIG = {
     "name": "test-job",
@@ -401,10 +401,17 @@ class TestExpandObservability:
         loaded = SrtConfig.Schema().load(cfg)
         assert loaded.observability.tachometer_enabled is True
 
-    def test_tachometer_is_on_by_default_without_observability(self):
-        cfg = _trtllm_config(enabled=False)
+    @pytest.mark.parametrize("enabled", [None, "default", True, "full"])
+    def test_tachometer_is_on_by_default_outside_minimal(self, enabled):
+        cfg = _trtllm_config() if enabled is None else _trtllm_config(enabled=enabled)
         loaded = SrtConfig.Schema().load(cfg)
         assert loaded.observability.tachometer_enabled is True
+
+    @pytest.mark.parametrize("enabled", [False, "minimal"])
+    def test_minimal_mode_turns_tachometer_off_unless_explicit(self, enabled):
+        assert SrtConfig.Schema().load(_trtllm_config(enabled=enabled)).observability.tachometer_enabled is False
+        cfg = _trtllm_config(enabled=enabled, tachometer={"enabled": True})
+        assert SrtConfig.Schema().load(cfg).observability.tachometer_enabled is True
 
     def test_tachometer_explicit_false_still_opts_out(self):
         cfg = _trtllm_config(enabled=False, tachometer={"enabled": False})
@@ -778,8 +785,37 @@ class TestTrtllmEngineDefaults:
 class TestObservabilitySchema:
     def test_defaults_are_off(self):
         cfg = SrtConfig.Schema().load(BASE_CONFIG)
-        assert cfg.observability.enabled is False
+        assert cfg.observability.enabled == "default"
+        assert cfg.observability.mode is ObservabilityMode.DEFAULT
         assert cfg.observability.enable_otel is False
+
+    @pytest.mark.parametrize(
+        ("enabled", "mode"),
+        [
+            ("default", ObservabilityMode.DEFAULT),
+            (True, ObservabilityMode.FULL),
+            ("full", ObservabilityMode.FULL),
+            ("on", ObservabilityMode.FULL),
+            (False, ObservabilityMode.MINIMAL),
+            ("minimal", ObservabilityMode.MINIMAL),
+            ("off", ObservabilityMode.MINIMAL),
+        ],
+    )
+    def test_enabled_spellings_resolve_to_one_mode(self, enabled, mode):
+        cfg = SrtConfig.Schema().load({**BASE_CONFIG, "observability": {"enabled": enabled}})
+        assert cfg.observability.mode is mode
+        assert ObservabilityMode.resolve(enabled) is mode
+
+    @pytest.mark.parametrize("enabled", ["Default", "verbose", None])
+    def test_unknown_enabled_values_are_rejected(self, enabled):
+        with pytest.raises(ValidationError):
+            SrtConfig.Schema().load({**BASE_CONFIG, "observability": {"enabled": enabled}})
+
+    @pytest.mark.parametrize("enabled", ["default", False, "minimal"])
+    def test_expansion_runs_only_in_full_mode(self, enabled):
+        cfg = _trtllm_config(enabled=enabled)
+        assert expand_observability(copy.deepcopy(cfg)) == cfg
+        assert "DYN_LOG" in expand_observability(_trtllm_config(enabled="full"))["frontend"]["env"]
 
     def test_knob_exposes_no_benchmark_client_fields(self):
         """The knob's scope is server-side emission only.
