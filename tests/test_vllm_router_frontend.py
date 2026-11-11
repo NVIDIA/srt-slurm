@@ -129,7 +129,7 @@ def test_discovery_connector_recipe_rules(recipe: dict, message: str) -> None:
         )
 
 
-def _write_mode_args(read_mode: bool | None) -> dict:
+def _write_mode_args(read_mode: object) -> dict:
     extra = {} if read_mode is None else {"read_mode": read_mode}
     return {
         "tensor-parallel-size": 1,
@@ -137,7 +137,7 @@ def _write_mode_args(read_mode: bool | None) -> dict:
     }
 
 
-def _moriio_config(prefill_read_mode: bool | None, decode_read_mode: bool | None) -> SrtConfig:
+def _moriio_config(prefill_read_mode: object, decode_read_mode: object) -> SrtConfig:
     return SrtConfig(
         name="moriio",
         model={"path": "model", "container": "image", "precision": "bf16"},
@@ -156,6 +156,12 @@ def test_discovery_read_mode_mismatch_fails_before_launch(prefill: bool | None, 
     """Prefill and decode must agree on RDMA READ or WRITE; an unset role defaults to READ."""
     with pytest.raises(ValidationError, match="same read_mode"):
         _moriio_config(prefill, decode)
+
+
+@pytest.mark.parametrize("value", ["false", 0])
+def test_non_boolean_read_mode_fails_at_load(value: object) -> None:
+    with pytest.raises(ValidationError, match="read_mode must be a JSON boolean"):
+        _moriio_config(value, value)
 
 
 @pytest.mark.parametrize(("prefill", "decode"), [(False, False), (None, True), (None, None)])

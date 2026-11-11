@@ -580,6 +580,7 @@ class VLLMBackend(Backend):
             if configured != value:
                 raise ValueError(f"discovery {key} conflicts with the allocated worker topology")
             extra[key] = value
+        # The Router's discovery flow serves both transfer modes; the recipe picks one.
         extra.setdefault("read_mode", True)
         return json.dumps(payload)
 
@@ -625,7 +626,6 @@ class VLLMBackend(Backend):
             raise ValueError(f"discovery kv_role must be {expected_role} for {mode}")
         target["kv_role"] = expected_role
         extra = target.setdefault("kv_connector_extra_config", {})
-        # The Router's discovery flow serves both transfer modes; the recipe picks one.
         if type(extra.get("read_mode", True)) is not bool:
             raise TypeError("discovery read_mode must be a JSON boolean")
         return payload, extra

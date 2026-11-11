@@ -196,7 +196,9 @@ the allocator's string values.
 Do not hard-code worker addresses or listener ports in a reusable recipe.
 `read_mode` is not a binding: it defaults to `true` (RDMA READ), and a template may
 set `false` (RDMA WRITE, which needs vllm-router 0.1.15 or later). Set the same
-value in both roles; srtctl rejects a mismatch when it loads the config.
+value in both roles; srtctl rejects a mismatch when it loads the config. This
+default is the opposite of vLLM's, which runs WRITE when the key is missing, and
+srtctl takes only a JSON boolean where vLLM also parses strings.
 
 For example, a prefill template can combine RDMA READ with CPU offload:
 
