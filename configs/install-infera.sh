@@ -12,7 +12,9 @@ set -euo pipefail
 pip install --quiet --no-cache-dir --no-deps \
     "nats-py==2.16.0" \
     "amd-infera==${INFERA_VERSION}"
+python3 -c "import infera.engine.sglang"
 # Fail here, not at router start, when pip installed the pure-Python wheel (a release or a
-# platform without the bundled router):
-# this is the binary `python3 -m infera.server --router-backend rust` execs.
-python3 -c "import infera.engine.sglang; from infera.server.launch_rust import _find_binary; _find_binary()"
+# platform without the bundled router): this is the binary
+# `python3 -m infera.server --router-backend rust` execs.
+router="$(python3 -c 'import infera, pathlib; print(pathlib.Path(infera.__file__).parent / "_bin" / "infera-router")')"
+test -x "$router" || { echo "amd-infera==${INFERA_VERSION} has no bundled infera-router at ${router}" >&2; exit 1; }

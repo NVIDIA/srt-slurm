@@ -51,10 +51,17 @@ ROUTER_MANAGED_ARGS = frozenset(
     }
 )
 _ROLE_BY_DISAGG_MODE = {"prefill": "prefill", "decode": "decode", "mixed": "decode"}
-# Infera's registering launcher for each engine this frontend pairs with.
+# Infera's registering launcher for each engine this frontend pairs with. Only SGLang:
+# Infera also wraps vLLM (infera.engine.vllm), but a row for it would also need the vLLM
+# backend to call the worker hooks and this frontend's port answers checked against it.
 WORKER_LAUNCHERS = {"sglang": "infera.engine.sglang"}
 # The launcher's readiness listener port; unset, it binds a fixed default.
 READINESS_PORT_ENV = "INFERA_READINESS_PORT"
+# The release setup_script installs (configs/install-infera.sh); the router and the
+# workers must run the same one.
+VERSION_ENV = "INFERA_VERSION"
+# `python3 -m infera.server` routes kv-aware unless frontend.args says otherwise.
+DEFAULT_ROUTER_POLICY = "kv-aware"
 
 
 def etcd_endpoint(runtime: RuntimeContext) -> str:
@@ -89,6 +96,30 @@ class InferaFrontend(DynamicFrontend):
                     "frontend.type: infera registers workers in the job's own etcd; "
                     "an external etcd service is not supported"
                 )
+        policy = (config.frontend.args or {}).get("router-policy", DEFAULT_ROUTER_POLICY)
+        publishing = [
+            role for role, backend in config.active_role_backends() if backend.get_kv_events_config_for_mode(role)
+        ]
+        if policy == "kv-aware" and not publishing:
+            raise ValueError(
+                "frontend.type: infera routes kv-aware (infera.server's default router-policy) on KV events, "
+                "but no role publishes them, so the router would route on load alone; set kv_events: true "
+                "on the prefill (or agg) role, or set frontend.args.router-policy"
+            )
+        versions = {
+            source: env[VERSION_ENV]
+            for source, env in (
+                ("environment", config.environment),
+                ("frontend.env", config.frontend.env),
+                *((f"roles.{name}.env", role.env) for name, role in (config.roles or {}).items()),
+            )
+            if env and VERSION_ENV in env
+        }
+        if len(set(versions.values())) > 1:
+            raise ValueError(
+                f"the Infera router and workers must run one release, but {VERSION_ENV} differs: "
+                + ", ".join(f"{source}={version}" for source, version in versions.items())
+            )
 
     def worker_metrics_path(self, backend: Any, mode: WorkerMode) -> str | None:
         """Workers are SGLang's own servers, so metrics are the engine's, not a runtime's."""
@@ -121,23 +152,22 @@ class InferaFrontend(DynamicFrontend):
             )
         ]
 
-    def direct_worker_launcher(self, backend: Any, process: Process, runtime: RuntimeContext) -> list[str] | None:
-        """Start the engine through Infera's launcher so the worker registers itself in etcd.
+    def worker_module(self, backend_type: str) -> str:
+        """Infera's launcher, which starts the engine's own server and registers it in etcd."""
+        try:
+            return WORKER_LAUNCHERS[backend_type]
+        except KeyError:
+            raise ValueError(f"frontend.type: infera has no worker launcher for engine {backend_type!r}") from None
 
-        Every listener the launcher opens is the allocator's. The KV-events port:
-        when the role publishes KV events the backend passes ``--kv-events-config``
-        with it, and the launcher advertises that endpoint. The readiness port,
-        which the launcher opens once the worker is registered (srtctl itself
-        reads readiness from the router): the process's system port, unused
-        otherwise without Dynamo. Infera's own KV probe plane, which the router
-        does not read, stays off.
+    def worker_launcher_args(self, backend: Any, process: Process, runtime: RuntimeContext) -> list[str]:
+        """Registration in the job's etcd over HTTP and ZMQ.
+
+        Every listener the launcher opens is the allocator's. A role that publishes
+        KV events gets ``--kv-events-config`` with its allocated port from the
+        backend, and the launcher advertises that endpoint. Infera's own KV probe
+        plane, which the router does not read, stays off.
         """
-        command = [
-            "env",
-            f"{READINESS_PORT_ENV}={process.sys_port}",
-            "python3",
-            "-m",
-            WORKER_LAUNCHERS[backend.type],
+        args = [
             "--discovery-backend",
             "etcd",
             "--etcd-endpoint",
@@ -151,16 +181,30 @@ class InferaFrontend(DynamicFrontend):
             "--kv-events",
             "off",
         ]
-        if process.kv_events_port is None:
-            command.append("--no-enable-kv-events")
-        return command
+        # Without --kv-events-config the launcher publishes anyway, on a port it picks itself.
+        if backend.get_kv_events_config_for_mode(process.endpoint_mode) is None:
+            args.append("--no-enable-kv-events")
+        return args
+
+    def worker_environment(self, process: Process, runtime: RuntimeContext) -> dict[str, str]:
+        """The readiness listener the launcher opens once registered: the process's system port.
+
+        srtctl reads readiness from the router, and the system port is otherwise
+        unused without Dynamo, so co-located workers do not contend for Infera's
+        default.
+        """
+        return {READINESS_PORT_ENV: str(process.sys_port)}
 
     def parse_health(self, response_json: dict, expected_prefill: int, expected_decode: int) -> WorkerHealthResult:
-        """Count active registrations by role; an aggregate (``mixed``) worker counts as decode."""
+        """Count active registrations by role; an aggregate (``mixed``) worker counts as decode.
+
+        An entry without ``status`` or ``disagg_mode`` does not count, so a schema
+        change in the router fails readiness instead of passing it.
+        """
         counts = {"prefill": 0, "decode": 0}
         for worker in response_json.get("workers") or []:
-            role = _ROLE_BY_DISAGG_MODE.get(str(worker.get("disagg_mode", "mixed")))
-            if role is not None and worker.get("status", "active") == "active":
+            role = _ROLE_BY_DISAGG_MODE.get(str(worker.get("disagg_mode")))
+            if role is not None and worker.get("status") == "active":
                 counts[role] += 1
         ready = counts["prefill"] >= expected_prefill and counts["decode"] >= expected_decode
         return WorkerHealthResult(

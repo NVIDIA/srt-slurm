@@ -14,6 +14,7 @@ from marshmallow import ValidationError
 
 from srtctl.backends import SGLangBackend, VLLMBackend
 from srtctl.cli.mixins.frontend_stage import FrontendTopology
+from srtctl.cli.mixins.worker_stage import WorkerStageMixin
 from srtctl.core.schema import DynamoConfig, FrontendConfig, ResourceConfig, RoleConfig, SrtConfig
 from srtctl.core.topology import Process
 from srtctl.frontends import DynamicFrontend, InferaFrontend, get_frontend
@@ -49,17 +50,27 @@ def _runtime() -> MagicMock:
     return runtime
 
 
-def _pd_config(engine, *, frontend_args: dict | None = None, services: list | None = None) -> SrtConfig:
+def _pd_config(
+    engine,
+    *,
+    frontend_args: dict | None = None,
+    services: list | None = None,
+    prefill_kv_events: bool = True,
+    environment: dict | None = None,
+    frontend_env: dict | None = None,
+    decode_env: dict | None = None,
+) -> SrtConfig:
     return SrtConfig(
         name="infera",
         model={"path": "model", "container": "image", "precision": "fp4"},
         resources=ResourceConfig(gpu_type="mi355x", gpus_per_node=8),
         roles={
-            "prefill": RoleConfig(nodes=1, workers=1, gpus=4),
-            "decode": RoleConfig(nodes=1, workers=1, gpus=4),
+            "prefill": RoleConfig(nodes=1, workers=1, gpus=4, kv_events=prefill_kv_events),
+            "decode": RoleConfig(nodes=1, workers=1, gpus=4, env=decode_env or {}),
         },
-        frontend=FrontendConfig(type="infera", enable_multiple_frontends=False, args=frontend_args),
+        frontend=FrontendConfig(type="infera", enable_multiple_frontends=False, args=frontend_args, env=frontend_env),
         engine=engine,
+        environment=environment or {},
         **({"services": services} if services else {}),
     )
 
@@ -93,27 +104,83 @@ def test_an_external_etcd_is_rejected() -> None:
         _pd_config(SGLangBackend(), services=[external])
 
 
+def test_kv_aware_routing_needs_a_role_that_publishes_kv_events() -> None:
+    """kv-aware is infera.server's default policy; with no publisher the router silently routes on load."""
+    with pytest.raises(ValidationError, match="no role publishes"):
+        _pd_config(SGLangBackend(), prefill_kv_events=False)
+    with pytest.raises(ValidationError, match="no role publishes"):
+        _pd_config(SGLangBackend(), prefill_kv_events=False, frontend_args={"router-policy": "kv-aware"})
+    config = _pd_config(SGLangBackend(), prefill_kv_events=False, frontend_args={"router-policy": "round-robin"})
+    assert config.frontend.type == "infera"
+
+
+def test_router_and_workers_must_install_one_infera_release() -> None:
+    with pytest.raises(ValidationError, match="environment=0.3.3, roles.decode.env=0.3.4"):
+        _pd_config(SGLangBackend(), environment={"INFERA_VERSION": "0.3.3"}, decode_env={"INFERA_VERSION": "0.3.4"})
+    with pytest.raises(ValidationError, match="frontend.env=0.3.4"):
+        _pd_config(SGLangBackend(), environment={"INFERA_VERSION": "0.3.3"}, frontend_env={"INFERA_VERSION": "0.3.4"})
+    config = _pd_config(
+        SGLangBackend(), environment={"INFERA_VERSION": "0.3.3"}, decode_env={"INFERA_VERSION": "0.3.3"}
+    )
+    assert config.frontend.type == "infera"
+
+
 def test_only_etcd_is_implied() -> None:
     config = _pd_config(SGLangBackend())
     implied = get_frontend("infera").implied_services(config)
     assert [(entry.service.name, entry.service.type) for entry in implied] == [("etcd", "etcd")]
 
 
+def _registration(worker_id: str, disagg_mode: str, status: str = "active") -> dict:
+    """One entry of infera-router v0.3.3's ``/v1/workers``: its ``Worker`` struct, every field serialized."""
+    host, port = worker_id.split(":")
+    prefill = disagg_mode == "prefill"
+    return {
+        "worker_id": worker_id,
+        "url": f"http://{worker_id}",
+        "model_name": "Qwen/Qwen3-0.6B",
+        "engine": "sglang",
+        "status": status,
+        "disagg_mode": disagg_mode,
+        "disagg_meta": {
+            "protocol": "sglang-bootstrap",
+            "params": {"bootstrap_addr": f"{host}:7200"} if prefill else {},
+        },
+        "kv_events_endpoint": f"tcp://{host}:3000" if prefill else None,
+        "kv_block_size": 64 if prefill else None,
+        "dp_rank": None,
+        "dp_size": None,
+        "request_transport": "http",
+    }
+
+
 def test_health_counts_active_registrations_by_role() -> None:
     frontend = InferaFrontend()
     body = {
         "workers": [
-            {"worker_id": "p", "disagg_mode": "prefill", "status": "active"},
-            {"worker_id": "d", "disagg_mode": "decode", "status": "active"},
-            {"worker_id": "d2", "disagg_mode": "decode", "status": "draining"},
+            _registration("10.0.0.1:6100", "prefill"),
+            _registration("10.0.0.2:6100", "decode"),
+            _registration("10.0.0.2:6101", "decode", status="draining"),
         ]
     }
     ready = frontend.parse_health(body, expected_prefill=1, expected_decode=1)
     assert ready.ready and (ready.prefill_ready, ready.decode_ready) == (1, 1)
     waiting = frontend.parse_health(body, expected_prefill=1, expected_decode=2)
     assert not waiting.ready and waiting.decode_ready == 1
-    aggregate = frontend.parse_health({"workers": [{"disagg_mode": "mixed"}]}, expected_prefill=0, expected_decode=1)
+    aggregate = frontend.parse_health(
+        {"workers": [_registration("10.0.0.1:6100", "mixed")]}, expected_prefill=0, expected_decode=1
+    )
     assert aggregate.ready
+
+
+def test_health_does_not_count_an_entry_whose_fields_it_cannot_read() -> None:
+    """A renamed ``status`` or ``disagg_mode`` in a later router must fail readiness, not pass it."""
+    renamed_status = {k: v for k, v in _registration("10.0.0.1:6100", "prefill").items() if k != "status"}
+    renamed_role = {k: v for k, v in _registration("10.0.0.2:6100", "decode").items() if k != "disagg_mode"}
+    result = InferaFrontend().parse_health(
+        {"workers": [renamed_status, renamed_role]}, expected_prefill=1, expected_decode=1
+    )
+    assert not result.ready and (result.prefill_ready, result.decode_ready) == (0, 0)
 
 
 def _worker_command(backend: SGLangBackend, process: Process) -> list[str]:
@@ -130,8 +197,6 @@ def test_workers_launch_sglang_through_the_registering_wrapper() -> None:
     )
     cmd = _worker_command(backend, _process("node0", "prefill", kv_events_port=5560))
     assert cmd[: cmd.index("--model-path")] == [
-        "env",
-        "INFERA_READINESS_PORT=7500",
         "python3",
         "-m",
         "infera.engine.sglang",
@@ -173,16 +238,53 @@ def test_co_located_workers_open_readiness_on_their_own_allocated_ports() -> Non
     processes = backend.endpoints_to_processes(endpoints)
     prefills = [p for p in processes if p.endpoint_mode == "prefill"]
     assert {p.node for p in prefills} == {"node0"}
-    readiness = {p.endpoint_index: _worker_command(backend, p)[1] for p in prefills}
-    assert readiness == {i: f"INFERA_READINESS_PORT={p.sys_port}" for i, p in enumerate(prefills)}
+    frontend = InferaFrontend()
+    readiness = {p.endpoint_index: frontend.worker_environment(p, _runtime()) for p in prefills}
+    assert readiness == {i: {"INFERA_READINESS_PORT": str(p.sys_port)} for i, p in enumerate(prefills)}
     assert len({p.sys_port for p in processes}) == len(processes)
+    # The port is the worker environment's, not an `env` prefix in the command.
+    assert "INFERA_READINESS_PORT" not in " ".join(_worker_command(backend, prefills[0]))
 
 
-def test_a_role_without_kv_events_registers_without_an_endpoint() -> None:
-    backend = SGLangBackend(roles={"decode": RoleConfig(args={"tensor-parallel-size": 4})})
-    cmd = _worker_command(backend, _process("node1", "decode"))
-    assert "--no-enable-kv-events" in cmd[: cmd.index("--model-path")]
-    assert "--kv-events-config" not in cmd
+def test_the_worker_stage_adds_the_frontend_worker_environment() -> None:
+    process = _process("node0", "decode")
+
+    def defaults(frontend_type: str) -> dict[str, str]:
+        stage = SimpleNamespace(
+            config=SimpleNamespace(frontend=SimpleNamespace(type=frontend_type)),
+            runtime=SimpleNamespace(head_node_ip="10.0.0.2"),
+        )
+        return WorkerStageMixin._worker_environment_defaults(stage, process)
+
+    assert defaults("infera") == {"HEAD_NODE_IP": "10.0.0.2", "INFERA_READINESS_PORT": "7500"}
+    assert defaults("sglang-router") == {"HEAD_NODE_IP": "10.0.0.2"}
+
+
+def test_only_a_role_that_publishes_kv_events_gets_an_endpoint() -> None:
+    """Every process gets an allocated KV-events port, so the role's kv_events, not the port, decides."""
+    backend = SGLangBackend(
+        roles={
+            "prefill": RoleConfig(args={"tensor-parallel-size": 1}, kv_events=True),
+            "decode": RoleConfig(args={"tensor-parallel-size": 1}),
+        }
+    )
+    endpoints = backend.allocate_endpoints(
+        num_prefill=1,
+        num_decode=1,
+        num_agg=0,
+        gpus_per_prefill=4,
+        gpus_per_decode=4,
+        gpus_per_agg=0,
+        gpus_per_node=8,
+        available_nodes=["node0"],
+    )
+    by_mode = {p.endpoint_mode: p for p in backend.endpoints_to_processes(endpoints)}
+    assert by_mode["decode"].kv_events_port is not None
+    prefill = _worker_command(backend, by_mode["prefill"])
+    decode = _worker_command(backend, by_mode["decode"])
+    assert "--kv-events-config" in prefill and "--no-enable-kv-events" not in prefill
+    assert "--no-enable-kv-events" in decode[: decode.index("--model-path")]
+    assert "--kv-events-config" not in decode
 
 
 def test_other_direct_frontends_keep_the_native_server() -> None:

@@ -19,8 +19,8 @@ Dynamo and Infera implement it. A subclass sets ``type`` and
 ``worker_launch``, registers with ``@register_frontend``, parses its own
 registration count in ``parse_health``, decides which rank serves which port,
 and launches the process in ``start_frontends``. Infera's workers are direct
-(the engine's own server, started through ``direct_worker_launcher`` by a
-wrapper that registers it), so it overrides the Dynamo-shaped metrics path.
+(the engine's own server, started by the wrapper module ``worker_module``
+names, which registers it), so it overrides the Dynamo-shaped metrics path.
 """
 
 from __future__ import annotations

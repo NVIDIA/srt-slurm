@@ -294,6 +294,14 @@ class Backend(ABC):
         """
         return {}
 
+    def get_kv_events_config_for_mode(self, mode: WorkerMode) -> dict[str, Any] | None:
+        """``roles.<role>.kv_events`` for a worker mode over the engine's defaults; None when it publishes none.
+
+        A worker gets an allocated KV-events port whether or not its role
+        publishes, so this, not ``Process.kv_events_port``, says whether it does.
+        """
+        return None
+
     def get_mooncake_worker_env(
         self, infra_node_ip: str, local_hostname: str, mode: WorkerMode | None = None
     ) -> dict[str, str]:

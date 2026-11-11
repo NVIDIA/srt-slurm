@@ -195,15 +195,24 @@ class Frontend(ABC):
         """
         return frozenset()
 
-    def direct_worker_launcher(self, backend: Any, process: "Process", runtime: "RuntimeContext") -> list[str] | None:
-        """Argv that starts ``backend``'s direct worker in place of its server module, or ``None``.
+    def worker_module(self, backend_type: str) -> str | None:
+        """Python module that starts a worker in place of the engine's server module, or ``None``.
 
-        A launcher runs the engine's own OpenAI server on the allocated port and
+        The module runs the engine's own OpenAI server on the allocated port and
         registers it with this frontend's discovery plane (Infera's
-        ``infera.engine.sglang``). The backend appends the engine flags it
-        would pass to its own server module, unchanged.
+        ``infera.engine.sglang``). The backend still builds ``python3 -m <module>``,
+        then ``worker_launcher_args``, then the engine flags it would pass to its
+        own server module, unchanged.
         """
         return None
+
+    def worker_launcher_args(self, backend: Any, process: "Process", runtime: "RuntimeContext") -> list[str]:
+        """Arguments of ``worker_module`` for ``process``, ahead of the engine flags; empty without one."""
+        return []
+
+    def worker_environment(self, process: "Process", runtime: "RuntimeContext") -> dict[str, str]:
+        """Per-process environment this frontend's workers need, beneath the recipe's own environment."""
+        return {}
 
     def kv_events_subscriber(
         self, process: "Process", runtime: "RuntimeContext", model_name: str
