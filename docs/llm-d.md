@@ -18,6 +18,7 @@ and the llm-d [no-Kubernetes guide](https://github.com/llm-d/llm-d/tree/7fb84b0a
 | Envoy | router node | the frontend (`llm-d-envoy_0`) | the public port (8000); admin `/ready` on 9901 |
 | EPP | router node | the frontend (`llm-d-epp_0`) | ext_proc gRPC 9002, gRPC health 9003, Prometheus 9090 |
 | P/D sidecar | every routable decode worker (prefill/decode jobs only) | the implied `llm-d-sidecar` service | `Process.proxy_port`, from the allocator |
+| DP-rank proxy | the node of every SGLang `agg`/`prefill` server with DP > 1 | the frontend (`llm-d-dp-rank-proxy_<n>`) | one per DP rank, `LLM_D_DP_RANK_PORTS` (9700+) |
 | vLLM / SGLang | every worker | the backend, as for the other static routers | `Process.http_port` |
 
 Envoy owns the public port. For every request it asks the EPP over ext_proc
@@ -96,7 +97,15 @@ srtctl writes three files into the log directory (every container sees it at `/l
   port: a multi-node worker's leader), at its IPv4 address on the cluster's network
   interface, labelled `llm-d.ai/role: prefill`, `decode`, or `both` (aggregate) and
   `llm-d.ai/engine-type: vllm` or `sglang`, which selects the metric names the EPP reads
-  (unlabelled endpoints get vLLM's). A decode endpoint is its sidecar's port.
+  (unlabelled endpoints get vLLM's). A decode endpoint is its sidecar's port. An SGLang
+  `agg` or `prefill` server with DP > 1 is one endpoint per DP rank (`<name>-dp<rank>`),
+  at a port of the DP-rank proxy on the server's node: SGLang serves every rank on one port
+  and each rank has its own radix cache, so prefix affinity has to pick the rank. The proxy
+  ([`llm_d_dp_rank_proxy.py`](../src/srtctl/runtime_scripts/llm_d_dp_rank_proxy.py))
+  forwards with `X-Data-Parallel-Rank` and serves `/metrics` narrowed to that rank's
+  `dp_rank` samples. With prefill/decode, set
+  `SGLANG_DISAGGREGATION_FORCE_QUERY_PREFILL_DP_RANK=1` on both roles (checked at load) so
+  decode asks the prefill which rank holds the KV instead of assuming `bootstrap_room % dp`.
 - `llm-d-epp-config.yaml`: `frontend.epp_config` with the
   [`file-discovery`](https://github.com/llm-d/llm-d-router/blob/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26/pkg/epp/framework/plugins/datalayer/discovery/file/plugin.go)
   plugin (`watchFile: false`) and `dataLayer.discovery` added. `discovery.pluginRef` is
@@ -274,11 +283,9 @@ that rank.
   `SGLANG_BOOTSTRAP_PORT` (`7200`).
 - `roles.<role>.kv_events` is supported on vLLM only; with SGLang, use
   `approx-prefix-cache-producer` in `frontend.epp_config`.
-- SGLang DP attention (`enable-dp-attention`) on `agg` or `prefill` workers loses
-  prefix-cache affinity: the EPP sees one endpoint per SGLang server, and SGLang spreads
-  requests across its DP ranks (`round_robin` for `agg`, `follow_bootstrap_room` with the
-  sidecar's random bootstrap room for prefill), each with its own radix cache. DP
-  attention on `decode` alone is unaffected.
+- A multi-node SGLang DP server exports only its leader node's ranks on `/metrics`, so the
+  EPP's load scorers see the whole server for ranks on the other nodes; prefix affinity to
+  those ranks still holds.
 - One router replica: the EPP keeps its scheduling state (the approximate prefix index,
   in-flight load) in memory. Multi-node jobs require `enable_multiple_frontends: false`:
   nginx would put the router on a different node from the public endpoint, where readiness
