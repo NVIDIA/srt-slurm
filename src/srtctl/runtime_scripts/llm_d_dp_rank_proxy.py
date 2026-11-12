@@ -86,8 +86,8 @@ def rank_app(
                 headers={k: v for k, v in upstream_response.headers.items() if k.lower() not in HOP_HEADERS},
             )
             await response.prepare(request)
-            # Forward the server's HTTP chunks one for one: SSE clients can mishandle several
-            # events in one chunk (AgentX scored merged one-token streams as empty).
+            # Forward the server's HTTP chunks one for one, so clients get the SSE stream framed
+            # as SGLang sent it (iter_any() merges events that arrive together).
             chunk = b""
             async for data, end_of_chunk in upstream_response.content.iter_chunks():
                 chunk += data
