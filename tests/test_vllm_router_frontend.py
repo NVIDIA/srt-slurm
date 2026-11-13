@@ -3,6 +3,7 @@
 
 """High-signal tests for official vLLM Router orchestration."""
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -208,6 +209,148 @@ def test_a_discovering_router_lists_no_worker_urls_and_no_bootstrap_port() -> No
     assert command[-4:] == ["--host", "0.0.0.0", "--port", "8000"]
     assert DiscoveringRouter().worker_bootstrap_port(VLLMBackend(), process) is None
     assert VLLMRouterFrontend().worker_bootstrap_port(VLLMBackend(), process) == 5400
+
+
+def _pd_processes() -> list[Process]:
+    return [
+        Process("p0", frozenset({0}), 7500, 6100, "prefill", 0, nixl_port=5400),
+        Process("d0", frozenset({1}), 7501, 6101, "decode", 0, nixl_port=5401),
+    ]
+
+
+def test_mooncake_prefill_opens_its_bootstrap_server_on_the_advertised_port() -> None:
+    """The Router queries each prefill's bootstrap server on the port it is given, so vLLM must listen there."""
+    config = SrtConfig.from_yaml(Path("examples/vllm/vllm-router-mooncake-disagg.yaml"))
+    backend = config.backend
+    endpoints = backend.allocate_endpoints(
+        num_prefill=1,
+        num_decode=1,
+        num_agg=0,
+        gpus_per_prefill=1,
+        gpus_per_decode=1,
+        gpus_per_agg=0,
+        gpus_per_node=8,
+        available_nodes=["node0", "node1"],
+    )
+    processes = backend.endpoints_to_processes(
+        endpoints, port_allocator=NodePortAllocator(), frontend_type="vllm-router"
+    )
+    prefill = next(process for process in processes if process.endpoint_mode == "prefill")
+
+    with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+        env = backend.get_process_environment(prefill)
+        nixl_env = VLLMBackend().get_process_environment(prefill)
+
+    assert env["VLLM_MOONCAKE_BOOTSTRAP_PORT"] == str(VLLMRouterFrontend().worker_bootstrap_port(backend, prefill))
+    assert "VLLM_MOONCAKE_BOOTSTRAP_PORT" not in nixl_env
+    assert backend.kv_transfer_config("prefill") == '{"kv_connector": "MooncakeConnector", "kv_role": "kv_producer"}'
+    assert backend.kv_transfer_config("decode") == '{"kv_connector": "MooncakeConnector", "kv_role": "kv_consumer"}'
+
+
+def test_an_explicit_mooncake_transfer_config_keeps_the_router_mode() -> None:
+    """A role's own kv-transfer-config (here with CPU offload) replaces the preset; connector: mooncake still applies."""
+    payload = {
+        "kv_connector": "MultiConnector",
+        "kv_role": "kv_both",
+        "kv_connector_extra_config": {
+            "connectors": [
+                {"kv_connector": "MooncakeConnector", "kv_role": "kv_producer"},
+                {"kv_connector": "SimpleCPUOffloadConnector", "kv_role": "kv_both"},
+            ]
+        },
+    }
+    backend = VLLMBackend(connector="mooncake", roles={"prefill": RoleConfig(args={"kv-transfer-config": payload})})
+
+    assert json.loads(backend.kv_transfer_config("prefill")) == payload
+    assert backend.bootstrap_port_env("prefill") == "VLLM_MOONCAKE_BOOTSTRAP_PORT"
+    assert VLLMRouterFrontend().queries_prefill_bootstrap(backend) is True
+
+
+@pytest.mark.parametrize(
+    ("connector", "frontend_args", "expected"),
+    [
+        ("mooncake", {}, ["--kv-connector", "mooncake"]),
+        ("mooncake", {"kv-connector": "mooncake"}, []),
+        ("nixl", {}, []),
+    ],
+)
+def test_mooncake_router_gets_its_kv_connector_once(connector: str, frontend_args: dict, expected: list[str]) -> None:
+    backend = VLLMBackend(connector=connector)
+    config = SimpleNamespace(
+        frontend=SimpleNamespace(args=frontend_args),
+        backend_for_role=lambda mode: backend,
+        health_check=SimpleNamespace(max_attempts=360, interval_seconds=10),
+    )
+
+    managed = VLLMRouterFrontend().get_managed_frontend_args(config, backend, _pd_processes())
+
+    assert managed == ["--worker-startup-timeout-secs", "3600", *expected]
+
+
+@pytest.mark.parametrize(
+    ("recipe", "message"),
+    [
+        ({"decode": {"connector": "nixl", "tensor-parallel-size": 1}}, "both prefill and decode"),
+        ({"frontend_args": {"kv-connector": "nixl"}}, "conflicts with the workers' connector"),
+    ],
+)
+def test_mooncake_recipe_rules(recipe: dict, message: str) -> None:
+    """Both roles run the connector, and a user-set Router connector must be the same one."""
+    with pytest.raises(ValidationError, match=message):
+        SrtConfig(
+            name="mooncake",
+            model={"path": "model", "container": "image", "precision": "bf16"},
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
+            roles={
+                "prefill": RoleConfig(nodes=1, workers=1, args={"tensor-parallel-size": 1}),
+                "decode": RoleConfig(nodes=1, workers=1, args=recipe.get("decode", {"tensor-parallel-size": 1})),
+            },
+            frontend=FrontendConfig(type="vllm-router", args=recipe.get("frontend_args")),
+            engine=VLLMBackend(connector="mooncake"),
+        )
+
+
+@pytest.mark.parametrize(("connector", "waits"), [("mooncake", True), ("nixl", False)])
+def test_mooncake_router_starts_only_after_workers_are_healthy(connector: str, waits: bool) -> None:
+    """The Router keeps the bootstrap answer it reads at startup, so it starts after every worker's /health."""
+    frontend = VLLMRouterFrontend()
+    backend = VLLMBackend(connector=connector)
+    runtime = SimpleNamespace(
+        log_dir=Path("/logs"),
+        container_image=Path("/worker.sqsh"),
+        reuse_container=False,
+        container_prepare_timeout_seconds=1800.0,
+        container_mounts={},
+        environment={},
+        network_interface="ib0",
+        srun_options={},
+        nodes=SimpleNamespace(het_group_for=lambda _node: None),
+    )
+    config = SimpleNamespace(
+        backend=SimpleNamespace(type="vllm"),
+        health_check=SimpleNamespace(max_attempts=360, interval_seconds=10),
+        frontend=SimpleNamespace(args={}, env={}, container_image=None),
+        backend_for_role=lambda mode: backend,
+    )
+    topology = SimpleNamespace(frontend_nodes=["router0"], frontend_port=8000)
+    events: list[object] = []
+
+    def wait(workers: list[RouterWorker], *_args: object) -> None:
+        events.append([worker.url for worker in workers])
+
+    def start(**kwargs: object) -> MagicMock:
+        events.append("start")
+        return MagicMock()
+
+    with (
+        patch("srtctl.frontends.static_router.get_hostname_ip", return_value="10.0.0.1"),
+        patch.object(frontend, "wait_for_workers", side_effect=wait),
+        patch.object(frontend, "start_process", side_effect=start),
+    ):
+        frontend.start_frontends(topology, runtime, config, backend, _pd_processes())
+
+    probed = [["http://10.0.0.1:6100", "http://10.0.0.1:6101"]] if waits else []
+    assert events == [*probed, "start"]
 
 
 def test_collect_workers_uses_positive_http_ports_and_configured_interface() -> None:
