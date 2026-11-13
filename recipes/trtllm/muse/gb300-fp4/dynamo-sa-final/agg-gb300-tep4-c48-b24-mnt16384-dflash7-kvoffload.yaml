@@ -1,0 +1,236 @@
+# Dynamo port of ftp/disaggregated-serving-benchmarking agentx/musespark/gb300/e2e_pareto/pareto06.yaml
+# (MuseSpark Open NVFP4, AgentX 1M, frontier point c48-tok16k: agg TEP4, max batch 24, 48 lanes on 4 GPUs),
+# moved to the SA cluster layout of ../../../qwen3.5/gb300-fp4/dynamo-trtllm-final-sa-2.
+# Same topology, engine args and model-specific worker env; dynamo.trtllm worker and the Dynamo frontend
+# installed from the mounted /dynamo_wheels (configs/install_dynamo_wheel.sh).
+# Forced acceptance 3.05 (acceptance_length.json at depth 7, minus the bonus token); rejection sampling on.
+# Changes from the source recipe:
+# - JHB-only settings dropped: account/partition/qos/exclude and JHB cache paths. NIC env (NCCL_IB_HCA,
+#   NCCL_SOCKET_IFNAME, UCX_NET_DEVICES, MPI_UCX_NET_DEVICES) remapped to the SA node: IB rails mlx5_0-3, eth enP22s22f0np0.
+# - trtllm-serve-only settings dropped: --chat_template extra_args (dynamo.trtllm takes no extra CLI; the
+#   frontend uses the chat template shipped with the checkpoint), enable_tokenization_cache,
+#   num_postprocess_workers and engine perf-metrics output.
+# - The benchmark's image-checksum gate is dropped (different image); aiperf is installed as in the SA recipes.
+# Not yet measured under Dynamo.
+schema: 2
+name: agg-gb300-tep4-c48-b24-mnt16384-dflash7-kvoffload-dynamo
+model:
+  path: /data/models/Muse-Spark-Open-816B-A42B-NVFP4
+  container: /data/home/rihuo/tensorrt-llm-release-musespark-open-1.4.0a0.dev202611120346.sqsh
+  precision: nvfp4
+identity:
+  model:
+    repo: Muse-Spark-Open-816B-A42B-NVFP4
+  container:
+    image: /data/home/rihuo/tensorrt-llm-release-musespark-open-1.4.0a0.dev202611120346.sqsh
+  frameworks:
+    tensorrt_llm: 1.4.0a0.dev202611120346
+    dynamo: 1.6.0.dev20261010
+slurm:
+  time_limit: 04:00:00
+sbatch_directives:
+  exclude: im-gb300-r02-c007
+extra_mount:
+- /data/home/rihuo:/data/home/rihuo
+- /data/home/rihuo/dynamo_wheels:/dynamo_wheels
+- /data/models/Muse-Spark-Open-DFlash2:/data/models/Muse-Spark-Open-DFlash2:ro
+health_check:
+  max_attempts: 720
+  interval_seconds: 10
+resources:
+  gpu_type: gb300
+  gpus_per_node: 4
+  het_jobs: false
+engine:
+  type: trtllm
+  served_model_name: Muse-Spark-Open-816B-A42B-NVFP4
+  publish_metrics: true
+  numa_cpu_bind: true
+  numa_memory_bind: preferred
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 4
+    env:
+      TLLM_LOG_LEVEL: INFO
+      TRTLLM_SERVER_DISABLE_GC: '1'
+      TRTLLM_WORKER_DISABLE_GC: '1'
+      ENROOT_ALLOW_DEV: 'yes'
+      NCCL_GRAPH_MIXING_SUPPORT: '0'
+      MIMALLOC_ARENA_RESERVE: '0'
+      OMP_NUM_THREADS: '1'
+      TLLM_NUMA_AWARE_WORKER_AFFINITY: '1'
+      MPI_UCX_TLS: rc,ud,sm,self
+      MPI_UCX_NET_DEVICES: mlx5_0:1,mlx5_2:1
+      NCCL_IB_HCA: mlx5_0,mlx5_1,mlx5_2,mlx5_3
+      NCCL_SOCKET_IFNAME: enP22s22f0np0
+      UCX_NET_DEVICES: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1
+      OMPI_MCA_coll: ^ucc,hcoll
+      NCCL_CUMEM_ENABLE: '1'
+      NCCL_MNNVL_ENABLE: '1'
+      UCX_TLS: all
+      UCX_CUDA_IPC_ENABLE_MNNVL: y
+      UCX_RNDV_SCHEME: put_zcopy
+      TRTLLM_SKIP_KV_CACHE_ESTIMATION: '1'
+      TRTLLM_ENABLE_PDL: '1'
+      TLLM_PROFILE_LOG_RANKS: '0'
+      TRTLLM_GPU_KEEPALIVE: '1'
+      MUSESPARK_OPEN_ALLREDUCE: MNNVL
+      MUSESPARK_OPEN_LEVER_CONTEXT_SEQUENCE_PARALLEL: 'on'
+      TRTLLM_DFLASH_WINDOWED_CTX_ARENA: '1'
+      MUSESPARK_OPEN_FUSED_FINALIZE_AR_MNNVL: '1'
+      MUSESPARK_OPEN_SHARDED_PROJECTIONS: '1'
+      TRTLLM_LOW_M_GEMM_BACKEND: auto
+      MUSESPARK_OPEN_FUSED_FINALIZE_AR_CHUNKED: '1'
+      MUSESPARK_OPEN_FULL_ROUTING_ALL_BATCHES: '1'
+      MUSESPARK_OPEN_FULL_ROUTING_TORCH_ORDER: '1'
+      MUSESPARK_OPEN_LARGE_NORM_GATE: '1'
+      MUSESPARK_OPEN_LARGE_PREPARE_OVERLAP: '1'
+      MUSESPARK_OPEN_LARGE_FINALIZE_SPARSE: '1'
+      TRTLLM_SCHED_PREFILL_DECODE_INTERVAL: '64'
+      TRTLLM_SCHED_SPF_FIRST_CHUNK_MAX_WAIT_PASSES: '64'
+      TRTLLM_SCHED_SPF_MAX_AGE_PASSES: '4000'
+      TRTLLM_SCHED_SPF_AGED_LEAD_EVERY: '1'
+      TRTLLM_SCHED_SHORTEST_PREFILL_FIRST: '1'
+      TRTLLM_KV_HOST_TIER_DROP_PAGE_CACHE: '1'
+      TRTLLM_KV_HOST_TIER_COLLAPSE: '1'
+      TRTLLM_SCHED_CTX_PAGE_BACKOFF_PASSES: '4'
+      TRTLLM_KV_DEFER_CLOSE: '1'
+      TLLM_PREFIX_TOKEN_CACHE_MAX_CHARS: '268435456'
+      TRTLLM_MULTI_INSTANCE_CONTEXT_FMHA: '1'
+      TRTLLM_TORCH_MEM_SAFETY_MARGIN_MB: '256'
+      TRTLLM_KV_SWA_ENDPOINT_RETIRE: '1'
+      TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS: '3.05'
+      DYN_ENGINE_CONV_AFFINITY: '1'
+      DYN_ROUTER_MODE: kv
+      DYN_ROUTER_SESSION_AFFINITY_TTL_SECS: '14400'
+    args:
+      backend: pytorch
+      modeling_v2: require
+      allreduce_strategy: NCCL
+      attn_backend: TRTLLM
+      cuda_graph_config:
+        batch_sizes: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+        enable_padding: true
+        max_batch_size: 24
+      custom_tokenizer: musespark_open
+      disable_mm_encoder: true
+      disable_overlap_scheduler: false
+      enable_attention_dp: false
+      enable_chunked_prefill: true
+      enable_iter_perf_stats: true
+      iter_perf_stats_interval: 40
+      enable_iter_req_stats: false
+      iter_stats_max_iterations: 10000
+      kv_cache_config:
+        use_kv_cache_manager_v2: true
+        block_reuse_config:
+          policy: all_reusable
+          swa_endpoint_rewind_tokens: 1024
+        dtype: fp8
+        enable_block_reuse: true
+        enable_partial_reuse: true
+        free_gpu_memory_fraction: 0.8
+        host_cache_size: 171798691840
+        tokens_per_block: 32
+        pool_ratio: [0.25, 0.75]
+      max_batch_size: 24
+      max_num_tokens: 16384
+      max_seq_len: 1048576
+      max_stats_len: 10000
+      moe_config:
+        backend: TRTLLM
+      moe_expert_parallel_size: 4
+      pipeline_parallel_size: 1
+      prefill_cuda_graph_backend: breakable
+      prefill_capture_num_tokens: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 768, 1024, 1280, 1536, 1792, 2048, 2304, 2560,
+        2816, 3072, 3584, 4096, 4608, 5120, 5632, 6144, 6656, 7168, 7680, 8192, 8704, 9216, 9728, 10240, 10752, 11264,
+        11776, 12288, 12800, 13312, 13824, 14336, 14848, 15360, 15872, 16384]
+      print_iter_log: true
+      request_stats_max_iterations: 10000
+      return_perf_metrics: false
+      scheduler_config:
+        capacity_scheduler_policy: MAX_UTILIZATION
+      speculative_config:
+        attention_backend: TRTLLM
+        decoding_type: DFlash
+        use_rejection_sampling: true
+        max_draft_len: 7
+        speculative_model: /data/models/Muse-Spark-Open-DFlash2
+      stream_interval: 20
+      tensor_parallel_size: 4
+      trust_remote_code: true
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  env:
+    ETCD_LEASE_TTL: '120'
+    DYN_TOKENIZER_CACHE: '1'
+    DYN_TOKENIZER_CACHE_BYTES: '8000000000'
+    DYN_TOKENIZER: fastokens
+    DYN_TOKEN_IDS_AS_BYTES: '1'
+  args:
+    router-mode: kv
+    router-session-affinity-ttl-secs: '14400'
+benchmark:
+  type: custom
+  concurrencies: [48]
+  placement:
+    node: head
+  env:
+    AIPERF_UI_REALTIME_METRICS_ENABLED: 'true'
+    AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: 'true'
+    AIPERF_USE_DYNAMO_CONV_AWARE_ROUTING: '0'
+    AIPERF_REF: /data/home/rihuo/agentx-harness
+    AIPERF_HTTP_TCP_USER_TIMEOUT: '1000000'
+    AIPERF_DATASET_CONFIGURATION_TIMEOUT: '1800'
+    AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT: '1800'
+    AIPERF_DATASET_MMAP_CACHE_DIR: /data/home/rihuo/aiperf_mmap_cache
+    AIPERF_REQUIRED_SERVER_METRIC_PREFIX: trtllm_kv_cache_utilization
+    HF_HUB_CACHE: /data/home/rihuo/hf_cache
+    HF_HOME: /data/home/rihuo/hf_cache
+  command: |
+    set -euo pipefail
+    # Install the Dynamo-aware AIPerf client and preserve the conversation decoding fix.
+    python3 -m pip install --upgrade "$AIPERF_REF" "datasets==5.0.0" "huggingface-hub==1.14.0" "pydantic==2.13.4"
+    export HF_HUB_TRUST_REMOTE_CODE=1
+    mkdir -p /logs/agentic/concurrency_48
+    : "${AIPERF_SERVER_METRICS_URLS:?Worker metrics URLs must be provided by srtctl}"
+    IFS=',' read -r -a SERVER_METRICS_URLS <<< "$AIPERF_SERVER_METRICS_URLS"
+    aiperf profile \
+      --server-metrics "${SERVER_METRICS_URLS[@]}" \
+      --server-metrics-formats json csv parquet jsonl \
+      --scenario inferencex-agentx-mvp \
+      -m Muse-Spark-Open-816B-A42B-NVFP4 --tokenizer /model \
+      --tokenizer-trust-remote-code \
+      --url http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT \
+      --endpoint /v1/chat/completions \
+      --endpoint-type chat \
+      --streaming \
+      --public-dataset semianalysis_cc_traces_weka_062126 \
+      --max-context-length 1048576 \
+      --trajectory-start-min-ratio 0.25 \
+      --trajectory-start-max-ratio 0.75 \
+      --failed-request-threshold 0.10 \
+      --use-server-token-count \
+      --no-gpu-telemetry \
+      --random-seed 42 \
+      --benchmark-duration 3600 \
+      --concurrency 48 \
+      --artifact-dir /logs/agentic/concurrency_48 \
+      --warmup-requests-per-lane 10 \
+      --warmup-grace-period 1800 \
+      --num-dataset-entries 393 \
+      --slice-duration 1.0 \
+      --stats-interval 30 \
+      --trace-idle-gap-cap-seconds 300
+setup_script: install_dynamo_wheel.sh
+dynamo:
+  install: false
+observability:
+  enable_otel: false
+services:
+- name: otel-collector
+  type: otel-collector
+  enabled: false
