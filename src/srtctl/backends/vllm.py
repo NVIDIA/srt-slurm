@@ -706,6 +706,10 @@ class VLLMBackend(Backend):
         """Whether this mode's kv-transfer-config runs the store connector, standalone or in a MultiConnector."""
         return VLLM_MOONCAKE_STORE_CONNECTOR in self.kv_connector_classes(mode)
 
+    def uses_nixl(self, mode: WorkerMode) -> bool:
+        """Whether a prefill or decode worker's kv-transfer-config runs the NIXL connector, standalone or wrapped."""
+        return mode != "agg" and _CONNECTOR_MAP["nixl"].kv_connector in self.kv_connector_classes(mode)
+
     def mooncake_store_role_modes(self) -> tuple[WorkerMode, ...]:
         """The worker modes whose role sets its own ``mooncake_store_config``."""
         modes: tuple[WorkerMode, ...] = ("prefill", "decode", "agg")

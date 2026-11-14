@@ -74,6 +74,24 @@ def _nsys_library_path_preamble(paths: list[str] | None) -> str | None:
     return f'export LD_LIBRARY_PATH={shlex.quote(prefix)}"${{LD_LIBRARY_PATH:+:${{LD_LIBRARY_PATH}}}}"'
 
 
+# NIXL >= 1.5 refuses to start its UCX backend on a GPU node when UCX_TLS has no CUDA
+# transport, and some container runtimes inject UCX_TLS=tcp. The injected value is only
+# visible inside the container, so the check runs there. It mirrors NIXL's own test
+# (src/plugins/ucx/config.cpp): unset, all, cuda, cuda_copy and deny lists are left alone.
+_NIXL_UCX_TLS_PREAMBLE = (
+    'case ",${UCX_TLS:-all}," in *,all,*|*,cuda,*|*,cuda_copy,*|,^*) ;; '
+    '*) echo "srtctl: UCX_TLS=$UCX_TLS has no CUDA transport for NIXL; prepending cuda_copy,cuda_ipc,sm,self" >&2'
+    ' && export UCX_TLS="cuda_copy,cuda_ipc,sm,self,$UCX_TLS" ;; esac'
+)
+
+
+def _nixl_ucx_tls_preamble(backend: Any, mode: WorkerMode, env_to_set: dict[str, str]) -> str | None:
+    """The UCX_TLS fix-up for a NIXL worker; a UCX_TLS the recipe sets is used as written."""
+    if "UCX_TLS" in env_to_set or not backend.uses_nixl(mode):
+        return None
+    return _NIXL_UCX_TLS_PREAMBLE
+
+
 def _append_preamble(preamble: str | None, command: str | None) -> str | None:
     """Run ``command`` after an existing shell preamble."""
     if not command:
@@ -471,6 +489,7 @@ class WorkerStageMixin:
                 bash_preamble,
                 _nsys_library_path_preamble(profiling.nsys_library_paths),
             )
+        bash_preamble = _append_preamble(bash_preamble, _nixl_ucx_tls_preamble(backend, mode, env_to_set))
         fingerprint_path = f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}{suffix}.json"
         if isinstance(self.runtime, RuntimeContext) and self.runtime.hf_snapshot_path:
             fp_cmd = generate_capture_script(fingerprint_path, self.runtime.worker_model_arg)
@@ -701,6 +720,7 @@ class WorkerStageMixin:
                 bash_preamble,
                 _nsys_library_path_preamble(profiling.nsys_library_paths),
             )
+        bash_preamble = _append_preamble(bash_preamble, _nixl_ucx_tls_preamble(backend, mode, env_to_set))
         fingerprint_path = f"{self.runtime.container_log_dir}/fingerprint_{mode}_w{index}.json"
         if isinstance(self.runtime, RuntimeContext) and self.runtime.hf_snapshot_path:
             fp_cmd = generate_capture_script(fingerprint_path, self.runtime.worker_model_arg)
