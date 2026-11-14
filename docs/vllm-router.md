@@ -11,7 +11,8 @@ vLLM remains responsible for the DP/TP/PP engine topology inside each worker.
   cross-node TP/PP rendezvous, device IDs, and headless followers.
 - The frontend adapter starts Router, supplies aggregate or P/D worker URLs,
   adds NIXL bootstrap ports for P/D, and derives Router's node-local DP
-  expansion factor.
+  expansion factor. With the Mooncake connector it starts Router only after
+  every worker is healthy.
 - Readiness first validates Router's `/workers` counts, then requires HTTP 200
   from every exact base `/health` URL advertised to Router. This prevents
   benchmark and eval traffic from racing a partially started DP pool.
@@ -144,6 +145,31 @@ when every logical endpoint has one advertised base URL. Multi-node hybrid-LB
 endpoints remain unexpanded node-local pools because each later pool starts at
 a nonzero global DP rank. Do not set the option manually unless it exactly
 matches the allocated topology.
+
+### Mooncake
+
+`engine.connector: mooncake` runs the P/D pair over vLLM's `MooncakeConnector`. Its prefill returns no `kv_transfer_params`; the Router supplies them instead. It reads each prefill's engine IDs from that prefill's Mooncake bootstrap server and adds the bootstrap address and engine ID to every decode request.
+
+```yaml
+frontend:
+  type: vllm-router
+  enable_multiple_frontends: false
+  args:
+    policy: consistent_hash
+
+engine:
+  type: vllm
+  connector: mooncake
+```
+
+| Piece | srtctl sets | Why |
+| --- | --- | --- |
+| Router command | `--kv-connector mooncake`, and `--prefill URL PORT` for each prefill | Mooncake mode in vllm-project/router (`CliArgs.kv_connector` in `src/main.rs`); without a PORT the Router queries 8998 |
+| `kv_connector` / `kv_role` | `MooncakeConnector`; `kv_producer` on prefill, `kv_consumer` on decode | The connector's role follows the worker's mode |
+| `VLLM_MOONCAKE_BOOTSTRAP_PORT` | the worker's allocated NIXL port, which is the PORT the Router gets | vLLM's TP0/PP0 rank opens the bootstrap server on this port; each node-local hybrid-LB pool opens its own |
+| Router start | after every advertised worker answers `/health` | The Router queries each bootstrap server once, while it starts, and keeps the answer. It exits after about 4.5 minutes of retries, and an answer from before the prefill's workers registered (in `register_kv_caches`) has no engine IDs, so decode then recomputes every prompt |
+
+Both `prefill` and `decode` must run the connector, and `frontend.args.kv-connector` is either unset or `mooncake`; `srtctl dry-run` rejects anything else. A role's own `kv-transfer-config` replaces the preset, for example a `MultiConnector` that wraps `MooncakeConnector` with `SimpleCPUOffloadConnector`, while `connector: mooncake` still selects the Router mode and the bootstrap port. The connector's per-worker ZMQ side channel binds a port the kernel picks. Upstream behavior: vllm-project/router db02f358 (v0.1.16) `src/routers/http/vllm_pd_router.rs`, vllm-project/vllm 96710245 `vllm/distributed/kv_transfer/kv_connector/v1/mooncake/mooncake_connector.py`. `examples/vllm/vllm-router-mooncake-disagg.yaml` is the reference recipe.
 
 ### MoRI-IO discovery
 
