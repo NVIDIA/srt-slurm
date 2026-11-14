@@ -148,7 +148,7 @@ command: |
         echo "Timed out waiting for TensorRT-LLM native gRPC on port 19000" >&2
         exit 1
     fi
-    python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19000 --model-path nvidia/GLM-5.2-NVFP4 --disaggregation-mode prefill --context-length 1048576 &
+    bash -c '"'"'mkdir -p "$(dirname "$1/$3")" && ln -sfn "$2" "$1/$3" && cd "$1" && shift 3 && exec "$@"'"'"' srtctl-sidecar /tmp/srtctl-trtllm-sidecar-19000 /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab nvidia/GLM-5.2-NVFP4 python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19000 --model-path nvidia/GLM-5.2-NVFP4 --disaggregation-mode prefill --context-length 1048576 &
     SIDECAR_PID=$!
     set +e
     wait -n "${ENGINE_PID}" "${SIDECAR_PID}"
@@ -283,7 +283,7 @@ command: |
         echo "Timed out waiting for TensorRT-LLM native gRPC on port 19001" >&2
         exit 1
     fi
-    python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19001 --model-path nvidia/GLM-5.2-NVFP4 --disaggregation-mode decode --context-length 1048576 &
+    bash -c '"'"'mkdir -p "$(dirname "$1/$3")" && ln -sfn "$2" "$1/$3" && cd "$1" && shift 3 && exec "$@"'"'"' srtctl-sidecar /tmp/srtctl-trtllm-sidecar-19001 /hf/hub/models--nvidia--GLM-5.2-NVFP4/snapshots/53e0691e21895a3863a606dfd12910c69eba94ab nvidia/GLM-5.2-NVFP4 python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19001 --model-path nvidia/GLM-5.2-NVFP4 --disaggregation-mode decode --context-length 1048576 &
     SIDECAR_PID=$!
     set +e
     wait -n "${ENGINE_PID}" "${SIDECAR_PID}"

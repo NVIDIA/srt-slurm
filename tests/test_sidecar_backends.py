@@ -809,7 +809,11 @@ def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path, mode: str,
     assert ("bash /configs/numa_cpu_bind.sh --prefer-memory" in script) is (memory_bind == "preferred")
     assert ("numactl -m 0,1" in script) is (memory_bind is True)
     assert "--grpc --grpc-protocol openengine --host 127.0.0.1 --port 19000" in script
-    assert "python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19000 --model-path /model" in script
+    assert (
+        "srtctl-sidecar /tmp/srtctl-trtllm-sidecar-19000 /model Qwen/Qwen3-0.6B python3 -m dynamo.trtllm.sidecar"
+        in script
+    )
+    assert "--grpc-endpoint 127.0.0.1:19000 --model-path Qwen/Qwen3-0.6B" in script
     assert "--context-length 4096" in script
     assert "${SLURM_PROCID:-0}" in script
     assert "--served_model_name Qwen/Qwen3-0.6B" in script
@@ -847,5 +851,76 @@ def test_trtllm_sidecar_registers_hf_id_while_engine_uses_pinned_snapshot(tmp_pa
     script = backend.build_worker_command(_process(mode="prefill"), [], runtime)[2]
 
     assert f"tensorrt_llm.commands.serve {snapshot} " in script
+    # The registration name links to the pinned snapshot, so the sidecar reads it
+    # instead of resolving the HF ID's moving reference.
+    assert f"srtctl-sidecar /tmp/srtctl-trtllm-sidecar-19000 {snapshot} org/name python3 -m dynamo" in script
     assert "dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19000 --model-path org/name " in script
     assert "--served_model_name org/name" in script
+
+
+@pytest.mark.parametrize(
+    ("served_model_name", "registered"),
+    [("org/model", "org/model"), (None, "example-model")],
+)
+def test_trtllm_sidecar_registers_served_name_for_local_model(
+    tmp_path: Path, served_model_name: str | None, registered: str
+) -> None:
+    # The sidecar registers under its literal --model-path, so the /model mount
+    # would register as "/model" while the client requests the served name.
+    backend = TRTLLMBackend(served_model_name=served_model_name)
+
+    script = backend.build_worker_command(_process(), [], _runtime(tmp_path))[2]
+
+    assert f"srtctl-sidecar /tmp/srtctl-trtllm-sidecar-19000 /model {registered} python3" in script
+    assert f"--model-path {registered}" in script
+    assert "--model-path /model" not in script
+
+
+def test_trtllm_sidecar_passes_model_path_that_is_the_served_name(tmp_path: Path) -> None:
+    script = TRTLLMBackend(served_model_name="/model").build_worker_command(_process(), [], _runtime(tmp_path))[2]
+
+    assert "srtctl-sidecar" not in script
+    assert "dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19000 --model-path /model" in script
+
+
+def test_trtllm_sidecar_passes_unpinned_hf_id_unchanged(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    runtime.model_path = Path("org/name")
+    runtime.worker_model_arg = "org/name"
+    runtime.is_hf_model = True
+
+    script = TRTLLMBackend(served_model_name="org/name").build_worker_command(_process(), [], runtime)[2]
+
+    assert "srtctl-sidecar" not in script
+    assert "dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19000 --model-path org/name" in script
+
+
+def test_model_link_runs_sidecar_with_served_name_resolving_to_model(tmp_path: Path) -> None:
+    from srtctl.backends.sidecar import run_with_model_link
+
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "tokenizer.json").write_text("{}")
+    report = tmp_path / "report.json"
+    probe = (
+        "import json,os,sys; from pathlib import Path; name = sys.argv[1]; "
+        f"Path({str(report)!r}).write_text(json.dumps({{'name': name, 'cwd': os.getcwd(), "
+        "'resolved': str(Path(name).resolve()), 'tokenizer': Path(name, 'tokenizer.json').read_text()}))"
+    )
+    workdir = tmp_path / "sidecar"
+    command = run_with_model_link(
+        [sys.executable, "-c", probe, "org/served-name"],
+        workdir=str(workdir),
+        name="org/served-name",
+        model_path=str(model),
+    )
+
+    subprocess.run(command, check=True, timeout=15)
+
+    seen = json.loads(report.read_text())
+    assert seen == {
+        "name": "org/served-name",
+        "cwd": str(workdir.resolve()),
+        "resolved": str(model.resolve()),
+        "tokenizer": "{}",
+    }
