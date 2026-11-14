@@ -33,7 +33,7 @@ Rules for `src/srtctl/backends/`. Every consumer asks a backend through `Backend
 - **TileRT**: Decode workers behind `tilert-router`, paired with an explicit prefill engine and image.
 - **TokenSpeed**: `dynamo.tokenspeed` workers behind the Dynamo frontend, or `tokenspeed.cli serve --headless` dialing SMG over TCP ZMQ, aggregated or prefill/decode; allocator-owned gateway handshake, per-node metrics, `--port` scan base and a dist-init block sized for its control-plane cluster
 - **TRTLLM**: MPI-style launching (one srun per endpoint with all nodes), prefill/decode only
-- **vLLM**: Per-process srun launching, prefill/decode/aggregated, `per_node` DP; `frontend_type` selects Dynamo registration or a direct `vllm serve` server, and `_CONNECTOR_MAP` owns the KV connector table
+- **vLLM**: Per-process srun launching, prefill/decode/aggregated, `per_node` DP; `frontend_type` selects Dynamo registration or a direct `vllm serve` server, and `_CONNECTOR_MAP` owns the KV connector table. `numa_cpu_bind` / `numa_memory_bind` (engine, or `roles.<role>` through `numa_cpu_bind_for_mode` / `numa_wrapper_policy_for_mode`) wrap each worker in `configs/numa_cpu_bind.sh --gpus <its GPUs>`, the wrapper TRT-LLM uses (`numa_cpu_bind_command` in `base.py`)
 
 ## Mooncake KV Store
 

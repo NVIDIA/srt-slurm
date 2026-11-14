@@ -7,18 +7,22 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import yaml
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
 from srtctl.backends.base import (
+    NUMA_WRAPPER_MEMORY_POLICIES,
     Backend,
     BoundRolesField,
+    NumaMemoryPolicy,
+    NumaWrapperPolicy,
     ProcessGroup,
     RoleSettings,
     WorkerMode,
+    numa_cpu_bind_command,
     role_env,
     role_for_mode,
     role_mooncake_store_config,
@@ -230,25 +234,6 @@ DWDP_RENDEZVOUS_TIMEOUT_S = 3600
 _CONTAINER_LOG_DIR = "/logs"
 
 
-class NumaWrapperPolicy(NamedTuple):
-    """How configs/numa_cpu_bind.sh applies one numa_memory_bind value.
-
-    Attributes:
-        flag: Wrapper flag that selects the memory policy.
-        description: Policy description in dry-run output.
-    """
-
-    flag: str
-    description: str
-
-
-# numa_memory_bind values whose memory policy configs/numa_cpu_bind.sh applies.
-NUMA_WRAPPER_MEMORY_POLICIES: dict[str, NumaWrapperPolicy] = {
-    "local": NumaWrapperPolicy("--bind-memory", "strict GPU-local memory binding (numactl --membind=<node>)"),
-    "preferred": NumaWrapperPolicy("--prefer-memory", "preferred GPU-local memory (numactl --preferred=<node>)"),
-}
-
-
 @dataclass(frozen=True)
 class TRTLLMBackend(Backend):
     """TRTLLM backend configuration and launch implementation.
@@ -350,7 +335,7 @@ class TRTLLMBackend(Backend):
     # "preferred" also requires numa_cpu_bind=True and launches the worker under
     # `numactl --cpunodebind=<node> --preferred=<node>`: allocations prefer the
     # GPU's NUMA node and fall back to other nodes when it is full.
-    numa_memory_bind: bool | Literal["local", "preferred"] | None = None
+    numa_memory_bind: bool | NumaMemoryPolicy | None = None
 
     # Set worker CPU affinity with `numactl --cpunodebind=<node>` before
     # exec so child processes and threads inherit it. Requires numactl.
@@ -594,9 +579,7 @@ class TRTLLMBackend(Backend):
         """
         if not self.numa_cpu_bind:
             return cmd
-        policy = self.numa_wrapper_policy
-        memory_args = [policy.flag] if policy is not None else []
-        return ["bash", "/configs/numa_cpu_bind.sh", *memory_args, *cmd]
+        return numa_cpu_bind_command(cmd, self.numa_wrapper_policy)
 
     def build_worker_command(
         self,

@@ -243,6 +243,18 @@ def test_trtllm_local_numa_example_is_visible(capsys):
     assert "agg: TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (effective)" in output
 
 
+def test_vllm_numa_example_shows_the_bound_role_only(capsys):
+    recipe = Path(__file__).resolve().parents[1] / "examples/vllm/dynamo-disagg-numa.yaml"
+    config = SrtConfig.from_yaml(recipe)
+    show_config_details(config)
+    output = " ".join(capsys.readouterr().out.split())
+    assert (
+        "vLLM NUMA (prefill): CPU affinity to each worker's own GPU NUMA node(s) (numactl --cpunodebind=<nodes>) "
+        "and strict GPU-local memory binding (numactl --membind=<node>) (--bind-memory)"
+    ) in output
+    assert "vLLM NUMA (decode)" not in output
+
+
 def test_trtllm_preferred_numa_example_is_visible(capsys):
     recipe = Path(__file__).resolve().parents[1] / "examples/trtllm/trtllm-serve-agg-numa-preferred.yaml"
     config = SrtConfig.from_yaml(recipe)

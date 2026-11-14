@@ -49,7 +49,7 @@ from srtctl.backends import (
     VLLMBackend,
     VLLMMooncakeKVStoreConfig,
 )
-from srtctl.backends.base import RoleSettings, WorkerMode
+from srtctl.backends.base import NumaMemoryPolicy, RoleSettings, WorkerMode
 from srtctl.backends.trtllm import (
     trtllm_mooncake_block_only_key_problem,
     trtllm_mooncake_role_key_problem,
@@ -889,6 +889,15 @@ class RoleConfig(RoleSettings):
     # `local_buffer_size`, TRT-LLM's `role`, ...), layered over the `mooncake-master` service's
     # `options.store_config`, so prefill and decode can differ. Pool-wide keys stay there.
     mooncake_store_config: dict[str, Any] = field(default_factory=dict)
+    # vLLM only: bind this role's workers to the NUMA node(s) of their own GPUs (`true`) or
+    # leave them unbound (`false`), overriding `engine.numa_cpu_bind`. Unset follows the engine.
+    numa_cpu_bind: bool | None = field(
+        default=None,
+        metadata={"marshmallow_field": fields.Boolean(truthy={True}, falsy={False}, allow_none=True)},
+    )
+    # vLLM only: the memory policy for this role's bound workers (`local` or `preferred`),
+    # overriding `engine.numa_memory_bind`. Unset follows the engine.
+    numa_memory_bind: NumaMemoryPolicy | None = None
     # Run the native engine with a Dynamo sidecar (turns on `dynamo.sidecar`); every role must agree.
     sidecar: bool | None = field(
         default=None,
@@ -3027,6 +3036,11 @@ class SrtConfig:
                 raise ValidationError(f"roles.{role}.extra_args is only supported by the trtllm engine")
             if spec.kv_events is not None and engine_type not in ("sglang", "vllm"):
                 raise ValidationError(f"roles.{role}.kv_events is not supported by the {engine_type} engine")
+            if (spec.numa_cpu_bind is not None or spec.numa_memory_bind is not None) and engine_type != "vllm":
+                raise ValidationError(
+                    f"roles.{role}.numa_cpu_bind and roles.{role}.numa_memory_bind are read by the vllm engine only; "
+                    "the trtllm engine binds every role from engine.numa_cpu_bind and engine.numa_memory_bind"
+                )
 
         for role, spec in self.roles.items():
             if spec.gpu_indices is None:
