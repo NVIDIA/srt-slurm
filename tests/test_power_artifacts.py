@@ -29,6 +29,7 @@ from srtctl.core.power.contract import (
     atomic_write_json,
     is_safe_relative_subpath,
 )
+from srtctl.core.power.identity import WorkerGpuIdentity, WorkerIdentityProof
 from srtctl.core.power.manifest import (
     DcgmExporterIdentity,
     ExpectedWindow,
@@ -43,8 +44,10 @@ from srtctl.core.power.samples import (
     read_samples,
 )
 from srtctl.core.power.topology import (
+    DeviceAssignment,
     ExpectedDevice,
     build_expected_devices,
+    build_pool_expected_devices,
     resolve_het_groups,
     resolve_roles,
     validate_devices,
@@ -403,6 +406,26 @@ class TestExpectedTopology:
         assert groups == {}
         assert Reason.CONFLICTING_HET_GROUPS in conflicts
 
+    def test_pool_nodes_are_planned_whole_under_their_service_name(self):
+        devices = build_pool_expected_devices({"sim": ("node-c", "node-d")}, gpus_per_node=2)
+
+        assert [d.key for d in devices] == [("node-c", 0), ("node-c", 1), ("node-d", 0), ("node-d", 1)]
+        assert [d.assignments for d in devices] == [
+            (DeviceAssignment("sim", 0, 0, None),),
+            (DeviceAssignment("sim", 0, 0, None),),
+            (DeviceAssignment("sim", 1, 0, None),),
+            (DeviceAssignment("sim", 1, 0, None),),
+        ]
+        assert not any(a.is_engine_worker for d in devices for a in d.assignments)
+        assert resolve_roles(devices) == ({d.key: "sim" for d in devices}, ())
+        assert resolve_het_groups(devices) == ({"node-c": None, "node-d": None}, ())
+
+    def test_pools_follow_declaration_order_and_an_engine_only_job_plans_none(self):
+        devices = build_pool_expected_devices({"b": ("node-b",), "a": ("node-a",)}, gpus_per_node=1)
+
+        assert [(d.hostname, d.assignments[0].worker_role) for d in devices] == [("node-b", "b"), ("node-a", "a")]
+        assert build_pool_expected_devices({}, gpus_per_node=8) == []
+
 
 class TestSampleArtifact:
     """samples.csv round trip."""
@@ -709,6 +732,55 @@ class TestDeviceValidation:
 
         assert result.valid is False
         assert Reason.EXPECTED_DEVICE_MISSING in result.reason_codes
+
+    @staticmethod
+    def _pool():
+        return build_pool_expected_devices({"sim": ("node-p",)}, gpus_per_node=2)
+
+    @staticmethod
+    def _pool_rows(count=2):
+        return [SampleRow(1000.0, 0, "node-p", index, f"GPU-p{index}", 400.0) for index in range(count)]
+
+    def test_a_services_only_job_whose_exporter_reports_the_planned_gpus_is_valid(self):
+        unprobed = WorkerIdentityProof(100.0, error="no engine workers to probe")
+
+        result = validate_devices(self._pool(), derive_observed_devices(self._pool_rows()), unprobed)
+
+        assert result.valid is True
+        assert result.reason_codes == ()
+
+    def test_a_pool_node_reporting_more_gpus_than_planned_is_unexpected_with_no_excuse(self):
+        """No probe records which GPUs a pool service holds, so the identity gate cannot excuse them."""
+        unprobed = WorkerIdentityProof(100.0, error="no engine workers to probe")
+
+        result = validate_devices(self._pool(), derive_observed_devices(self._pool_rows(count=3)), unprobed)
+
+        assert result.valid is False
+        assert result.reason_codes == (Reason.UNEXPECTED_DEVICE,)
+
+    def test_engine_worker_proof_excuses_idle_engine_gpus_but_never_a_pool_node_extra(self):
+        process = _process("node-a", [0], "prefill")
+        expected = [*build_expected_devices([process]), *self._pool()]
+        proof = WorkerIdentityProof(
+            100.0,
+            workers=(
+                WorkerGpuIdentity("node-a", DeviceAssignment.from_process(process), "prefill_0", "1.0", ("GPU-a0",)),
+            ),
+        )
+        engine_rows = [
+            SampleRow(1000.0, 0, "node-a", 0, "GPU-a0", 400.0),
+            SampleRow(1000.0, 0, "node-a", 1, "GPU-a1", 400.0),
+        ]
+
+        excused = validate_devices(expected, derive_observed_devices([*engine_rows, *self._pool_rows()]), proof)
+        pool_extra = validate_devices(
+            expected, derive_observed_devices([*engine_rows, *self._pool_rows(count=3)]), proof
+        )
+
+        assert excused.valid is True
+        assert excused.reason_codes == ()
+        assert pool_extra.valid is False
+        assert pool_extra.reason_codes == (Reason.UNEXPECTED_DEVICE,)
 
 
 class TestManifest:

@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Expected GPU topology derived from srt-slurm backend-process placement."""
+"""Expected GPU topology derived from srt-slurm backend-process placement and service pools."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -38,6 +38,11 @@ class DeviceAssignment:
             worker_process=process.node_rank,
             het_group=process.het_group,
         )
+
+    @property
+    def is_engine_worker(self) -> bool:
+        """An engine role's process, the only kind the worker GPU identity probe can attribute."""
+        return self.worker_role in WORKER_ROLES
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -86,6 +91,28 @@ def build_expected_devices(processes: Sequence[Process]) -> list[ExpectedDevice]
     ]
 
 
+def build_pool_expected_devices(pools: Mapping[str, Sequence[str]], gpus_per_node: int) -> list[ExpectedDevice]:
+    """Map every service pool node onto the GPUs the job allocates there.
+
+    A pool (``services[].nodes``) owns whole nodes, so each carries every one of
+    the job's ``gpus_per_node`` GPUs, the count the sbatch ``--gpus-per-node``
+    directive requests. ``pools`` is the allocation's carve (``runtime.nodes.pools``):
+    ``config.pool_services`` in declaration order. The service name is the role
+    and the node's ordinal within its pool the worker index; a pool never rides a
+    heterogeneous job, so the het group is None.
+    """
+    return [
+        ExpectedDevice(
+            hostname=node,
+            gpu_index=gpu_index,
+            assignments=(DeviceAssignment(worker_role=name, worker_index=ordinal, worker_process=0, het_group=None),),
+        )
+        for name, nodes in pools.items()
+        for ordinal, node in enumerate(nodes)
+        for gpu_index in range(gpus_per_node)
+    ]
+
+
 def resolve_roles(devices: Sequence[ExpectedDevice]) -> tuple[dict[DeviceKey, str], tuple[str, ...]]:
     """Resolve one semantic role per device, or report the conflict."""
     roles: dict[DeviceKey, str] = {}
@@ -126,17 +153,20 @@ def validate_devices(
 ) -> DeviceValidation:
     """Require every expected device with a stable identity.
 
-    A pool node's GPUs are never planned, so any of them is ``unexpected_device``.
-    An exclusive worker node's exporter also reports the GPUs no worker uses;
-    those are excused only when ``worker_identity`` shows every worker holding
-    exactly the UUIDs the exporter reported at its planned indices, because the
-    plan's CUDA numbering and the exporter's numbering are joined on index alone.
+    A pool node's GPUs are planned whole-node (``build_pool_expected_devices``);
+    nothing records which of them a pool service holds, so a pool node that
+    reports more GPUs than planned is ``unexpected_device`` with no excuse.
+    An exclusive engine worker node's exporter also reports the GPUs no worker
+    uses; those are excused only when ``worker_identity`` shows every worker
+    holding exactly the UUIDs the exporter reported at its planned indices,
+    because the plan's CUDA numbering and the exporter's numbering are joined
+    on index alone.
     """
     reasons: list[str] = []
 
     expected_keys = {device.key for device in expected}
     observed_keys = {device.key for device in observed}
-    worker_hosts = {hostname for hostname, _ in expected_keys}
+    worker_hosts = {device.hostname for device in expected if any(a.is_engine_worker for a in device.assignments)}
     extra_keys = observed_keys - expected_keys
     idle_worker_gpus = {key for key in extra_keys if key[0] in worker_hosts}
     identity_reasons = () if worker_identity is None else _worker_identity_reasons(worker_identity, expected, observed)
@@ -171,13 +201,14 @@ def _worker_identity_reasons(
     expected: Sequence[ExpectedDevice],
     observed: Sequence[ObservedDevice],
 ) -> tuple[str, ...]:
-    """Empty when every planned worker was probed and holds the UUIDs sampled at its planned devices."""
+    """Empty when every planned engine worker was probed and holds the UUIDs sampled at its planned devices."""
     if proof.error is not None or not proof.workers:
         return (Reason.WORKER_IDENTITY_INVALID,)
     planned: dict[tuple[str, DeviceAssignment], set[DeviceKey]] = {}
     for device in expected:
         for assignment in device.assignments:
-            planned.setdefault((device.hostname, assignment), set()).add(device.key)
+            if assignment.is_engine_worker:
+                planned.setdefault((device.hostname, assignment), set()).add(device.key)
     if {(worker.hostname, worker.assignment) for worker in proof.workers} != set(planned):
         return (Reason.WORKER_IDENTITY_INVALID,)
     sampled_uuid = {device.key: device.gpu_uuids[0] for device in observed if len(device.gpu_uuids) == 1}
