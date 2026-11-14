@@ -10,10 +10,10 @@ ORIGINAL_DST. For P/D, EPP selects a decode sidecar and passes the prefill worke
 in ``x-prefiller-host-port``; see ``services/llm_d_sidecar.py``.
 
 srtctl supplies a fixed endpoint list through EPP's file-discovery plugin,
-including one endpoint per external-LB DP rank. Startup waits for worker health
+including one endpoint per vLLM external-LB DP rank. Startup waits for worker health
 when enabled, writes the configurations, then launches EPP and Envoy. Readiness
 requires Envoy's ``/ready`` and EPP's ready-endpoint count, based on worker metrics.
-Optional ``roles.<role>.kv_events`` feed EPP's precise prefix-cache index.
+Optional ``roles.<role>.kv_events`` feed EPP's precise prefix-cache index (vLLM).
 
 Upstream, pinned: llm-d-router v0.10.0
 (https://github.com/llm-d/llm-d-router/tree/71f4f0999f95b96c49a9d0c4afbd18dfdb943c26):
@@ -67,6 +67,13 @@ ENVOY_ACCESS_LOG = "llm-d-envoy-access.log"
 # prefill-filter and decode-filter select on it; an aggregate worker serves both.
 ROLE_LABEL = "llm-d.ai/role"
 ROLE_BY_MODE = {"prefill": "prefill", "decode": "decode", "agg": "both"}
+# Selects the EPP's metric names per endpoint; unlabelled endpoints get vLLM's, which an
+# SGLang worker never exports, so the EPP never counts it ready
+# (pkg/epp/framework/plugins/datalayer/extractor/metrics/mapping_registry.go).
+ENGINE_LABEL = "llm-d.ai/engine-type"
+# Prefill DP ranks the EPP picks are not bootstrap_room % dp, so the prefill registers its rank
+# and decode asks for it (sglang/srt/disaggregation/common/conn.py, decode.py).
+SGLANG_FORCE_QUERY_PREFILL_DP_RANK = "SGLANG_DISAGGREGATION_FORCE_QUERY_PREFILL_DP_RANK"
 # Gauge of endpoints whose metrics the EPP scraped within its staleness window
 # (pkg/epp/metrics/llm_d_router_metrics.go).
 READY_ENDPOINTS_METRIC = "llm_d_epp_ready_endpoints"
@@ -226,10 +233,11 @@ def parse_ready_endpoints(metrics_text: str) -> int | None:
 
 @register_frontend("llm-d")
 class LLMDFrontend(StaticRouterFrontend):
-    """llm-d Endpoint Picker behind Envoy, in front of direct vLLM workers."""
+    """llm-d Endpoint Picker behind Envoy, in front of direct vLLM or SGLang workers."""
 
     type: ClassVar[str] = "llm-d"
-    required_backend: ClassVar[str | None] = "vllm"
+    SUPPORTED_BACKENDS: ClassVar[frozenset[str]] = frozenset({"vllm", "sglang"})
+    required_backend: ClassVar[str | None] = None
     accepts_epp_config: ClassVar[bool] = True
     executable: ClassVar[tuple[str, ...]] = ("epp",)
     # The EPP takes prefill/decode from its scheduler configuration, not a flag.
@@ -239,6 +247,18 @@ class LLMDFrontend(StaticRouterFrontend):
     wait_for_workers_before_start: ClassVar[bool] = True
 
     def validate(self, config: Any) -> None:
+        from srtctl.backends.sglang import SGLangBackend
+
+        incompatible = [
+            f"roles.{role}: {backend.type!r}"
+            for role, backend in config.active_role_backends()
+            if backend.type not in self.SUPPORTED_BACKENDS
+        ]
+        if incompatible:
+            supported = ", ".join(sorted(self.SUPPORTED_BACKENDS))
+            raise ValueError(
+                f"frontend.type: {self.type} requires backend.type in ({supported}); got {', '.join(incompatible)}"
+            )
         frontend = config.frontend
         self._validate_epp_args(frontend.args)
         if frontend.enable_multiple_frontends and config.engine_node_count > 1:
@@ -267,12 +287,33 @@ class LLMDFrontend(StaticRouterFrontend):
             )
         self._validate_kv_events(config)
         if _is_pd(config):
+            prefill_backend, decode_backend = config.backend_for_role("prefill"), config.backend_for_role("decode")
+            if prefill_backend.type != decode_backend.type:
+                raise ValueError(f"frontend.type: {self.type} prefill/decode needs the same engine in both roles")
+            if isinstance(prefill_backend, SGLangBackend):
+                endpoints = config.allocate_worker_endpoints([f"node{i}" for i in range(config.engine_node_count)])
+                prefill_endpoints = [ep for ep in endpoints if ep.mode == "prefill"]
+                if len({ep.leader_node for ep in prefill_endpoints}) != len(prefill_endpoints):
+                    raise ValueError(
+                        "frontend.type: llm-d with SGLang prefill/decode allows at most one prefill worker per node: "
+                        "srtctl allocates bootstrap ports per node while pd-sidecar dials one SGLANG_BOOTSTRAP_PORT; "
+                        "set resources.spread_workers: true or assign each prefill worker its own node"
+                    )
+                roles = ("prefill", "decode") if prefill_backend.num_dp_ranks("prefill") > 1 else ()
+                for role in roles:
+                    env = {**config.environment, **config.backend_for_role(role).get_environment_for_mode(role)}
+                    if env.get(SGLANG_FORCE_QUERY_PREFILL_DP_RANK) not in ("1", "true", "True"):
+                        raise ValueError(
+                            f"frontend.type: llm-d routes to each SGLang prefill DP rank: set "
+                            f"{SGLANG_FORCE_QUERY_PREFILL_DP_RANK}=1 in roles.{role}.env, or SGLang rejects "
+                            "a routed rank that is not bootstrap_room % dp ('follow_bootstrap_room conflict')"
+                        )
             if frontend.epp_config is not None and not epp_config.get("schedulingProfiles"):
                 raise ValueError(
                     "frontend.type: llm-d with prefill and decode workers needs frontend.epp_config with "
                     "prefill and decode schedulingProfiles and a disaggregation profile handler"
                 )
-            sidecar_kv_connector(config.backend_for_role("decode"))
+            sidecar_kv_connector(decode_backend)
             sidecars = [entry for entry in effective_services(config) if entry.service.type == LLM_D_SIDECAR_TYPE]
             if len(sidecars) != 1:
                 raise ValueError(
@@ -296,6 +337,12 @@ class LLMDFrontend(StaticRouterFrontend):
             )
             if count and config.backend_for_role(mode).get_kv_events_config_for_mode(mode)
         ]
+        sglang_publishing = [mode for mode in publishing if config.backend_for_role(mode).type == "sglang"]
+        if sglang_publishing:
+            raise ValueError(
+                f"roles.{sglang_publishing[0]}.kv_events is not supported with frontend.type: llm-d and SGLang; "
+                "use approx-prefix-cache-producer in frontend.epp_config"
+            )
         producers = _plugins(epp_config, PRECISE_PREFIX_PRODUCER)
         if not producers:
             if publishing:
@@ -329,6 +376,8 @@ class LLMDFrontend(StaticRouterFrontend):
                 "roles.<role>.kv_events: the workers publish to the EPP on the head node; set "
                 "frontend.enable_multiple_frontends: false and keep frontend.placement.node: head"
             )
+        from srtctl.backends.vllm import VLLMBackend
+
         for mode in publishing:
             backend = config.backend_for_role(mode)
             kv_events = config.roles[mode].kv_events
@@ -337,7 +386,7 @@ class LLMDFrontend(StaticRouterFrontend):
                 raise ValueError(
                     f"roles.{mode}.kv_events sets {', '.join(sorted(managed))}, which srtctl manages for llm-d"
                 )
-            if backend.is_dp_mode(mode) and not backend.is_external_lb(mode):
+            if isinstance(backend, VLLMBackend) and backend.is_dp_mode(mode) and not backend.is_external_lb(mode):
                 raise ValueError(
                     f"roles.{mode}.kv_events with data-parallel-size: vLLM publishes every DP rank's events on its "
                     "own port, so the EPP must route to the ranks themselves; set "
@@ -414,7 +463,7 @@ class LLMDFrontend(StaticRouterFrontend):
         )
 
     def endpoints_document(
-        self, backend_processes: list[Process], network_interface: str | None
+        self, backend_processes: list[Process], network_interface: str | None, engine: str
     ) -> dict[str, list[dict[str, Any]]]:
         """The file-discovery endpoints: every routable worker, at its proxy's port when it has one."""
         endpoints = []
@@ -427,10 +476,78 @@ class LLMDFrontend(StaticRouterFrontend):
                     "namespace": POOL,
                     "address": self.resolve_worker_host(process.node, network_interface),
                     "port": str(_routed_port(process)),
-                    "labels": {ROLE_LABEL: ROLE_BY_MODE[process.endpoint_mode]},
+                    "labels": {ROLE_LABEL: ROLE_BY_MODE[process.endpoint_mode], ENGINE_LABEL: engine},
                 }
             )
         return {"endpoints": endpoints}
+
+    def pin_dp_ranks(
+        self, config: Any, endpoints: list[dict[str, Any]], backend_processes: list[Process]
+    ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
+        """Give the EPP one endpoint per DP rank of every SGLang agg/prefill server.
+
+        SGLang serves all DP ranks on one port and picks the rank itself (round robin, or the
+        sidecar's random bootstrap room), and each rank has its own radix cache, so prefix
+        affinity stops at the server. Each rank's endpoint is a listener of
+        ``llm_d_dp_rank_proxy.py`` on the server's node that pins requests with
+        ``X-Data-Parallel-Rank``; it keeps the server's host because the P/D sidecar derives the
+        SGLang bootstrap host from it. Decode keeps one endpoint: the KV transfer fills its cache.
+        Returns the endpoints and each node's proxy ``PORT=URL#RANK`` routes.
+        """
+        from srtctl.backends.sglang import SGLangBackend
+        from srtctl.core.topology import NodePortAllocator
+        from srtctl.ports import LLM_D_DP_RANK_PORTS
+
+        allocator = NodePortAllocator()
+        routable = [process for process in backend_processes if process.http_port > 0]
+        pinned: list[dict[str, Any]] = []
+        routes: dict[str, list[str]] = {}
+        for process, endpoint in zip(routable, endpoints, strict=True):
+            backend = config.backend_for_role(process.endpoint_mode)
+            ranks = backend.num_dp_ranks(process.endpoint_mode) if isinstance(backend, SGLangBackend) else 1
+            if ranks == 1 or process.endpoint_mode == "decode":
+                pinned.append(endpoint)
+                continue
+            upstream = f"http://{endpoint['address']}:{process.http_port}"
+            for rank in range(ranks):
+                port = allocator.next(LLM_D_DP_RANK_PORTS, process.node)
+                routes.setdefault(process.node, []).append(f"{port}={upstream}#{rank}")
+                pinned.append({**endpoint, "name": f"{endpoint['name']}-dp{rank}", "port": str(port)})
+        return pinned, routes
+
+    def start_dp_rank_proxies(self, runtime: RuntimeContext, routes: dict[str, list[str]]) -> list[ManagedProcess]:
+        """One ``llm_d_dp_rank_proxy.py`` per node with pinned ranks, in the worker image (it has aiohttp)."""
+        from srtctl.core.processes import FRONTEND_TERMINATE_TIMEOUT_SECONDS, ManagedProcess
+
+        processes = []
+        for idx, (node, node_routes) in enumerate(routes.items()):
+            step_name = f"{self.process_name}-dp-rank-proxy_{idx}"
+            log_file = runtime.log_dir / f"{node}_{step_name}.out"
+            proc = self.start_process(
+                command=["python3", "/srtctl-runtime/llm_d_dp_rank_proxy.py", *node_routes],
+                nodelist=[node],
+                output=str(log_file),
+                container_image=str(runtime.container_image),
+                reuse_container=runtime.reuse_container,
+                container_prepare_timeout_seconds=runtime.container_prepare_timeout_seconds,
+                container_mounts=runtime.container_mounts,
+                env_to_set=None,
+                het_group=runtime.nodes.het_group_for(node),
+                step_name=step_name,
+                srun_options=runtime.srun_options,
+            )
+            processes.append(
+                ManagedProcess(
+                    name=step_name,
+                    popen=proc,
+                    log_file=log_file,
+                    node=node,
+                    critical=True,
+                    terminate_timeout=FRONTEND_TERMINATE_TIMEOUT_SECONDS,
+                    step_name=step_name,
+                )
+            )
+        return processes
 
     def render_url(self, backend_processes: list[Process], network_interface: str | None) -> str:
         """Direct worker API for tokenization; prefer the first prefill worker."""
@@ -473,7 +590,8 @@ class LLMDFrontend(StaticRouterFrontend):
             self.collect_workers(backend, backend_processes, runtime.network_interface), config, stop_event
         )
 
-        endpoints = self.endpoints_document(backend_processes, runtime.network_interface)
+        endpoints = self.endpoints_document(backend_processes, runtime.network_interface, backend.type)
+        endpoints["endpoints"], rank_routes = self.pin_dp_ranks(config, endpoints["endpoints"], backend_processes)
         (runtime.log_dir / ENDPOINTS_FILE).write_text(yaml.safe_dump(endpoints, sort_keys=False))
         epp_config = config.frontend.epp_config
         epp_document = epp_config_document(
@@ -498,7 +616,7 @@ class LLMDFrontend(StaticRouterFrontend):
         }
         container_image = config.frontend.container_image or str(runtime.container_image)
         env = {**runtime.environment, **(config.frontend.env or {})}
-        processes: list[ManagedProcess] = []
+        processes = self.start_dp_rank_proxies(runtime, rank_routes)
         for idx, node in enumerate(topology.frontend_nodes):
             for component, command in commands.items():
                 cmd = numactl_prefix(config) + command
