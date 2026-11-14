@@ -264,7 +264,9 @@ def test_co_located_workers_open_readiness_on_their_own_allocated_ports() -> Non
     assert {p.node for p in prefills} == {"node0"}
     frontend = InferaFrontend()
     readiness = {p.endpoint_index: frontend.worker_environment(p, _runtime()) for p in prefills}
-    assert readiness == {i: {"INFERA_READINESS_PORT": str(p.sys_port)} for i, p in enumerate(prefills)}
+    assert readiness == {
+        i: {"INFERA_READINESS_PORT": str(p.sys_port), "INFERA_DEFAULT_KV_FP8": "0"} for i, p in enumerate(prefills)
+    }
     assert len({p.sys_port for p in processes}) == len(processes)
     # The port is the worker environment's, not an `env` prefix in the command.
     assert "INFERA_READINESS_PORT" not in " ".join(_worker_command(backend, prefills[0]))
@@ -280,7 +282,11 @@ def test_the_worker_stage_adds_the_frontend_worker_environment() -> None:
         )
         return WorkerStageMixin._worker_environment_defaults(stage, process)
 
-    assert defaults("infera") == {"HEAD_NODE_IP": "10.0.0.2", "INFERA_READINESS_PORT": "7500"}
+    assert defaults("infera") == {
+        "HEAD_NODE_IP": "10.0.0.2",
+        "INFERA_READINESS_PORT": "7500",
+        "INFERA_DEFAULT_KV_FP8": "0",
+    }
     assert defaults("sglang-router") == {"HEAD_NODE_IP": "10.0.0.2"}
 
 

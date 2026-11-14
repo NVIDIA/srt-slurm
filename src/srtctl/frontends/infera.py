@@ -57,6 +57,9 @@ _ROLE_BY_DISAGG_MODE = {"prefill": "prefill", "decode": "decode", "mixed": "deco
 WORKER_LAUNCHERS = {"sglang": "infera.engine.sglang"}
 # The launcher's readiness listener port; unset, it binds a fixed default.
 READINESS_PORT_ENV = "INFERA_READINESS_PORT"
+# Unless this is "0", the launcher sets SGLang's KV cache to fp8_e4m3 whenever the
+# command line has no --kv-cache-dtype.
+DEFAULT_KV_FP8_ENV = "INFERA_DEFAULT_KV_FP8"
 # The release setup_script installs (configs/install-infera.sh); the router and the
 # workers must run the same one.
 VERSION_ENV = "INFERA_VERSION"
@@ -206,13 +209,15 @@ class InferaFrontend(DynamicFrontend):
         return args
 
     def worker_environment(self, process: Process, runtime: RuntimeContext) -> dict[str, str]:
-        """The readiness listener the launcher opens once registered: the process's system port.
+        """The launcher's readiness port, and its fp8 KV-cache default turned off.
 
-        srtctl reads readiness from the router, and the system port is otherwise
-        unused without Dynamo, so co-located workers do not contend for Infera's
-        default.
+        The readiness listener the launcher opens once registered is the process's
+        system port: srtctl reads readiness from the router, and the system port is
+        otherwise unused without Dynamo, so co-located workers do not contend for
+        Infera's default. With the fp8 default off, the KV-cache dtype is the recipe's
+        (``kv-cache-dtype`` in the role's args), as under any other frontend.
         """
-        return {READINESS_PORT_ENV: str(process.sys_port)}
+        return {READINESS_PORT_ENV: str(process.sys_port), DEFAULT_KV_FP8_ENV: "0"}
 
     def parse_health(self, response_json: dict, expected_prefill: int, expected_decode: int) -> WorkerHealthResult:
         """Count active registrations by role; an aggregate (``mixed``) worker counts as decode.
