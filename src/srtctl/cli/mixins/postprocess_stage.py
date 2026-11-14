@@ -749,9 +749,14 @@ curl -fsSL https://claude.ai/install.sh | bash
 export PATH="$HOME/.claude/bin:$PATH"
 
 echo "Installing GitHub CLI..."
+case "$(uname -m)" in
+  x86_64) GH_ARCH=amd64 ;;
+  aarch64 | arm64) GH_ARCH=arm64 ;;
+  *) echo "Unsupported architecture for gh: $(uname -m)" >&2; exit 1 ;;
+esac
 GH_VERSION=$(curl -s https://api.github.com/repos/cli/cli/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | sed 's/v//')
-curl -fsSL "https://github.com/cli/cli/releases/download/v${{GH_VERSION}}/gh_${{GH_VERSION}}_linux_amd64.tar.gz" | tar xz -C /tmp
-export PATH="/tmp/gh_${{GH_VERSION}}_linux_amd64/bin:$PATH"
+curl -fsSL "https://github.com/cli/cli/releases/download/v${{GH_VERSION}}/gh_${{GH_VERSION}}_linux_${{GH_ARCH}}.tar.gz" | tar xz -C /tmp
+export PATH="/tmp/gh_${{GH_VERSION}}_linux_${{GH_ARCH}}/bin:$PATH"
 
 echo "Dependencies installed. Running AI analysis..."
 
