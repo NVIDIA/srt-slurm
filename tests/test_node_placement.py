@@ -58,6 +58,19 @@ def test_placed_node_first_and_last_decode():
     assert placed_node(procs, "last_decode", "p0", kind="x") == "g1"
 
 
+def test_placed_node_multi_node_decode_workers():
+    """first_decode is the first worker's leader; last_decode is the last worker's last node, not its leader."""
+    procs = [
+        _proc("p0", "prefill", 0),
+        _proc("g0", "decode", 1),
+        _proc("g1", "decode", 1, rank=1),
+        _proc("g2", "decode", 2),
+        _proc("g3", "decode", 2, rank=1),
+    ]
+    assert placed_node(procs, "first_decode", "p0", kind="x") == "g0"
+    assert placed_node(procs, "last_decode", "p0", kind="x") == "g3"
+
+
 def test_placed_node_invalid_value_raises():
     with pytest.raises(ValueError, match="invalid"):
         placed_node([], "second_decode", "p0", kind="frontend.orchestrator_placement")

@@ -91,7 +91,7 @@ Types and defaults of the v1 keys, as the last loader that accepted them saw the
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `client_placement` | str | `'head'` | Which node runs the benchmark client: "head" (default) -> nodes.head (co-located with orchestrator by default) "last_decode" -> last decode/GEN worker-leader node (isolate the client off the CTX/orchestrator node). When the client lands on a different node than the orchestrator, use the injected $SRT_FRONTEND_HOST env in the benchmark command's URL. |
+| `client_placement` | str | `'head'` | Which node runs the benchmark client: "head" (default) -> nodes.head (co-located with orchestrator by default) "last_decode" -> last node of the last decode/GEN worker (isolate the client off the CTX/orchestrator node). When the client lands on a different node than the orchestrator, use the injected $SRT_FRONTEND_HOST env in the benchmark command's URL. |
 | `client_dedicated_node` | bool | `False` | If True, reserve a node exclusively for the benchmark client instead of running it on a worker node. Requires at least 2 nodes. Not supported together with resources.het_jobs: true. Default: False. |
 
 ### dynamo

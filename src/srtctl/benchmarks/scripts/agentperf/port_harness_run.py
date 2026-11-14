@@ -447,7 +447,7 @@ def main(argv: list[str] | None = None) -> int:
     prov.todo("resources.gpu_type is guessed as gb300 — set it for your cluster")
     prov.todo(f"benchmark.agentperf_config is set to {args.workload_out.resolve()} — "
               "move the workload YAML somewhere container-visible and update the path")
-    prov.todo("review benchmark.placement.node (last_decode = client on the decode leader node, "
+    prov.todo("review benchmark.placement.node (last_decode = client on the last node of the last decode worker, "
               "matching the harness's client-on-GEN placement)")
 
     args.out.write_text(yaml.safe_dump(recipe, sort_keys=False))

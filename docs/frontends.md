@@ -60,6 +60,21 @@ See [SGLang Router](sglang-router.md) for detailed architecture.
 
 `type: trtllm_serve` runs the `trtllm-serve disaggregated` orchestrator as the router (for `engine: trtllm`). Instead of the dynamo request plane, srtctl collects the prefill/decode worker addresses and writes a static `ser.yaml` (`context_servers` = prefill, `generation_servers` = decode), then launches the orchestrator on the head node. The trtllm workers are started as `trtllm-serve` OpenAI servers rather than `dynamo.trtllm`.
 
+`frontend.ctx_router` and `frontend.gen_router` become each section's `router`, and `frontend.server_config_extra` adds top-level `ser.yaml` keys. A `context_servers` or `generation_servers` mapping in `server_config_extra` adds its keys to that section rather than replacing it, for settings the orchestrator reads per section, such as a context worker's multiple HTTP frontends:
+
+```yaml
+frontend:
+  type: trtllm_serve
+  enable_multiple_frontends: false
+  ctx_router: {type: conversation}
+  server_config_extra:
+    context_servers:
+      num_serve_frontends: 8
+      serve_frontend_affinity_port_stride: 10
+```
+
+srtctl keeps writing `urls`, `num_instances` and `router` in both sections; setting one of them under `server_config_extra` fails at load time.
+
 Because the orchestrator is a single process, set `enable_multiple_frontends: false` (the nginx + multi-router path is not supported). A configuration can be switched between the two TRT-LLM serving stacks by changing only `frontend.type` between `dynamo` and `trtllm_serve`; start from the `examples/trtllm/dynamo-disagg.yaml` and `examples/trtllm/trtllm-serve-disagg.yaml` examples.
 
 **Worker metrics default.** srtctl sets `return_perf_metrics: true` in the `args` of every role a `trtllm_serve` recipe uses (prefill and decode, or agg), creating the mapping when the recipe has none. This is a setdefault: an explicit `return_perf_metrics: false` in the recipe wins and is warned about. trtllm-serve mounts a worker's `/prometheus/metrics` route only when the engine runs with that flag, and TensorRT-LLM's own default is `false`, so without it Tachometer's `backend_*` endpoints answer HTTP 404 and the capture has no worker-level data. The route carries the per-request series (request latency, TTFT, TPOT, queue/prefill/decode time, token counters); it applies independently of `observability.enabled`, which keeps its own expansion. The same load step also sets `enable_iter_perf_stats: false` unless the recipe or observability says otherwise (see [Iteration statistics default](engines.md#trt-llm-metrics-publication)), so the route carries the per-request series only and the workers skip TensorRT-LLM's per-iteration statistics.

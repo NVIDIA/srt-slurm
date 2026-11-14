@@ -35,6 +35,31 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# ser.yaml server sections that frontend.server_config_extra may extend with per-section keys
+# (e.g. context_servers.num_serve_frontends).
+SER_SERVER_SECTIONS = ("context_servers", "generation_servers")
+# Keys srtctl writes in each server section: the worker list, and the router from frontend.ctx_router / gen_router.
+SER_SRTCTL_SERVER_KEYS = frozenset({"num_instances", "urls", "router"})
+
+
+def server_section_extra(server_config_extra: dict[str, Any] | None, section: str) -> dict[str, Any]:
+    """The keys ``server_config_extra.<section>`` adds to srtctl's ``<section>`` in ser.yaml."""
+    value = (server_config_extra or {}).get(section)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        # ValueError, not TypeError: SrtConfig turns a frontend's ValueError into a load-time ValidationError.
+        raise ValueError(  # noqa: TRY004
+            f"frontend.server_config_extra.{section} must be a mapping (got {type(value).__name__})"
+        )
+    owned = sorted(SER_SRTCTL_SERVER_KEYS & set(value))
+    if owned:
+        raise ValueError(
+            f"frontend.server_config_extra.{section} sets {owned}, which srtctl writes: urls and num_instances "
+            "come from the job's workers, router from frontend.ctx_router / frontend.gen_router"
+        )
+    return dict(value)
+
 
 @register_frontend("trtllm_serve")
 class TRTLLMServeFrontend(Frontend):
@@ -98,11 +123,16 @@ class TRTLLMServeFrontend(Frontend):
                 "frontend.type: trtllm_serve aggregate mode requires exactly one "
                 "aggregate worker (set roles.agg.workers: 1)"
             )
+        for section in SER_SERVER_SECTIONS:
+            server_section_extra(config.frontend.server_config_extra, section)
 
     @staticmethod
     def _build_ser(config: Any, prefill_urls: list[str], decode_urls: list[str], port: int) -> dict[str, Any]:
         """Build the trtllm-serve disaggregated ser.yaml, merging the optional
-        orchestrator-side router / server_config_extra from frontend config."""
+        orchestrator-side router / server_config_extra from frontend config.
+
+        A ``context_servers`` / ``generation_servers`` mapping in server_config_extra adds its keys to
+        srtctl's section instead of replacing it, so the section keeps the job's worker URLs."""
         context_servers: dict[str, Any] = {"num_instances": len(prefill_urls), "urls": prefill_urls}
         generation_servers: dict[str, Any] = {"num_instances": len(decode_urls), "urls": decode_urls}
         ser: dict[str, Any] = {
@@ -116,8 +146,11 @@ class TRTLLMServeFrontend(Frontend):
             context_servers["router"] = dict(fe.ctx_router)
         if getattr(fe, "gen_router", None):
             generation_servers["router"] = dict(fe.gen_router)
-        if getattr(fe, "server_config_extra", None):
-            ser.update(dict(fe.server_config_extra))
+        extra = dict(getattr(fe, "server_config_extra", None) or {})
+        for section in SER_SERVER_SECTIONS:
+            ser[section].update(server_section_extra(extra, section))
+            extra.pop(section, None)
+        ser.update(extra)
         return ser
 
     def start_frontends(

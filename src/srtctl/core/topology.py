@@ -253,8 +253,8 @@ def placed_node(processes: list[Process], placement: str, head: str, *, kind: st
 
     placement:
         "head"         -> the head node (default; unchanged behavior)
-        "first_decode" -> first decode/GEN worker-leader node
-        "last_decode"  -> last decode/GEN worker-leader node
+        "first_decode" -> first decode/GEN worker-leader node (the first node of the decode role)
+        "last_decode"  -> last node of the last decode/GEN worker (the last node of the decode role)
     ``kind`` is the config-field name, used only for error messages.
     """
     if placement == "head":
@@ -263,7 +263,11 @@ def placed_node(processes: list[Process], placement: str, head: str, *, kind: st
         decode = ordered_decode_leader_nodes(processes)
         if not decode:
             raise ValueError(f"{kind}={placement!r} but no decode workers were found")
-        return decode[0] if placement == "first_decode" else decode[-1]
+        if placement == "first_decode":
+            return decode[0]
+        last_index = max(p.endpoint_index for p in processes if p.endpoint_mode == "decode")
+        last_worker = [p for p in processes if p.endpoint_mode == "decode" and p.endpoint_index == last_index]
+        return max(last_worker, key=lambda p: p.node_rank).node
     raise ValueError(f"{kind}={placement!r} is invalid (expected head|first_decode|last_decode)")
 
 

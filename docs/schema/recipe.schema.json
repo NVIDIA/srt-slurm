@@ -204,7 +204,7 @@
         },
         "placement": {
           "$ref": "#/$defs/PlacementConfig",
-          "description": "Where the benchmark client runs. placement.node is \"head\" (default: the orchestrator's node), \"last_decode\" (the last decode/GEN worker-leader node, isolating the client off the CTX/orchestrator node; use the injected $SRT_FRONTEND_HOST env in the benchmark command's URL), or \"dedicated\" (a node reserved for the client: needs at least 2 nodes, not supported with resources.het_jobs: true)."
+          "description": "Where the benchmark client runs. placement.node is \"head\" (default: the orchestrator's node), \"last_decode\" (the last node of the last decode/GEN worker, isolating the client off the CTX/orchestrator node; use the injected $SRT_FRONTEND_HOST env in the benchmark command's URL), or \"dedicated\" (a node reserved for the client: needs at least 2 nodes, not supported with resources.het_jobs: true)."
         },
         "colocate_with_frontend": {
           "type": "boolean",
@@ -1046,7 +1046,7 @@
               "type": "null"
             }
           ],
-          "description": "extra top-level ser.yaml keys",
+          "description": "Extra top-level ser.yaml keys; a context_servers / generation_servers mapping adds keys to that section (srtctl keeps writing its urls, num_instances and router).",
           "default": null
         },
         "placement": {

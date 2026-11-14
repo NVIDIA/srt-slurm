@@ -49,6 +49,38 @@ def test_ser_conversation_router_and_extra():
     assert ser["gen_tokids_ctxbytes"] is True
 
 
+def test_ser_extra_server_section_merges_into_generated_section():
+    ser = TRTLLMServeFrontend._build_ser(
+        _cfg(
+            ctx_router={"type": "conversation"},
+            server_config_extra={
+                "context_servers": {"num_serve_frontends": 8, "serve_frontend_affinity_port_stride": 10},
+                "generation_servers": {"num_serve_frontends": 4},
+                "return_perf_metrics": True,
+            },
+        ),
+        ["c0:8000", "c0:8032"],
+        ["g0:8001"],
+        8000,
+    )
+    assert ser["context_servers"] == {
+        "num_instances": 2,
+        "urls": ["c0:8000", "c0:8032"],
+        "router": {"type": "conversation"},
+        "num_serve_frontends": 8,
+        "serve_frontend_affinity_port_stride": 10,
+    }
+    assert ser["generation_servers"] == {"num_instances": 1, "urls": ["g0:8001"], "num_serve_frontends": 4}
+    assert ser["return_perf_metrics"] is True
+
+
+@pytest.mark.parametrize("owned", ["urls", "num_instances", "router"])
+def test_ser_extra_server_section_rejects_srtctl_keys(owned: str):
+    cfg = _cfg(server_config_extra={"context_servers": {owned: ["<node2_placeholder>:8678"]}})
+    with pytest.raises(ValueError, match=f"server_config_extra.context_servers sets \\['{owned}'\\]"):
+        TRTLLMServeFrontend._build_ser(cfg, ["c0:8000"], ["g0:8001"], 8000)
+
+
 def test_ser_gen_router():
     ser = TRTLLMServeFrontend._build_ser(_cfg(gen_router={"type": "default"}), ["c0:8000"], ["g0:8001"], 8000)
     assert ser["generation_servers"]["router"] == {"type": "default"}
@@ -79,6 +111,29 @@ def test_frontend_config_accepts_router_fields(tmp_path: Path):
     config = SrtConfig.from_yaml(config_path)
     assert config.frontend.ctx_router == {"type": "conversation"}
     assert config.frontend.server_config_extra["gen_strip_message_history"] is True
+
+
+def test_frontend_config_rejects_server_section_urls_at_load(tmp_path: Path):
+    """A ser.yaml section copied from another launcher carries its own worker URLs; srtctl writes those."""
+    data = {
+        "schema": 2,
+        "name": "r",
+        "model": {"path": "/lustre/m", "container": "trtllm", "precision": "fp4"},
+        "resources": {"gpu_type": "gb300", "gpus_per_node": 4},
+        "engine": "trtllm",
+        "roles": {"prefill": {"nodes": 1, "workers": 1}, "decode": {"nodes": 1, "workers": 1}},
+        "frontend": {
+            "type": "trtllm_serve",
+            "enable_multiple_frontends": False,
+            "server_config_extra": {
+                "context_servers": {"urls": ["<node2_placeholder>:8678"], "num_serve_frontends": 8}
+            },
+        },
+    }
+    config_path = tmp_path / "disaggregated.yaml"
+    config_path.write_text(yaml.safe_dump(data))
+    with pytest.raises(ValidationError, match=r"server_config_extra.context_servers sets \['urls'\]"):
+        SrtConfig.from_yaml(config_path)
 
 
 def _aggregate_config(agg_workers: int) -> dict:

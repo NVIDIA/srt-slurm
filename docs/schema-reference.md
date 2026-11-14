@@ -141,7 +141,7 @@ Frontend/router configuration.
 | `numa_bind` | bool | `False` | Prefix the frontend process command with ``numactl --cpunodebind=0 --membind=0``. Off by default. Has no effect on direct frontends (``sglang``, ``vllm``, aggregate ``trtllm_serve``) that launch no separate frontend process. |
 | `ctx_router` | dict[str, Any] \| None | `None` | trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends. |
 | `gen_router` | dict[str, Any] \| None | `None` | generation_servers.router |
-| `server_config_extra` | dict[str, Any] \| None | `None` | extra top-level ser.yaml keys |
+| `server_config_extra` | dict[str, Any] \| None | `None` | Extra top-level ser.yaml keys; a context_servers / generation_servers mapping adds keys to that section (srtctl keeps writing its urls, num_instances and router). |
 | `placement` | [PlacementConfig](#placementconfig) | `PlacementConfig()` | Where the frontend (trtllm_serve: the disaggregated orchestrator) runs. placement.node is "head" (default: the first prefill/CTX node), "first_decode" (the first decode/GEN worker-leader node), or "dedicated" (a node reserved for the frontend: needs at least 2 nodes, not supported with resources.het_jobs: true). |
 
 ### DynamoConfig
@@ -174,7 +174,7 @@ Benchmark configuration.
 | `osl` | int \| None | `None` | Output sequence length in tokens for synthetic requests. |
 | `concurrencies` | list[int] \| str \| None | `None` | Concurrency levels, one benchmark phase each: a list or an `x`-separated string (`"4x8x16"`). Telemetry uses each phase as a measurement window. |
 | `req_rate` | str \| int \| None | `'inf'` | Request arrival rate in requests/s; `inf` sends as fast as concurrency allows. |
-| `placement` | [PlacementConfig](#placementconfig) | `PlacementConfig()` | Where the benchmark client runs. placement.node is "head" (default: the orchestrator's node), "last_decode" (the last decode/GEN worker-leader node, isolating the client off the CTX/orchestrator node; use the injected $SRT_FRONTEND_HOST env in the benchmark command's URL), or "dedicated" (a node reserved for the client: needs at least 2 nodes, not supported with resources.het_jobs: true). |
+| `placement` | [PlacementConfig](#placementconfig) | `PlacementConfig()` | Where the benchmark client runs. placement.node is "head" (default: the orchestrator's node), "last_decode" (the last node of the last decode/GEN worker, isolating the client off the CTX/orchestrator node; use the injected $SRT_FRONTEND_HOST env in the benchmark command's URL), or "dedicated" (a node reserved for the client: needs at least 2 nodes, not supported with resources.het_jobs: true). |
 | `colocate_with_frontend` | bool | `True` | Governs how dedicated placements combine when more than one of the benchmark client, the frontend, and the etcd/nats services asks for placement.node: dedicated. If True (default), every requested role shares a single reserved node. If False, each requested role gets its own reserved node (requires enough total nodes: worker count + number of dedicated roles). |
 | `sweep` | [SweepConfig](#sweepconfig) \| None | `None` | Accepted for compatibility; no runner reads it. Sweep a recipe with the top-level `sweep:` block. |
 | `num_examples` | int \| None | `None` | Accuracy benchmark fields |

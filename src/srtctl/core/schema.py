@@ -1219,7 +1219,7 @@ class BenchmarkConfig:
     # Request arrival rate in requests/s; `inf` sends as fast as concurrency allows.
     req_rate: str | int | None = "inf"
     # Where the benchmark client runs. placement.node is "head" (default: the
-    # orchestrator's node), "last_decode" (the last decode/GEN worker-leader node,
+    # orchestrator's node), "last_decode" (the last node of the last decode/GEN worker,
     # isolating the client off the CTX/orchestrator node; use the injected
     # $SRT_FRONTEND_HOST env in the benchmark command's URL), or "dedicated" (a
     # node reserved for the client: needs at least 2 nodes, not supported with
@@ -2701,7 +2701,9 @@ class FrontendConfig:
     # trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends.
     ctx_router: dict[str, Any] | None = None  # context_servers.router, e.g. {type: conversation}
     gen_router: dict[str, Any] | None = None  # generation_servers.router
-    server_config_extra: dict[str, Any] | None = None  # extra top-level ser.yaml keys
+    # Extra top-level ser.yaml keys; a context_servers / generation_servers mapping adds keys to that section
+    # (srtctl keeps writing its urls, num_instances and router).
+    server_config_extra: dict[str, Any] | None = None
     # Where the frontend (trtllm_serve: the disaggregated orchestrator) runs.
     # placement.node is "head" (default: the first prefill/CTX node), "first_decode"
     # (the first decode/GEN worker-leader node), or "dedicated" (a node reserved for
