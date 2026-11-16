@@ -176,7 +176,8 @@ echo ""
 set +e  # Temporarily disable exit-on-error to capture exit code
 cd "${SRTCTL_SOURCE}"
 # Lock-protected venv sync to avoid concurrent venv teardown/recreate
-# races across simultaneous SLURM jobs sharing this directory. uv may decide
+# races across simultaneous SLURM jobs sharing this venv (the lock sits beside
+# it, wherever compute_venv puts it). uv may decide
 # the existing venv is invalid (broken python interpreter symlink) and tear
 # it down + rebuild; if N jobs do that at once they stomp each other with
 # "Directory not empty" / "Failed to spawn 'python -m'" / missing CACHEDIR.TAG
