@@ -1,0 +1,714 @@
+# examples/tilert/dsv41flash-gb300-dep32-decode.yaml
+# exit_code: 0
+# srun calls: 40
+
+## prefill_0_node-02
+nodelist: node-02
+output: <output>/logs/node-02_prefill_w0.out
+container_image: tilert-prefill
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 0,1
+    DYN_VLLM_KV_EVENT_PORT: 3000
+    HEAD_NODE_IP: 127.0.0.1
+    NCCL_MNNVL_ENABLE: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PORT: 20000
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6100 --attention-config '{"indexer_kv_dtype":"mxfp4"}' --data-parallel-size 2 --enable-expert-parallel --gpu-memory-utilization 0.95 --kv-cache-dtype fp8 --kv-transfer-config '{"kv_connector":"TileRTOfficialConnector","kv_connector_module_path":"tilert.pd_vllm.official_connector",
+     "kv_role":"kv_producer","kv_connector_extra_config":{
+       "tilert_model":"dsv41","tilert_max_seq_len":1048576,"tilert_transport":"nvlink"}}' --language-model-only --max-model-len 1048576 --served-model-name deepseek-ai/DeepSeek-V4.1-Flash --speculative-config '{"method":"dspark","num_speculative_tokens":5}' --tensor-parallel-size 1 --tokenizer-mode deepseek_v41
+
+## prefill_1_node-02
+nodelist: node-02
+output: <output>/logs/node-02_prefill_w1.out
+container_image: tilert-prefill
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 2,3
+    DYN_VLLM_KV_EVENT_PORT: 3001
+    HEAD_NODE_IP: 127.0.0.1
+    NCCL_MNNVL_ENABLE: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5401
+    VLLM_PORT: 20050
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6132 --attention-config '{"indexer_kv_dtype":"mxfp4"}' --data-parallel-size 2 --enable-expert-parallel --gpu-memory-utilization 0.95 --kv-cache-dtype fp8 --kv-transfer-config '{"kv_connector":"TileRTOfficialConnector","kv_connector_module_path":"tilert.pd_vllm.official_connector",
+     "kv_role":"kv_producer","kv_connector_extra_config":{
+       "tilert_model":"dsv41","tilert_max_seq_len":1048576,"tilert_transport":"nvlink"}}' --language-model-only --max-model-len 1048576 --served-model-name deepseek-ai/DeepSeek-V4.1-Flash --speculative-config '{"method":"dspark","num_speculative_tokens":5}' --tensor-parallel-size 1 --tokenizer-mode deepseek_v41
+
+## prefill_2_node-03
+nodelist: node-03
+output: <output>/logs/node-03_prefill_w2.out
+container_image: tilert-prefill
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 0,1
+    DYN_VLLM_KV_EVENT_PORT: 3002
+    HEAD_NODE_IP: 127.0.0.1
+    NCCL_MNNVL_ENABLE: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5402
+    VLLM_PORT: 20100
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6100 --attention-config '{"indexer_kv_dtype":"mxfp4"}' --data-parallel-size 2 --enable-expert-parallel --gpu-memory-utilization 0.95 --kv-cache-dtype fp8 --kv-transfer-config '{"kv_connector":"TileRTOfficialConnector","kv_connector_module_path":"tilert.pd_vllm.official_connector",
+     "kv_role":"kv_producer","kv_connector_extra_config":{
+       "tilert_model":"dsv41","tilert_max_seq_len":1048576,"tilert_transport":"nvlink"}}' --language-model-only --max-model-len 1048576 --served-model-name deepseek-ai/DeepSeek-V4.1-Flash --speculative-config '{"method":"dspark","num_speculative_tokens":5}' --tensor-parallel-size 1 --tokenizer-mode deepseek_v41
+
+## prefill_3_node-03
+nodelist: node-03
+output: <output>/logs/node-03_prefill_w3.out
+container_image: tilert-prefill
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 2,3
+    DYN_VLLM_KV_EVENT_PORT: 3003
+    HEAD_NODE_IP: 127.0.0.1
+    NCCL_MNNVL_ENABLE: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5403
+    VLLM_PORT: 20150
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6132 --attention-config '{"indexer_kv_dtype":"mxfp4"}' --data-parallel-size 2 --enable-expert-parallel --gpu-memory-utilization 0.95 --kv-cache-dtype fp8 --kv-transfer-config '{"kv_connector":"TileRTOfficialConnector","kv_connector_module_path":"tilert.pd_vllm.official_connector",
+     "kv_role":"kv_producer","kv_connector_extra_config":{
+       "tilert_model":"dsv41","tilert_max_seq_len":1048576,"tilert_transport":"nvlink"}}' --language-model-only --max-model-len 1048576 --served-model-name deepseek-ai/DeepSeek-V4.1-Flash --speculative-config '{"method":"dspark","num_speculative_tokens":5}' --tensor-parallel-size 1 --tokenizer-mode deepseek_v41
+
+## prefill_4_node-04
+nodelist: node-04
+output: <output>/logs/node-04_prefill_w4.out
+container_image: tilert-prefill
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 0,1
+    DYN_VLLM_KV_EVENT_PORT: 3004
+    HEAD_NODE_IP: 127.0.0.1
+    NCCL_MNNVL_ENABLE: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5404
+    VLLM_PORT: 20200
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6100 --attention-config '{"indexer_kv_dtype":"mxfp4"}' --data-parallel-size 2 --enable-expert-parallel --gpu-memory-utilization 0.95 --kv-cache-dtype fp8 --kv-transfer-config '{"kv_connector":"TileRTOfficialConnector","kv_connector_module_path":"tilert.pd_vllm.official_connector",
+     "kv_role":"kv_producer","kv_connector_extra_config":{
+       "tilert_model":"dsv41","tilert_max_seq_len":1048576,"tilert_transport":"nvlink"}}' --language-model-only --max-model-len 1048576 --served-model-name deepseek-ai/DeepSeek-V4.1-Flash --speculative-config '{"method":"dspark","num_speculative_tokens":5}' --tensor-parallel-size 1 --tokenizer-mode deepseek_v41
+
+## prefill_5_node-04
+nodelist: node-04
+output: <output>/logs/node-04_prefill_w5.out
+container_image: tilert-prefill
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 2,3
+    DYN_VLLM_KV_EVENT_PORT: 3005
+    HEAD_NODE_IP: 127.0.0.1
+    NCCL_MNNVL_ENABLE: 1
+    VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
+    VLLM_NIXL_SIDE_CHANNEL_PORT: 5405
+    VLLM_PORT: 20250
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6132 --attention-config '{"indexer_kv_dtype":"mxfp4"}' --data-parallel-size 2 --enable-expert-parallel --gpu-memory-utilization 0.95 --kv-cache-dtype fp8 --kv-transfer-config '{"kv_connector":"TileRTOfficialConnector","kv_connector_module_path":"tilert.pd_vllm.official_connector",
+     "kv_role":"kv_producer","kv_connector_extra_config":{
+       "tilert_model":"dsv41","tilert_max_seq_len":1048576,"tilert_transport":"nvlink"}}' --language-model-only --max-model-len 1048576 --served-model-name deepseek-ai/DeepSeek-V4.1-Flash --speculative-config '{"method":"dspark","num_speculative_tokens":5}' --tensor-parallel-size 1 --tokenizer-mode deepseek_v41
+
+## decode_0_node-05
+nodelist: node-05
+output: <output>/logs/node-05_decode_w0.out
+container_image: tilert-decode
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    HEAD_NODE_IP: 127.0.0.1
+    TILERT_EP_BATCH: 8
+    TILERT_WEP_GRAPH_LANES: 1,2,4
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    env TILERT_PD_NNODES=8 TILERT_PD_NODE_RANK=0 TILERT_PD_RDZV=127.0.0.1:8300 python -m tilert.pd_vllm.decode_server --engine tilert --http-port 6100 --ctrl-port 5406 --model dsv41 --model-weights-dir /model --max-seq-len 1048576 --transport nvlink --with-mtp --num-mtp 5
+
+## decode_0_node-06
+nodelist: node-06
+output: <output>/logs/node-06_decode_w0.out
+container_image: tilert-decode
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    HEAD_NODE_IP: 127.0.0.1
+    TILERT_EP_BATCH: 8
+    TILERT_WEP_GRAPH_LANES: 1,2,4
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    env TILERT_PD_NNODES=8 TILERT_PD_NODE_RANK=1 TILERT_PD_RDZV=127.0.0.1:8300 python -m tilert.pd_vllm.decode_server --engine tilert --http-port 6100 --ctrl-port 5407 --model dsv41 --model-weights-dir /model --max-seq-len 1048576 --transport nvlink --with-mtp --num-mtp 5
+
+## decode_0_node-07
+nodelist: node-07
+output: <output>/logs/node-07_decode_w0.out
+container_image: tilert-decode
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    HEAD_NODE_IP: 127.0.0.1
+    TILERT_EP_BATCH: 8
+    TILERT_WEP_GRAPH_LANES: 1,2,4
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    env TILERT_PD_NNODES=8 TILERT_PD_NODE_RANK=2 TILERT_PD_RDZV=127.0.0.1:8300 python -m tilert.pd_vllm.decode_server --engine tilert --http-port 6100 --ctrl-port 5408 --model dsv41 --model-weights-dir /model --max-seq-len 1048576 --transport nvlink --with-mtp --num-mtp 5
+
+## decode_0_node-08
+nodelist: node-08
+output: <output>/logs/node-08_decode_w0.out
+container_image: tilert-decode
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    HEAD_NODE_IP: 127.0.0.1
+    TILERT_EP_BATCH: 8
+    TILERT_WEP_GRAPH_LANES: 1,2,4
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    env TILERT_PD_NNODES=8 TILERT_PD_NODE_RANK=3 TILERT_PD_RDZV=127.0.0.1:8300 python -m tilert.pd_vllm.decode_server --engine tilert --http-port 6100 --ctrl-port 5409 --model dsv41 --model-weights-dir /model --max-seq-len 1048576 --transport nvlink --with-mtp --num-mtp 5
+
+## decode_0_node-09
+nodelist: node-09
+output: <output>/logs/node-09_decode_w0.out
+container_image: tilert-decode
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    HEAD_NODE_IP: 127.0.0.1
+    TILERT_EP_BATCH: 8
+    TILERT_WEP_GRAPH_LANES: 1,2,4
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    env TILERT_PD_NNODES=8 TILERT_PD_NODE_RANK=4 TILERT_PD_RDZV=127.0.0.1:8300 python -m tilert.pd_vllm.decode_server --engine tilert --http-port 6100 --ctrl-port 5410 --model dsv41 --model-weights-dir /model --max-seq-len 1048576 --transport nvlink --with-mtp --num-mtp 5
+
+## decode_0_node-10
+nodelist: node-10
+output: <output>/logs/node-10_decode_w0.out
+container_image: tilert-decode
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    HEAD_NODE_IP: 127.0.0.1
+    TILERT_EP_BATCH: 8
+    TILERT_WEP_GRAPH_LANES: 1,2,4
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    env TILERT_PD_NNODES=8 TILERT_PD_NODE_RANK=5 TILERT_PD_RDZV=127.0.0.1:8300 python -m tilert.pd_vllm.decode_server --engine tilert --http-port 6100 --ctrl-port 5411 --model dsv41 --model-weights-dir /model --max-seq-len 1048576 --transport nvlink --with-mtp --num-mtp 5
+
+## decode_0_node-11
+nodelist: node-11
+output: <output>/logs/node-11_decode_w0.out
+container_image: tilert-decode
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    HEAD_NODE_IP: 127.0.0.1
+    TILERT_EP_BATCH: 8
+    TILERT_WEP_GRAPH_LANES: 1,2,4
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    env TILERT_PD_NNODES=8 TILERT_PD_NODE_RANK=6 TILERT_PD_RDZV=127.0.0.1:8300 python -m tilert.pd_vllm.decode_server --engine tilert --http-port 6100 --ctrl-port 5412 --model dsv41 --model-weights-dir /model --max-seq-len 1048576 --transport nvlink --with-mtp --num-mtp 5
+
+## decode_0_node-12
+nodelist: node-12
+output: <output>/logs/node-12_decode_w0.out
+container_image: tilert-decode
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    HEAD_NODE_IP: 127.0.0.1
+    TILERT_EP_BATCH: 8
+    TILERT_WEP_GRAPH_LANES: 1,2,4
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    env TILERT_PD_NNODES=8 TILERT_PD_NODE_RANK=7 TILERT_PD_RDZV=127.0.0.1:8300 python -m tilert.pd_vllm.decode_server --engine tilert --http-port 6100 --ctrl-port 5413 --model dsv41 --model-weights-dir /model --max-seq-len 1048576 --transport nvlink --with-mtp --num-mtp 5
+
+## tilert_router_0
+nodelist: node-01
+output: <output>/logs/node-01_tilert-router_0.out
+container_image: tilert-router
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+command: |
+    env TILERT_ROUTER_P_URLS=http://127.0.0.1:6100,http://127.0.0.1:6132,http://127.0.0.1:6100,http://127.0.0.1:6132,http://127.0.0.1:6100,http://127.0.0.1:6132 python -m tilert.pd_vllm.rs_front_sup python -m tilert.pd_vllm.pd_router --vllm-url http://127.0.0.1:6100,http://127.0.0.1:6132,http://127.0.0.1:6100,http://127.0.0.1:6132,http://127.0.0.1:6100,http://127.0.0.1:6132 --decode 127.0.0.1:5406:6100 --host 0.0.0.0 --port 8000 --model dsv41 --parser deepseek_v41 --model-path /model --queue-timeout 1800 --decode-capacity 256
+
+## service_dcgm-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_dcgm-exporter_node-02.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_dcgm-exporter_node-03.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-04
+nodelist: node-04
+output: <output>/logs/service_dcgm-exporter_node-04.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-05
+nodelist: node-05
+output: <output>/logs/service_dcgm-exporter_node-05.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-06
+nodelist: node-06
+output: <output>/logs/service_dcgm-exporter_node-06.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-07
+nodelist: node-07
+output: <output>/logs/service_dcgm-exporter_node-07.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-08
+nodelist: node-08
+output: <output>/logs/service_dcgm-exporter_node-08.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-09
+nodelist: node-09
+output: <output>/logs/service_dcgm-exporter_node-09.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-10
+nodelist: node-10
+output: <output>/logs/service_dcgm-exporter_node-10.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-11
+nodelist: node-11
+output: <output>/logs/service_dcgm-exporter_node-11.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-12
+nodelist: node-12
+output: <output>/logs/service_dcgm-exporter_node-12.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-13
+nodelist: node-13
+output: <output>/logs/service_dcgm-exporter_node-13.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_node-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_node-exporter_node-02.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_node-exporter_node-03.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-04
+nodelist: node-04
+output: <output>/logs/service_node-exporter_node-04.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-05
+nodelist: node-05
+output: <output>/logs/service_node-exporter_node-05.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-06
+nodelist: node-06
+output: <output>/logs/service_node-exporter_node-06.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-07
+nodelist: node-07
+output: <output>/logs/service_node-exporter_node-07.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-08
+nodelist: node-08
+output: <output>/logs/service_node-exporter_node-08.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-09
+nodelist: node-09
+output: <output>/logs/service_node-exporter_node-09.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-10
+nodelist: node-10
+output: <output>/logs/service_node-exporter_node-10.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-11
+nodelist: node-11
+output: <output>/logs/service_node-exporter_node-11.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-12
+nodelist: node-12
+output: <output>/logs/service_node-exporter_node-12.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-13
+nodelist: node-13
+output: <output>/logs/service_node-exporter_node-13.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## tachometer
+nodelist: node-01
+output: <output>/logs/tachometer.out
+srun_export_env:
+    POLARS_MAX_THREADS: 4
+use_bash_wrapper: False
+command: |
+    tachometer-scraper --config <output>/logs/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120

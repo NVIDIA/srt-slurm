@@ -231,7 +231,9 @@ def test_router_joins_every_prefill_url(tmp_path: Path) -> None:
         workers = frontend.collect_workers(config.backend, orchestrator.backend_processes)
     command = frontend.build_router_command(workers, "0.0.0.0", 8000, config.backend)
     prefills = [p for p in orchestrator.backend_processes if p.endpoint_mode == "prefill"]
-    assert _flag(command, "--vllm-url") == ",".join(f"http://{hosts[p.node]}:{p.http_port}" for p in prefills)
+    urls = ",".join(f"http://{hosts[p.node]}:{p.http_port}" for p in prefills)
+    assert _flag(command, "--vllm-url") == urls
+    assert command[:2] == ["env", f"TILERT_ROUTER_P_URLS={urls}"]
 
 
 def test_benchmark_model_matches_prefill_without_a_decode_alias(tmp_path: Path) -> None:
@@ -294,3 +296,31 @@ def test_router_setup_runs_before_launch_and_failure_stops_launch(tmp_path: Path
     )
     assert failed.returncode == 7
     assert failed.stdout == "installed\n"
+
+
+def test_rust_front_wraps_the_router_and_is_not_a_router_flag(tmp_path: Path) -> None:
+    data = _recipe()
+    data["frontend"].setdefault("args", {})["rust-front"] = True
+    config = _load(data)
+    orchestrator = _orchestrator(config, tmp_path, ("p0", "d0"))
+    frontend = TileRTRouterFrontend()
+    hosts = {"p0": "10.0.0.10", "d0": "10.0.0.11"}
+    with patch("srtctl.frontends.static_router.get_hostname_ip", side_effect=lambda node, _: hosts[node]):
+        workers = frontend.collect_workers(config.backend, orchestrator.backend_processes)
+    plain = frontend.build_router_command(workers, "0.0.0.0", 8000, config.backend)
+    assert plain[2:5] == ["python", "-m", "tilert.pd_vllm.pd_router"]
+    frontend.rust_front = True
+    command = frontend.build_router_command(workers, "0.0.0.0", 8000, config.backend)
+    command.extend(frontend.get_frontend_args_list(config.frontend.args))
+    assert command[2:8] == ["python", "-m", "tilert.pd_vllm.rs_front_sup", "python", "-m", "tilert.pd_vllm.pd_router"]
+    assert command[:2] == plain[:2]
+    assert command[5 : 3 + len(plain)] == plain[2:]
+    assert "--rust-front" not in command
+    assert _flag(command, "--port") == "8000"
+
+
+def test_rust_front_must_be_a_boolean() -> None:
+    data = _recipe()
+    data["frontend"].setdefault("args", {})["rust-front"] = "yes"
+    with pytest.raises(ValidationError, match="rust-front must be true or false"):
+        _load(data)

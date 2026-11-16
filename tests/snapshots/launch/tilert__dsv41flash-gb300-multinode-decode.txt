@@ -80,7 +80,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 command: |
-    python -m tilert.pd_vllm.pd_router --vllm-url http://127.0.0.1:6100 --decode 127.0.0.1:5401:6100 --host 0.0.0.0 --port 8000 --model dsv41 --parser none --model-path /model --queue-timeout 1800
+    env TILERT_ROUTER_P_URLS=http://127.0.0.1:6100 python -m tilert.pd_vllm.pd_router --vllm-url http://127.0.0.1:6100 --decode 127.0.0.1:5401:6100 --host 0.0.0.0 --port 8000 --model dsv41 --parser none --model-path /model --queue-timeout 1800
 
 ## service_dcgm-exporter_node-01
 nodelist: node-01
