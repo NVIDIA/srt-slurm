@@ -45,8 +45,7 @@ class TestManagedProcess:
             log_file=Path("/tmp/test.log"),
         )
 
-        # exit_code comes from popen.returncode
-        assert mock_popen.returncode == 1
+        assert mp.exit_code == 1
 
     def test_terminate_does_not_raise_when_kill_wait_times_out(self):
         """A child that survives SIGKILL must not raise out of terminate()."""
@@ -110,6 +109,29 @@ class TestTerminateAndReap:
         assert outcome.force_killed is True
         mock_popen.terminate.assert_called_once()
         mock_popen.kill.assert_called_once()
+
+    def test_named_step_is_signalled_through_the_launcher(self):
+        mock_popen = MagicMock(spec=Popen)
+        mock_popen.poll.return_value = None
+        mock_popen.wait.side_effect = [TimeoutExpired(cmd="bench", timeout=1), -9]
+
+        with patch("srtctl.core.processes.signal_step", return_value=True) as signal:
+            outcome = terminate_and_reap(mock_popen, terminate_timeout=0.01, kill_timeout=0.01, step_name="benchmark")
+
+        assert outcome.force_killed is True
+        assert [c.args for c in signal.call_args_list] == [("benchmark", "TERM"), ("benchmark", "KILL")]
+        mock_popen.terminate.assert_not_called()
+        mock_popen.kill.assert_not_called()
+
+    def test_unsignalled_step_falls_back_to_the_client(self):
+        mock_popen = MagicMock(spec=Popen)
+        mock_popen.poll.return_value = None
+        mock_popen.wait.return_value = 0
+
+        with patch("srtctl.core.processes.signal_step", return_value=False):
+            terminate_and_reap(mock_popen, terminate_timeout=0.01, step_name="benchmark")
+
+        mock_popen.terminate.assert_called_once()
 
 
 class TestProcessRegistry:
@@ -345,7 +367,7 @@ class TestTieredCleanup:
     def test_without_slurm_tools_signal_step_declines_quietly(self):
         from srtctl.core.processes import signal_step
 
-        with patch("srtctl.core.processes.shutil.which", return_value=None):
+        with patch("srtctl.core.launcher.shutil.which", return_value=None):
             assert signal_step("anything") is False
 
 
@@ -353,8 +375,8 @@ def test_profile_wrapper_uses_task_only_step_signal():
     from srtctl.core.processes import signal_step
 
     with (
-        patch("srtctl.core.processes.shutil.which", return_value="/bin/scancel"),
-        patch("srtctl.core.processes.subprocess.run", return_value=MagicMock(returncode=0)) as run,
+        patch("srtctl.core.launcher.shutil.which", return_value="/bin/scancel"),
+        patch("srtctl.core.launcher.subprocess.run", return_value=MagicMock(returncode=0)) as run,
     ):
         assert signal_step("profiled", step_ids={"profiled": "123.4"}, full=False)
     assert run.call_args.args[0] == ["scancel", "--signal=TERM", "123.4"]

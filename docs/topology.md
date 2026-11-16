@@ -80,6 +80,8 @@ The lists do not overlap, each has `gpus` entries, and `nodes` is `workers` divi
 
 `decode.nodes: colocate` reserves no nodes for decode and places the decode workers on whatever GPUs the prefill workers leave free on the prefill nodes. `gpus` must be given on both roles (the per-node formula cannot derive a split), and loading fails if the split does not fit, using the engine's real packing, so an oversubscribed layout is caught by `srtctl dry-run` instead of by the job.
 
+With `resources.spread_workers: true` (one prefill worker per node), the colocated decode workers are spread like the prefill workers: one per prefill node in turn, each on that node's highest free GPUs. A TP1 or TP2 decode beside a TP1 prefill on GPU 0 of a 4-GPU node therefore takes the node's top GPUs, the other socket where GPUs are numbered socket by socket. Each node must fit its own workers: a layout that fits the total GPU count but not one node's free GPUs fails at load.
+
 ```yaml
 resources:
   gpu_type: "h100"

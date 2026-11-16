@@ -104,9 +104,10 @@ def sidecar_logical_worker_metrics_target(
     Custom benchmarks receive one URL per logical worker, aligned position by
     position with ``SRT_*_ENDPOINTS`` (``docs/benchmarks.md``), so ``process``
     is the worker's routable leader. That is the native engine's own endpoint
-    where it serves one (the leader's HTTP port for vLLM and SGLang), else the
-    sidecar's runtime endpoint (TRT-LLM's OpenEngine gRPC server serves none),
-    so a consumer that drains on the list always gets a live URL per worker.
+    where it serves one (the leader's HTTP port; for TRT-LLM only with the
+    performance-metrics opt-in, ``TRTLLMBackend.sidecar_engine_metrics_port``),
+    else the sidecar's runtime endpoint, so a consumer that drains on the list
+    always gets a live URL per worker.
     """
     endpoint_processes = _endpoint_groups(processes)[(process.endpoint_mode, process.endpoint_index)]
     return _sidecar_engine_target(process, endpoint_processes, backend) or _sidecar_runtime_target(

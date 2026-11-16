@@ -316,10 +316,12 @@ class PostEvalConfig:
             the placeholders ``{endpoint}`` (the frontend URL) and
             ``{infmax_workspace}`` (the InferenceMAX workspace mount). Not
             shell-interpreted; wrap in ``bash -lc`` yourself if you need a shell.
+        container_image: Image the eval process runs in; unset uses ``model.container``.
     """
 
     passthrough_env: list[str] = field(default_factory=list)
     command: list[str] | None = None
+    container_image: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -419,6 +421,10 @@ class ClusterConfig:
     default_reuse_container: bool = False
     # srtctl checkout on the shared filesystem that compute nodes mount at /srtctl-src. Default: this checkout.
     srtctl_root: str | None = None
+    # Path of the batch job's compute-architecture venv (default: `.venv-compute` in the srtctl checkout), e.g.
+    # node-local disk when the checkout sits on small or distant shared storage. Must exist on every node when
+    # `telemetry.cpu_power` is on. Environment variables expand on the submitting host.
+    compute_venv: str | None = None
     output_dir: str | None = None  # Custom output directory for job logs
     # Alias -> path map; a recipe's `model.path` may name an alias instead of a path.
     model_paths: dict[str, str] | None = None
@@ -459,6 +465,15 @@ class ClusterConfig:
     # other nodes return to the scheduler before the S3 upload and AI analysis, which then run
     # on the batch host. Needs job shrinking enabled (no `disable_job_shrink`); skipped for het jobs.
     release_nodes_before_postprocess: bool = False
+    # Where processes run: `slurm` (srun steps inside an sbatch allocation) or `local`
+    # (one job on this machine, containers under `docker run`). See docs/cluster-config.md#launcher.
+    launcher: Literal["slurm", "docker"] = "slurm"
+    # Extra `docker run` arguments for every container under `launcher: docker`, e.g. `["--user", "1000:1000"]`.
+    docker_args: list[str] | None = None
+    # The `--gpus` value for every container under `launcher: docker` (default `all`), e.g. `"device=2,3,4,5"`
+    # on a shared or partly faulty machine. Docker renumbers the listed devices from 0, so the per-worker
+    # `CUDA_VISIBLE_DEVICES` masks the orchestrator computes stay valid.
+    docker_gpus: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -949,6 +964,8 @@ class ResourceConfig:
     # If True, place each partial-node worker on its own node instead of
     # packing multiple onto the same node. Caller must reserve enough nodes
     # (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node).
+    # With roles.decode.nodes: colocate, the decode workers go one per prefill
+    # node in turn, each on that node's highest free GPUs.
     spread_workers: bool = False
 
     # SLURM heterogeneous-job opt-in. Tri-state: None defers to the cluster

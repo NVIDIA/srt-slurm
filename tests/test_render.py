@@ -219,14 +219,38 @@ def test_the_ready_marker_records_the_health_gate(tmp_path: Path) -> None:
     assert write_server_ready_marker(tmp_path / "missing" / "dir") is None
 
 
+@pytest.mark.parametrize(
+    ("env", "venv"),
+    [({"SLURM_JOB_ID": "123"}, ".venv-compute"), ({"SRTCTL_JOB_ID": "docker-1"}, ".venv")],
+)
+def test_job_script_picks_the_venv_for_the_launcher(recipe: Path, env: dict[str, str], venv: str) -> None:
+    body = submit.generate_minimal_sbatch_script(config=SrtConfig.from_yaml(recipe), config_path=recipe)
+    start = body.index('if [ -n "${SRTCTL_JOB_ID:-}" ]')
+    block = body[start : body.index("\nfi\n", start) + 4]
+    result = subprocess.run(
+        ["bash", "-c", block + 'echo "$UV_PROJECT_ENVIRONMENT"'],
+        env={"PATH": "/usr/bin:/bin", "SRTCTL_SOURCE": "/src", **env},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == f"/src/{venv}"
+
+
 @pytest.mark.skipif(shutil.which("flock") is None, reason="needs util-linux flock")
 @pytest.mark.parametrize("compute_venv", [None, "node-local/venv"])
-def test_the_compute_venv_and_its_lock_follow_srtctl_compute_venv(
+def test_the_compute_venv_and_its_lock_follow_srtslurm_compute_venv(
     recipe: Path, tmp_path: Path, compute_venv: str | None
 ) -> None:
-    body = submit.generate_minimal_sbatch_script(config=SrtConfig.from_yaml(recipe), config_path=recipe)
+    venv = tmp_path / compute_venv if compute_venv else None
+
+    def setting(key, default=None):
+        return str(venv) if key == "compute_venv" and venv else default
+
+    with patch("srtctl.cli.submit.get_srtslurm_setting", side_effect=setting):
+        body = submit.generate_minimal_sbatch_script(config=SrtConfig.from_yaml(recipe), config_path=recipe)
     venv_setup = body[
-        body.index("export UV_PROJECT_ENVIRONMENT") : body.index("uv run --python 3.12 --no-dev --no-sync")
+        body.index('if [ -n "${SRTCTL_JOB_ID:-}" ]') : body.index("uv run --python 3.12 --no-dev --no-sync")
     ]
     source = tmp_path / "srt-slurm"
     source.mkdir()
@@ -236,11 +260,9 @@ def test_the_compute_venv_and_its_lock_follow_srtctl_compute_venv(
     stub.chmod(0o755)
     calls = tmp_path / "uv-calls"
     env = {"PATH": f"{stub.parent}:/usr/bin:/bin", "SRTCTL_SOURCE": str(source), "UV_CALLS": str(calls)}
-    if compute_venv:
-        env["SRTCTL_COMPUTE_VENV"] = str(tmp_path / compute_venv)
 
     subprocess.run(["bash", "-c", f"set -e\n{venv_setup}"], env=env, check=True)
 
-    venv = tmp_path / compute_venv if compute_venv else source / ".venv-compute"
+    venv = venv or source / ".venv-compute"
     assert calls.read_text().splitlines()[-1] == f"sync --python 3.12 --no-dev -> {venv}"
     assert Path(f"{venv}.lock").exists()

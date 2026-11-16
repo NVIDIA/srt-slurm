@@ -267,6 +267,36 @@ def placed_node(processes: list[Process], placement: str, head: str, *, kind: st
     raise ValueError(f"{kind}={placement!r} is invalid (expected head|first_decode|last_decode)")
 
 
+def spread_onto_nodes(
+    placed: Sequence[Endpoint], mode: WorkerMode, count: int, gpus_per_worker: int, gpus_per_node: int
+) -> list[Endpoint]:
+    """Workers of ``mode`` on the nodes the ``placed`` endpoints hold, one worker per node in turn, each on its node's
+    highest free GPUs: the colocated decode of spread prefill workers (``resources.spread_workers`` with
+    ``roles.decode.nodes: colocate``). The highest free GPUs keep each decode as far from its node's prefill as the
+    node allows: where GPUs are numbered socket by socket (GPUs 0-1 on socket 0 and 2-3 on socket 1 of a 4-GPU
+    node), a TP1 or TP2 decode beside a TP1 prefill on GPU 0 gets the other socket, its CPUs and its memory.
+    Raises ValueError when a worker does not fit on its node's free GPUs.
+    """
+    nodes = list(dict.fromkeys(node for endpoint in placed for node in endpoint.nodes))
+    used: dict[str, set[int]] = {node: set() for node in nodes}
+    for endpoint in placed:
+        for rank, node in enumerate(endpoint.nodes):
+            used[node] |= endpoint.gpus_on_node(rank)
+    result = []
+    for i in range(count):
+        node = nodes[i % len(nodes)]
+        free = sorted(set(range(gpus_per_node)) - used[node])
+        if gpus_per_worker > len(free):
+            raise ValueError(
+                f"Not enough free GPUs: {mode} worker {i} needs {gpus_per_worker} GPU(s) on {node}, "
+                f"which has {len(free)} free beside the workers already placed there"
+            )
+        gpu_indices = frozenset(free[len(free) - gpus_per_worker :])
+        used[node] |= gpu_indices
+        result.append(Endpoint(mode=mode, index=i, nodes=(node,), gpu_indices=gpu_indices, gpus_per_node=gpus_per_node))
+    return result
+
+
 def allocate_endpoints(
     num_prefill: int,
     num_decode: int,
@@ -542,7 +572,11 @@ def allocate_endpoints(
     # prefill and decode don't share a node. This prevents the bug where a
     # multi-node decode worker overlaps with a partial-node prefill worker.
     # When there are no more nodes (decode_nodes=0 config), allow sharing.
-    if num_decode > 0:
+    if num_decode > 0 and spread_workers and endpoints and node_idx >= len(available_nodes):
+        # Spread prefill workers took every node and the decode reserved none (roles.decode.nodes: colocate): it shares
+        # the prefill nodes, spread like them.
+        endpoints.extend(spread_onto_nodes(endpoints, "decode", num_decode, gpus_per_decode, gpus_per_node))
+    elif num_decode > 0:
         if not allow_prefill_decode_colocation and gpu_offset > 0 and (node_idx + 1) < len(available_nodes):
             node_idx += 1
             gpu_offset = 0

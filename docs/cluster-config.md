@@ -46,6 +46,8 @@ reporting:
 
 **output_dir**: When set, job logs are written to `output_dir/{job_id}/logs` instead of `srtctl_root/outputs/{job_id}/logs`. Useful for CI/CD and ephemeral environments.
 
+**compute_venv**: Where each batch job syncs and runs the orchestrator's compute-architecture venv. Unset, it is `.venv-compute` in the srtctl checkout. Point it at node-local disk (e.g. `/raid/tmp/srt-slurm/venv-compute`) when the checkout sits on small or distant shared storage. Environment variables expand on the submitting host, `srtctl dry-run` shows the resulting path in the script, and the sync lock sits beside the venv. Only the batch host runs the sync, so the venv exists on that node alone: with `telemetry.cpu_power` on, whose collector runs the orchestrator's Python on every node, use storage every node mounts (srtctl warns otherwise). uv's cache stays in `~/.cache/uv`; on another filesystem uv copies instead of hardlinking, so set `UV_CACHE_DIR` on the same disk to keep the sync fast and the home small.
+
 **containers**: A map from alias to image path or registry URI. One resolver replaces image aliases in `model.container`, `roles.<role>.container`, frontend/benchmark images, exporter images and `services[].container`. Literal paths and registry URIs pass through untouched. Free-form maps (`environment`, `roles.<role>.env`, `roles.<role>.args`, `services[].env`, `container_mounts`) and the `identity` block are never rewritten.
 
 **default_bash_preamble**: A shell snippet (e.g. `"ulimit -n 1048576 -s unlimited -u 1048576"`) prepended to every container srun launched by srtctl: workers, frontends, telemetry, benchmark, postprocess. Runs before per-call `bash_preamble` and the main command, so cluster-wide ulimits apply to everything downstream. Silently dropped for distroless containers (e.g. `prom/node-exporter`) that bypass the bash wrapper; a WARNING log is emitted in that case.
@@ -55,6 +57,33 @@ reporting:
 **preflight**: `srtctl apply` normally stats `model.path`, `model.container` and the telemetry images on the submitting node before calling sbatch. On clusters where those live only on compute nodes (node-local NVMe such as `/raid/models`), that check can never pass from the login node; set `preflight: false` and every `apply` behaves as if `--no-preflight` had been passed, with an INFO line saying so. Paths are still resolved at runtime and the framework fails loudly on the compute node if one is genuinely missing.
 
 **nginx_raise_ulimit**: When set to `true` or `false`, this value is applied to jobs that omit `frontend.nginx_raise_ulimit` in the recipe. Use `true` on clusters where raising the nginx container's open-file limit is allowed; leave unset if each job should rely on the frontend default (`false`). A recipe that sets `frontend.nginx_raise_ulimit` always wins.
+
+### Launcher
+
+`launcher` picks where a job's processes run. `slurm` (the default) runs each process as an `srun` step inside the allocation `sbatch` hands out. `docker` runs the whole job on the machine you type `srtctl apply` on, for a single GPU VM without Slurm. It needs Docker with the NVIDIA Container Toolkit (`docker run --gpus all` must work) and the binaries `make setup ARCH=x86_64` (or `aarch64`) installs:
+
+```yaml
+launcher: docker
+# docker_args: ["--user", "1000:1000"]   # extra `docker run` arguments for every container
+# docker_gpus: "device=2,3,4,5"          # `--gpus` value for every container (default: all)
+```
+
+Under `launcher: docker`, `srtctl apply` renders the same job script, stages `outputs/<job_id>/` the same way, and runs the script in the foreground with `SRTCTL_JOB_ID=docker-<timestamp>` in place of `SLURM_JOB_ID`; its output is teed to `logs/sweep_<job_id>.log`. The orchestrator, health checks, benchmarks and postprocessing are unchanged; only the launcher underneath differs:
+
+| | `slurm` | `docker` |
+|---|---|---|
+| Container launch | `srun --container-image ...` (pyxis/enroot) | `docker run --rm --gpus <docker_gpus or all> --network host --ipc host --cap-add PERFMON --cap-add SYS_NICE -v <mounts> ...` |
+| Container working directory | `srun_options: container-workdir` | the same option, as `docker run -w` (other `srun_options` are ignored, unknown ones with a warning) |
+| Host command (`host_setup`, no container) | `srun` on each node | `bash` on this machine, in its own process group |
+| GPU subset per worker | `CUDA_VISIBLE_DEVICES` from the bash wrapper | same |
+| Graceful stop of a named step | `scancel --signal=TERM --full <job>.<step>` | `docker kill --signal=TERM srtctl_<job>_<step>` (or `killpg` for a host command) |
+| Node and address | the allocation's nodelist, IP on `network_interface` | this host, `127.0.0.1` |
+
+Every container sees the GPUs `docker_gpus` names (all of them by default) and shares the host network, so the per-worker GPU masks and the ports `NodePortAllocator` already hands out to colocated workers keep processes apart. On a shared or partly faulty machine, `docker_gpus: "device=2,3,4,5"` restricts every container to those devices; docker renumbers them from 0, so a worker's `CUDA_VISIBLE_DEVICES=0,1,2,3` then means physical GPUs 2-5. Containers get `--cap-add SYS_NICE` so engines can pin each rank to its GPU's NUMA node as they do in an srun step (SGLang otherwise logs "User lacks permission to set NUMA affinity" and runs unpinned), and `--cap-add PERFMON` so nsys CPU sampling (`observability.nsys.cpu_sampling`, on by default) works on a host whose `kernel.perf_event_paranoid` refuses performance counters to unprivileged processes, as a Slurm cluster's permissive setting lets it. A mounted directory whose symlinks point outside it, such as a HuggingFace hub snapshot (`models--org--name/snapshots/<rev>`, every file a relative link into the blob store), is handled by mounting the common root of the directory and its link targets at its host path and creating the recipe's container path (`/model`) as a symlink to it, so the links resolve as they do on the host. A sweep runs its points one after another. Ctrl+C stops the orchestrator, which stops its containers the same way it stops Slurm steps.
+
+[`examples/docker/vllm-agg-1gpu.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/docker/vllm-agg-1gpu.yaml) is a one-GPU recipe tested this way.
+
+`launcher: docker` checks the recipe before running it and refuses one that needs more than this machine: more than one node, `resources.het_jobs`, a dedicated frontend, benchmark or infra node, service pools (`services[].nodes`), an engine that launches each endpoint as one multi-task MPI step (TRT-LLM), or a `model.container` / `roles.<role>.container` that is an enroot image file (`.sqsh`) rather than a Docker image name. Enroot URIs such as `nvcr.io#nvidia/x:tag` are rewritten to `nvcr.io/nvidia/x:tag`. Containers run as root unless `docker_args` sets `--user`, so files they write under `outputs/` are root-owned. `srtctl monitor` and the MCP job tools read Slurm and do not see Docker-launcher jobs.
 
 ### Running without `srtslurm.yaml`
 

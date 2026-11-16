@@ -210,6 +210,19 @@ def test_colocated_decode_that_fits_loads() -> None:
     assert cfg.topology.decode_nodes == 0
 
 
+def test_spread_colocated_decode_loads_and_a_misfit_is_rejected() -> None:
+    # 2 nodes x 8 GPUs, spread: one TP2 prefill per node, two TP2 decode workers beside them.
+    config = _colocated(2, 2, 2, 2, 2)
+    config["resources"]["spread_workers"] = True
+    cfg = SrtConfig.Schema().load(config)
+    assert cfg.topology.total_nodes == 2
+    # 2 x 2 + 3 x 4 = 16 GPUs fit the total, but the third TP4 decode finds 2 free GPUs on node0.
+    config = _colocated(2, 2, 2, 3, 4)
+    config["resources"]["spread_workers"] = True
+    with pytest.raises(ValidationError, match="cannot be packed onto the prefill nodes.*Not enough free GPUs"):
+        SrtConfig.Schema().load(config)
+
+
 def test_colocated_decode_that_oversubscribes_is_rejected_at_load() -> None:
     # 1 node x 8 GPUs: 1 prefill x 6 + 1 decode x 4 = 10 > 8
     with pytest.raises(ValidationError, match="do not fit on the prefill nodes.*10 GPU"):

@@ -171,6 +171,18 @@
       "description": "srtctl checkout on the shared filesystem that compute nodes mount at /srtctl-src. Default: this checkout.",
       "default": null
     },
+    "compute_venv": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Path of the batch job's compute-architecture venv (default: `.venv-compute` in the srtctl checkout), e.g. node-local disk when the checkout sits on small or distant shared storage. Must exist on every node when `telemetry.cpu_power` is on. Environment variables expand on the submitting host.",
+      "default": null
+    },
     "output_dir": {
       "anyOf": [
         {
@@ -324,6 +336,41 @@
       "type": "boolean",
       "description": "After workers stop, shrink the job to its batch host (`scontrol update NodeList=`) so the other nodes return to the scheduler before the S3 upload and AI analysis, which then run on the batch host. Needs job shrinking enabled (no `disable_job_shrink`); skipped for het jobs.",
       "default": false
+    },
+    "launcher": {
+      "enum": [
+        "slurm",
+        "docker"
+      ],
+      "description": "Where processes run: `slurm` (srun steps inside an sbatch allocation) or `local` (one job on this machine, containers under `docker run`). See docs/cluster-config.md#launcher.",
+      "default": "slurm"
+    },
+    "docker_args": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Extra `docker run` arguments for every container under `launcher: docker`, e.g. `[\"--user\", \"1000:1000\"]`.",
+      "default": null
+    },
+    "docker_gpus": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The `--gpus` value for every container under `launcher: docker` (default `all`), e.g. `\"device=2,3,4,5\"` on a shared or partly faulty machine. Docker renumbers the listed devices from 0, so the per-worker `CUDA_VISIBLE_DEVICES` masks the orchestrator computes stay valid.",
+      "default": null
     }
   },
   "description": "Cluster configuration from srtslurm.yaml.",

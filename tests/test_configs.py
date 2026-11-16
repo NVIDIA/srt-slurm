@@ -101,6 +101,16 @@ class TestConfigLoading:
         assert config.telemetry.cpu_power_exporter.source == "acpi"
 
 
+class TestClusterConfigComputeVenv:
+    """compute_venv is read via get_srtslurm_setting(), so ClusterConfig must declare it."""
+
+    def test_cluster_schema_accepts_the_key(self):
+        from srtctl.core.schema import ClusterConfig
+
+        loaded = ClusterConfig.Schema().load({"compute_venv": "/raid/tmp/srt/venv-compute"})
+        assert loaded.compute_venv == "/raid/tmp/srt/venv-compute"
+
+
 class TestClusterConfigGitHttpVersion:
     """srtslurm.yaml is schema-validated, and a failure there silently drops
     every cluster default (model_paths, containers, etc.) -- so a new key

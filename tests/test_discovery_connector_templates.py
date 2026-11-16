@@ -129,13 +129,29 @@ def test_direct_consumer_keeps_transfer_options_and_receives_allocated_ports(key
         ("http_port", 6102),
         ("http_port", 6101.0),
         ("http_port", True),
-        ("read_mode", False),
     ],
 )
 def test_conflicting_discovery_bindings_fail_before_launch(field: str, value: Any) -> None:
     template = _template()
     template["kv_connector_extra_config"]["connectors"][0]["kv_connector_extra_config"][field] = value
     with pytest.raises(ValueError, match=field):
+        _command(template)
+
+
+@pytest.mark.parametrize("mode", ["prefill", "decode"])
+def test_template_selects_write_mode(mode: WorkerMode) -> None:
+    template = {"kv_connector": "MoRIIOConnector", "kv_connector_extra_config": {"read_mode": False}}
+    command = _command(template, mode)
+    result = json.loads(command[command.index("--kv-transfer-config") + 1])
+    assert result["kv_connector_extra_config"]["read_mode"] is False
+    assert result["kv_connector_extra_config"]["notify_port"] == "27008"
+
+
+@pytest.mark.parametrize("value", ["false", 0, None])
+def test_non_boolean_read_mode_fails_before_launch(value: Any) -> None:
+    template = _template()
+    template["kv_connector_extra_config"]["connectors"][0]["kv_connector_extra_config"]["read_mode"] = value
+    with pytest.raises(TypeError, match="read_mode"):
         _command(template)
 
 

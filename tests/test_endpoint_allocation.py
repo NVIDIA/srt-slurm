@@ -234,6 +234,64 @@ class TestAllocateEndpoints:
         assert decode_eps[0].nodes == ("node0",)
         assert decode_eps[1].nodes == ("node0",)
 
+    def test_spread_workers_colocated_decode_shares_the_prefill_nodes(self):
+        """spread_workers with a colocated decode (no node left past the spread prefill workers) used to index past
+        the node list; each decode worker now goes on a prefill node in turn, on that node's highest free GPUs."""
+        endpoints = allocate_endpoints(
+            num_prefill=2,
+            num_decode=4,
+            num_agg=0,
+            gpus_per_prefill=1,
+            gpus_per_decode=1,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1"),
+            spread_workers=True,
+        )
+
+        placed = [(e.mode, e.index, e.nodes, sorted(e.gpu_indices)) for e in endpoints]
+        assert placed == [
+            ("prefill", 0, ("node0",), [0]),
+            ("prefill", 1, ("node1",), [0]),
+            ("decode", 0, ("node0",), [3]),
+            ("decode", 1, ("node1",), [3]),
+            ("decode", 2, ("node0",), [2]),
+            ("decode", 3, ("node1",), [2]),
+        ]
+
+    def test_spread_workers_colocated_decode_takes_the_other_half_of_the_node(self):
+        """A TP2 decode beside a TP1 prefill gets the node's top two GPUs (the other socket on a 2+2 node)."""
+        endpoints = allocate_endpoints(
+            num_prefill=1,
+            num_decode=1,
+            num_agg=0,
+            gpus_per_prefill=1,
+            gpus_per_decode=2,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0",),
+            spread_workers=True,
+        )
+
+        decode_eps = [e for e in endpoints if e.mode == "decode"]
+        assert [(e.nodes, e.gpu_indices) for e in decode_eps] == [(("node0",), frozenset({2, 3}))]
+
+    def test_spread_workers_colocated_decode_that_does_not_fit_raises(self):
+        """Each node keeps its own free GPUs: three TP2 decode workers do not fit beside two TP1 prefill workers on
+        two 4-GPU nodes, even though 2 + 6 GPUs equal the total."""
+        with pytest.raises(ValueError, match="Not enough free GPUs: decode worker 2 needs 2 GPU"):
+            allocate_endpoints(
+                num_prefill=2,
+                num_decode=3,
+                num_agg=0,
+                gpus_per_prefill=1,
+                gpus_per_decode=2,
+                gpus_per_agg=0,
+                gpus_per_node=4,
+                available_nodes=("node0", "node1"),
+                spread_workers=True,
+            )
+
     def test_prefill_decode_never_share_node_partial_allocation(self):
         """Test that prefill and decode workers are never colocated on the same node.
 

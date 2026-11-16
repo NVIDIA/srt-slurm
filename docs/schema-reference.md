@@ -84,7 +84,7 @@ Cluster facts and allocation knobs; the worker topology is the `roles:` block.
 |---|---|---|---|
 | `gpu_type` | str \| None | `None` | GPU type (h100, gb200, ...). Cluster fact, not a topology choice. Optional: a recipe that omits it inherits `default_gpu_type` from srtslurm.yaml, and `gpus_per_node` inherits the cluster `gpus_per_node`. Both are still worth setting in a recipe so it is self-describing for result rollups. |
 | `gpus_per_node` | int | `4` | GPUs on each node. Inherits the cluster `gpus_per_node` when omitted, else 4. |
-| `spread_workers` | bool | `False` | If True, place each partial-node worker on its own node instead of packing multiple onto the same node. Caller must reserve enough nodes (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node). |
+| `spread_workers` | bool | `False` | If True, place each partial-node worker on its own node instead of packing multiple onto the same node. Caller must reserve enough nodes (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node). With roles.decode.nodes: colocate, the decode workers go one per prefill node in turn, each on that node's highest free GPUs. |
 | `het_jobs` | bool \| None | `None` | SLURM heterogeneous-job opt-in. Tri-state: None defers to the cluster default `use_het_jobs` on ClusterConfig; True/False overrides per recipe. When effectively True (and we are in disaggregated mode), the prefill and decode sides are submitted as two het components each with their own `--segment`. See HetComponent above and docs/slurm-faq.md. |
 
 ### SlurmConfig
@@ -362,6 +362,7 @@ How the post-benchmark (or eval-only) accuracy evaluation is dispatched.
 |---|---|---|---|
 | `passthrough_env` | list[str] | `[]` | Extra environment variable names forwarded from the orchestrator's environment into the eval process when set (on top of the built-in list: RUN_EVAL, EVAL_ONLY, MODEL, ISL, OSL, ...). |
 | `command` | list[str] \| None | `None` | Argv that replaces the built-in lm-eval runner command. May use the placeholders ``{endpoint}`` (the frontend URL) and ``{infmax_workspace}`` (the InferenceMAX workspace mount). Not shell-interpreted; wrap in ``bash -lc`` yourself if you need a shell. |
+| `container_image` | str \| None | `None` | Image the eval process runs in; unset uses ``model.container``. |
 
 ### IdentityConfig
 
@@ -715,6 +716,7 @@ Launch TileRT's decode server with recipe-owned model and transport settings.
 |---|---|---|---|
 | `type` | one of `'tilert'` | `'tilert'` | Engine type discriminator. |
 | `served_model_name` | str \| None | `None` | Model name the server reports to clients; unset uses the default served name. |
+| `multi_node_launch` | one of `'node-env'`, `'torchrun'` \| None | `None` | How a decode worker that spans several nodes starts on each node; unset keeps decode workers single-node. `node-env` (recommended) runs one `python -m tilert.pd_vllm.decode_server ...` per node under TILERT_PD_NNODES, TILERT_PD_NODE_RANK and TILERT_PD_RDZV, and the server starts its local ranks; `torchrun` starts them with `torchrun --nnodes --nproc-per-node --node-rank --master-addr --master-port -m tilert.pd_vllm.decode_server ...`. Only the worker's first node is advertised to the router; see docs/tilert.md#multi-node-decode. |
 
 ### TokenSpeedBackend
 
@@ -816,6 +818,7 @@ Top-level keys of `srtslurm.yaml`. Recipes inherit these defaults and resolve al
 | `default_health_check` | dict[str, int] \| None | `None` | `health_check` block (`max_attempts`, `interval_seconds`) used when a recipe has none. |
 | `default_reuse_container` | bool | `False` | Default for recipe `reuse_container`; explicit true or false in the recipe wins. |
 | `srtctl_root` | str \| None | `None` | srtctl checkout on the shared filesystem that compute nodes mount at /srtctl-src. Default: this checkout. |
+| `compute_venv` | str \| None | `None` | Path of the batch job's compute-architecture venv (default: `.venv-compute` in the srtctl checkout), e.g. node-local disk when the checkout sits on small or distant shared storage. Must exist on every node when `telemetry.cpu_power` is on. Environment variables expand on the submitting host. |
 | `output_dir` | str \| None | `None` | Custom output directory for job logs |
 | `model_paths` | dict[str, str] \| None | `None` | Alias -> path map; a recipe's `model.path` may name an alias instead of a path. |
 | `containers` | dict[str, str] \| None | `None` | Alias -> image map, resolved for every container key in a recipe (`model.container`, `roles.<role>.container`, ...). |
@@ -829,3 +832,6 @@ Top-level keys of `srtslurm.yaml`. Recipes inherit these defaults and resolve al
 | `git_http_version` | str \| None | `None` | Works around intermittent git smart-HTTP/HTTP2 failures cloning github.com (stalls, or truncated responses git misreports as "could not read Username" auth-prompt failures). See git_clone_command_prefix() in core/config.py -- applied to every git clone/fetch srtctl performs. |
 | `preflight` | bool | `True` | Run the pre-submit model.path / model.container / telemetry filesystem checks on ``srtctl apply``. Set false on clusters whose model or image paths exist only on compute nodes (node-local NVMe such as /raid), where the login node cannot stat them; every apply then behaves as if --no-preflight had been passed. The framework still fails loudly at runtime if a path is genuinely missing on the compute node. |
 | `release_nodes_before_postprocess` | bool | `False` | After workers stop, shrink the job to its batch host (`scontrol update NodeList=`) so the other nodes return to the scheduler before the S3 upload and AI analysis, which then run on the batch host. Needs job shrinking enabled (no `disable_job_shrink`); skipped for het jobs. |
+| `launcher` | one of `'slurm'`, `'docker'` | `'slurm'` | Where processes run: `slurm` (srun steps inside an sbatch allocation) or `local` (one job on this machine, containers under `docker run`). See docs/cluster-config.md#launcher. |
+| `docker_args` | list[str] \| None | `None` | Extra `docker run` arguments for every container under `launcher: docker`, e.g. `["--user", "1000:1000"]`. |
+| `docker_gpus` | str \| None | `None` | The `--gpus` value for every container under `launcher: docker` (default `all`), e.g. `"device=2,3,4,5"` on a shared or partly faulty machine. Docker renumbers the listed devices from 0, so the per-worker `CUDA_VISIBLE_DEVICES` masks the orchestrator computes stay valid. |

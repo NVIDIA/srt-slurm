@@ -64,10 +64,9 @@ The setup will:
 5. Auto-detect and set `srtctl_root` path
 
 Each batch job runs the orchestrator from a compute-architecture venv, `.venv-compute` in the
-srt-slurm checkout, which the first job creates with `uv sync`. Set `SRTCTL_COMPUTE_VENV` in the
-environment you submit from, or in the recipe's `environment:`, to keep it elsewhere, such as
-node-local disk when the checkout sits on small or distant shared storage; each node then syncs
-its own copy.
+srt-slurm checkout, which the first job creates with `uv sync`. To keep it elsewhere, such as
+node-local disk when the checkout sits on small or distant shared storage, set
+[`compute_venv`](cluster-config.md) in `srtslurm.yaml`.
 
 The scraper binaries are attached to srt-slurm GitHub releases for `x86_64` and `aarch64`. `make setup` downloads the matching asset from the latest release and verifies its SHA-256 checksum. Run `make tachometer-scraper` to build the vendored source instead.
 
