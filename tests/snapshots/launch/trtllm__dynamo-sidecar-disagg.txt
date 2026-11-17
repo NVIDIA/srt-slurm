@@ -480,7 +480,7 @@ use_bash_wrapper: False
 command: |
     tachometer-scraper --config <output>/logs/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120
 
-## <unnamed>
+## benchmark
 nodelist: node-01
 output: <output>/logs/benchmark.out
 container_image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc0.dev202610120007

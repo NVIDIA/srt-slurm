@@ -223,8 +223,45 @@ def test_trtllm_sidecar_scrapes_only_the_rank_zero_runtime(node_count: int) -> N
     backend = TRTLLMBackend(roles={"decode": RoleConfig(args={"tensor_parallel_size": 4 * node_count})})
     processes = backend.endpoints_to_processes([_endpoint("decode", node_count, 4)], dynamo_sidecar=True)
 
-    # OpenEngine gRPC serves no Prometheus endpoint, so there is no engine target.
+    # Without the performance-metrics opt-in OpenEngine starts no Prometheus listener: the runtime target only.
     assert _targets(backend, processes) == [("backend_decode0_rank0", "node0", processes[0].sys_port, "/metrics")]
+
+
+@pytest.mark.parametrize(
+    ("args", "serves"),
+    [
+        pytest.param({}, False, id="default-off"),
+        pytest.param({"return_perf_metrics": False}, False, id="explicit-false"),
+        pytest.param({"return_perf_metrics": True}, True, id="return-perf-metrics"),
+        pytest.param({"perf_metrics_output_dir": "/logs/perf"}, True, id="perf-metrics-output-dir"),
+    ],
+)
+def test_trtllm_sidecar_engine_metrics_follow_the_perf_metrics_opt_in(args: dict, serves: bool) -> None:
+    """OpenEngine starts its Prometheus listener only with TensorRT-LLM's performance-metrics opt-in (#21034)."""
+    backend = TRTLLMBackend(roles={"decode": RoleConfig(args={"tensor_parallel_size": 8, **args})})
+    processes = backend.endpoints_to_processes([_endpoint("decode", 2, 4)], dynamo_sidecar=True)
+    leader, follower = processes[0], processes[-1]
+    assert leader.is_leader and not follower.is_leader
+
+    engine_targets = [target for target in _targets(backend, processes) if target[0].endswith("_engine")]
+    if serves:
+        assert backend.sidecar_engine_metrics_port(leader, processes) == leader.http_port > 0
+        assert engine_targets == [("backend_decode0_rank0_engine", "node0", leader.http_port, "/prometheus/metrics")]
+    else:
+        assert backend.sidecar_engine_metrics_port(leader, processes) is None
+        assert engine_targets == []
+    assert backend.sidecar_engine_metrics_port(follower, processes) is None
+
+    for process in processes:
+        command = backend.build_worker_command(process, processes, _runtime())
+        engine = _engine_line(command, "tensorrt_llm.commands.serve")
+        flags = {arg: engine[i + 1] for i, arg in enumerate(engine[:-1]) if arg.startswith("--openengine-metrics-")}
+        if serves and process is leader:
+            assert flags == {"--openengine-metrics-host": "0.0.0.0", "--openengine-metrics-port": str(leader.http_port)}
+        else:
+            assert flags == {}
+        # The gRPC listener itself stays on loopback for the sidecar.
+        assert engine[engine.index("--host") + 1] == "127.0.0.1"
 
 
 # --- Example recipes through the mock orchestrator ----------------------------------------------

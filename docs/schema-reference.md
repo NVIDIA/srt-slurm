@@ -362,6 +362,7 @@ How the post-benchmark (or eval-only) accuracy evaluation is dispatched.
 |---|---|---|---|
 | `passthrough_env` | list[str] | `[]` | Extra environment variable names forwarded from the orchestrator's environment into the eval process when set (on top of the built-in list: RUN_EVAL, EVAL_ONLY, MODEL, ISL, OSL, ...). |
 | `command` | list[str] \| None | `None` | Argv that replaces the built-in lm-eval runner command. May use the placeholders ``{endpoint}`` (the frontend URL) and ``{infmax_workspace}`` (the InferenceMAX workspace mount). Not shell-interpreted; wrap in ``bash -lc`` yourself if you need a shell. |
+| `container_image` | str \| None | `None` | Image the eval process runs in; unset uses ``model.container``. |
 
 ### IdentityConfig
 
@@ -715,6 +716,7 @@ Launch TileRT's decode server with recipe-owned model and transport settings.
 |---|---|---|---|
 | `type` | one of `'tilert'` | `'tilert'` | Engine type discriminator. |
 | `served_model_name` | str \| None | `None` | Model name the server reports to clients; unset uses the default served name. |
+| `multi_node_launch` | one of `'node-env'`, `'torchrun'` \| None | `None` | How a decode worker that spans several nodes starts on each node; unset keeps decode workers single-node. `node-env` (recommended) runs one `python -m tilert.pd_vllm.decode_server ...` per node under TILERT_PD_NNODES, TILERT_PD_NODE_RANK and TILERT_PD_RDZV, and the server starts its local ranks; `torchrun` starts them with `torchrun --nnodes --nproc-per-node --node-rank --master-addr --master-port -m tilert.pd_vllm.decode_server ...`. Only the worker's first node is advertised to the router; see docs/tilert.md#multi-node-decode. |
 
 ### TokenSpeedBackend
 
@@ -829,3 +831,6 @@ Top-level keys of `srtslurm.yaml`. Recipes inherit these defaults and resolve al
 | `git_http_version` | str \| None | `None` | Works around intermittent git smart-HTTP/HTTP2 failures cloning github.com (stalls, or truncated responses git misreports as "could not read Username" auth-prompt failures). See git_clone_command_prefix() in core/config.py -- applied to every git clone/fetch srtctl performs. |
 | `preflight` | bool | `True` | Run the pre-submit model.path / model.container / telemetry filesystem checks on ``srtctl apply``. Set false on clusters whose model or image paths exist only on compute nodes (node-local NVMe such as /raid), where the login node cannot stat them; every apply then behaves as if --no-preflight had been passed. The framework still fails loudly at runtime if a path is genuinely missing on the compute node. |
 | `release_nodes_before_postprocess` | bool | `False` | After workers stop, shrink the job to its batch host (`scontrol update NodeList=`) so the other nodes return to the scheduler before the S3 upload and AI analysis, which then run on the batch host. Needs job shrinking enabled (no `disable_job_shrink`); skipped for het jobs. |
+| `launcher` | one of `'slurm'`, `'docker'` | `'slurm'` | Where processes run: `slurm` (srun steps inside an sbatch allocation) or `local` (one job on this machine, containers under `docker run`). See docs/cluster-config.md#launcher. |
+| `docker_args` | list[str] \| None | `None` | Extra `docker run` arguments for every container under `launcher: docker`, e.g. `["--user", "1000:1000"]`. |
+| `docker_gpus` | str \| None | `None` | The `--gpus` value for every container under `launcher: docker` (default `all`), e.g. `"device=2,3,4,5"` on a shared or partly faulty machine. Docker renumbers the listed devices from 0, so the per-worker `CUDA_VISIBLE_DEVICES` masks the orchestrator computes stay valid. |

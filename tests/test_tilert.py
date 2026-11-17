@@ -137,6 +137,103 @@ def test_router_advertises_all_decode_control_ports(tmp_path: Path) -> None:
         assert frontend.worker_metrics_port(process, orchestrator.runtime) == expected
 
 
+def test_decode_spanning_nodes_requires_multi_node_launch() -> None:
+    data = _recipe()
+    data["roles"]["decode"].update(nodes=2, gpus=16)
+    with pytest.raises(ValidationError, match="unless roles.decode.engine.multi_node_launch is set"):
+        _load(data)
+
+
+@pytest.mark.parametrize("launch", ["node-env", "torchrun"])
+def test_multi_node_decode_rejects_a_partial_node(launch) -> None:
+    data = _recipe()
+    data["resources"]["gpus_per_node"] = 4
+    data["roles"]["decode"].update(nodes=2, gpus=6)
+    data["roles"]["decode"]["engine"] = {"type": "tilert", "multi_node_launch": launch}
+    with pytest.raises(ValidationError, match="whole-node multi-node workers"):
+        _load(data)
+
+
+@pytest.mark.parametrize(
+    "launch,expected",
+    [
+        (
+            "node-env",
+            lambda rank, rdzv: [
+                "env",
+                "TILERT_PD_NNODES=2",
+                f"TILERT_PD_NODE_RANK={rank}",
+                f"TILERT_PD_RDZV={rdzv}",
+                "python",
+                "-m",
+                "tilert.pd_vllm.decode_server",
+            ],
+        ),
+        (
+            "torchrun",
+            lambda rank, rdzv: [
+                "torchrun",
+                "--nnodes",
+                "2",
+                "--nproc-per-node",
+                "8",
+                "--node-rank",
+                str(rank),
+                "--master-addr",
+                rdzv.split(":")[0],
+                "--master-port",
+                rdzv.split(":")[1],
+                "-m",
+                "tilert.pd_vllm.decode_server",
+            ],
+        ),
+    ],
+)
+def test_multi_node_decode_launches_every_node_and_routes_the_first(tmp_path: Path, launch, expected) -> None:
+    data = _recipe()
+    data["roles"]["decode"].update(nodes=2, gpus=16)
+    data["roles"]["decode"]["engine"] = {"type": "tilert", "multi_node_launch": launch}
+    config = _load(data)
+    orchestrator = _orchestrator(config, tmp_path, ("p0", "d0", "d1"))
+    hosts = {"p0": "10.0.0.10", "d0": "10.0.0.11", "d1": "10.0.0.12"}
+    with (
+        patch("srtctl.core.slurm.get_hostname_ip", side_effect=lambda node, _=None: hosts[node]),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as srun,
+    ):
+        orchestrator.start_all_workers()
+    decodes = [p for p in orchestrator.backend_processes if p.endpoint_mode == "decode"]
+    assert [p.node for p in decodes] == ["d0", "d1"]
+    assert decodes[0].dist_init_port == decodes[1].dist_init_port
+    assert all(p.http_port > 0 for p in decodes)
+    rdzv = f"10.0.0.11:{decodes[0].dist_init_port}"
+    commands = [call.kwargs["command"] for call in srun.call_args_list][1:]
+    for rank, command in enumerate(commands):
+        assert command[: len(expected(rank, rdzv))] == expected(rank, rdzv)
+
+    frontend = TileRTRouterFrontend()
+    with patch("srtctl.frontends.static_router.get_hostname_ip", side_effect=lambda node, _: hosts[node]):
+        workers = frontend.collect_workers(config.backend, orchestrator.backend_processes)
+        health = frontend.get_backend_health_urls(config.backend, orchestrator.backend_processes)
+    command = frontend.build_router_command(workers, "0.0.0.0", 8000, config.backend)
+    decode_specs = command[command.index("--decode") + 1 : command.index("--host")]
+    assert decode_specs == [f"10.0.0.11:{decodes[0].nixl_port}:{decodes[0].http_port}"]
+    assert f"http://10.0.0.12:{decodes[1].http_port}/health" not in health
+
+
+def test_router_joins_every_prefill_url(tmp_path: Path) -> None:
+    data = _recipe()
+    data["roles"]["prefill"].update(nodes=2, workers=2)
+    config = _load(data)
+    orchestrator = _orchestrator(config, tmp_path, ("p0", "p1", "d0"))
+    frontend = TileRTRouterFrontend()
+    hosts = {"p0": "10.0.0.10", "p1": "10.0.0.13", "d0": "10.0.0.11"}
+    with patch("srtctl.frontends.static_router.get_hostname_ip", side_effect=lambda node, _: hosts[node]):
+        workers = frontend.collect_workers(config.backend, orchestrator.backend_processes)
+    command = frontend.build_router_command(workers, "0.0.0.0", 8000, config.backend)
+    prefills = [p for p in orchestrator.backend_processes if p.endpoint_mode == "prefill"]
+    assert _flag(command, "--vllm-url") == ",".join(f"http://{hosts[p.node]}:{p.http_port}" for p in prefills)
+
+
 def test_benchmark_model_matches_prefill_without_a_decode_alias(tmp_path: Path) -> None:
     data = _recipe()
     data["roles"]["prefill"]["args"]["served-model-name"] = "org/model-alias"

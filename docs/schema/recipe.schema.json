@@ -1652,6 +1652,18 @@
           ],
           "description": "Argv that replaces the built-in lm-eval runner command. May use the placeholders ``{endpoint}`` (the frontend URL) and ``{infmax_workspace}`` (the InferenceMAX workspace mount). Not shell-interpreted; wrap in ``bash -lc`` yourself if you need a shell.",
           "default": null
+        },
+        "container_image": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Image the eval process runs in; unset uses ``model.container``.",
+          "default": null
         }
       },
       "description": "How the post-benchmark (or eval-only) accuracy evaluation is dispatched."
@@ -3661,6 +3673,21 @@
             }
           ],
           "description": "Model name the server reports to clients; unset uses the default served name.",
+          "default": null
+        },
+        "multi_node_launch": {
+          "anyOf": [
+            {
+              "enum": [
+                "node-env",
+                "torchrun"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How a decode worker that spans several nodes starts on each node; unset keeps decode workers single-node. `node-env` (recommended) runs one `python -m tilert.pd_vllm.decode_server ...` per node under TILERT_PD_NNODES, TILERT_PD_NODE_RANK and TILERT_PD_RDZV, and the server starts its local ranks; `torchrun` starts them with `torchrun --nnodes --nproc-per-node --node-rank --master-addr --master-port -m tilert.pd_vllm.decode_server ...`. Only the worker's first node is advertised to the router; see docs/tilert.md#multi-node-decode.",
           "default": null
         }
       },
