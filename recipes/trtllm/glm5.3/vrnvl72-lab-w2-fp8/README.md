@@ -3,8 +3,10 @@
 These recipes are the RapLab form of the [wave 2 recipes](../vrnvl72-w2/README.md),
 which port the second GLM-5.2 BTK `e2e_pareto` frontier (pareto01-07) to
 srt-slurm. Topology, engine arguments, worker tuning, routing, concurrency and the
-AgentX workload are identical to wave 2; the differences are the RapLab settings
-used by the [lab recipes](../vrnvl72-lab/README.md), listed below. Update model,
+AgentX workload follow wave 2. The c620 FP8 recipe also enables the
+[native EGM optimizations](#optimized-c620-fp8-egm-recipe) described below; the
+other differences are the RapLab settings used by the
+[lab recipes](../vrnvl72-lab/README.md), listed below. Update model,
 image, cache, Dynamo wheel and AgentX checkout paths for your cluster.
 
 ## Recipes
@@ -25,14 +27,16 @@ benchmark client, which share one node.
 
 See the [wave 2 README](../vrnvl72-w2/README.md) for routing and the image. The
 lab recipes use the same image with the GLM-5 megakernel fixed for
-GLM-5.3-NVFP4 (`-glm53mk.sqsh`); see [RapLab differences](#raplab-differences).
+GLM-5.3-NVFP4 (`-glm53mk.sqsh`), except for the optimized c620 FP8 image below;
+see [RapLab differences](#raplab-differences).
 
 ## EGM over NVLink
 
 The DEP16 recipes keep wave 2's topology and BTK pool sizes but serve the
 Mooncake pool from native EGM providers over NVLink instead of RDMA, as the
 [lab EGM recipes](../vrnvl72-lab/README.md#egm-over-nvlink) do. Inference
-clients use pinned host staging and contribute no Store capacity.
+clients contribute no Store capacity. The optimized c620 FP8 recipe uses direct
+KV copies; the other DEP16 recipes use pinned host staging.
 
 | Recipe | Prefill pools per node | Decode pool per node | Total capacity | Nodes |
 | --- | --- | --- | --- | --- |
@@ -48,7 +52,50 @@ automatically. Providers start in `before_workers` and stop after inference
 clients; the master starts in `infra` and stops last. Leave `MC_USE_NVLINK_IPC`
 unset for inference workers. See
 [EGM prerequisites and transport](../../../../docs/mooncake-kv-store.md#egm-host-memory-over-nvlink-tensorrt-llm)
-for build, HOST_NUMA, Fabric/IMEX and pinned-staging requirements.
+for build, HOST_NUMA, Fabric/IMEX and staging requirements.
+
+### Optimized c620 FP8 EGM recipe
+
+The c620 FP8 recipe uses
+`/home/rihuo/tensorrt-llm-arm64-feat_rubin-glm5-mega-30454-mooncake-egm-optimization.sqsh`.
+It supplies the native EGM connector,
+ARM64 CUDA 13 Mooncake `0.3.14rc3` client and Release sf4 master.
+Pyxis reads this image from its host-side path.
+
+The connector's `global_segment_size: 0` leaves all capacity in these external
+providers. Keep that value and the existing provider services together. The
+image's `store_host_donor` late-lending retry and accounting fixes apply to
+worker-owned donations; this fixed-provider recipe does not use that mode.
+
+The native connector implementation from tekit `bcc8ec9e65` is enabled explicitly
+in `roles.prefill.env`:
+
+| Setting | Value | Effect |
+| --- | --- | --- |
+| `TRTLLM_M31_STORE_EGM` | `1` | Select native NVLink EGM transport. |
+| `TRTLLM_M31_DISABLE_EGM_DIRECT` | `0` | Copy EGM pages directly into KV device pointers without registering GPU pools or staging through host slots. |
+| `TRTLLM_M31_EGM_DIRECT_SAVE` | `1` | Keep saves direct as well as loads. |
+| `TRTLLM_M31_EGM_GROUPED_LOADS` | `1` | Group reads by source segment. |
+| `TRTLLM_M31_EGM_GROUPED_SAVES` | `1` | Group writes by destination segment and prefer node-local allocation. |
+| `TRTLLM_M31_EGM_LOAD_STREAMS` | `2` | Use up to two copy streams per asynchronous load; small loads stay on one stream. |
+| `TRTLLM_M31_EGM_PRIVATE_LOOP_STREAM` | `1` | Keep executor waits off the legacy default stream so they do not hold up Mooncake's per-thread default streams. |
+
+The `TRTLLM_M31_*` names are retained by tekit; these transport paths also support
+GLM. The recipe keeps `transfer_batch_size: 512`, four asynchronous load workers,
+and the 300-second object lease.
+
+For a staged comparison, change `TRTLLM_M31_DISABLE_EGM_DIRECT` to `1` in
+`roles.prefill.env`. To keep direct loads and stage saves alone, keep that switch
+at `0` and set `TRTLLM_M31_EGM_DIRECT_SAVE` to `0`. Both use the configured
+`staging_buffer_bytes: 4GiB` per active transfer direction; the native worker
+sizes its pools for the selected directions.
+`TRTLLM_MOONCAKE_STORE_STAGE_THROUGH_HOST` does not override the native EGM
+transport selection.
+
+The master service invokes `mooncake_master` from the image's PATH so it uses the
+Release `0.3.14rc3+sf4` binary with four-bit allocator size classes. Its port,
+eviction ratio, allocation strategy and 300-second lease remain configured by
+the recipe.
 
 ## Native trtllm-serve variant
 
@@ -69,7 +116,8 @@ honors. No Dynamo wheel is installed.
 - Model, image, flashinfer cache, Dynamo wheels and the AgentX checkout live
   under `/home/rihuo`, which is mounted at the same path; the aiperf mmap cache
   is `/tmp/aiperf-mmap-cache`.
-- The image is wave 2's image with `glm52_plain_layer.py` and
+- Except for the optimized c620 FP8 recipe above, the image is wave 2's image
+  with `glm52_plain_layer.py` and
   `glm52_plain_layer.cu` replaced by a TensorRT-LLM patch that applies the MoE
   activation global scales in the megakernel. The stock megakernel asserts
   `fc31_input_scale == 1`, which holds for GLM-5.2-NVFP4 but not for
