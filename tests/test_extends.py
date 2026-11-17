@@ -369,6 +369,11 @@ class TestOverrideFiles:
         assert raw["base"]["roles"]["agg"]["workers"] == 2
         assert yaml.safe_load(_composed_text(bundle)) == raw
 
+    def test_detected_as_an_override_file_before_composition(self, recipes: Path) -> None:
+        bundle = _write(recipes.parent / "variants.yaml", "schema: 2\nextends: shared/model.yaml\noverride_a: {}\n")
+        assert submit_cli.is_override_config(bundle)
+        assert not submit_cli.is_override_config(recipes)  # extends, but no variant
+
 
 # ---------------------------------------------------------------------------
 # Helpers for callers

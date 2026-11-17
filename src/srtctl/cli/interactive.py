@@ -303,7 +303,7 @@ def run_interactive() -> int:
         console.print(f"[red]Config not found: {config_path}[/]")
         return 1
 
-    # Load config; a recipe with `extends` is staged composed, as `srtctl apply` does
+    # Load config
     config_path = _staged(config_path)
     with open(config_path) as f:
         config = yaml.safe_load(f)

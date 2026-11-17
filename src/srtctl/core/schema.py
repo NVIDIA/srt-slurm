@@ -4147,9 +4147,8 @@ class SrtConfig:
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":
         """Load a recipe file without cluster defaults (``load_config`` applies them).
 
-        Runs the same composition, gate and engine-default expansions as ``load_config``:
-        ``extends`` is merged in, and a pre-2.0 recipe is rejected before the schema loads
-        the document.
+        Runs the same gate and engine-default expansions as ``load_config``: a
+        pre-2.0 recipe is rejected before the schema loads the document.
         """
         from srtctl.core.compose import load_recipe
         from srtctl.core.config import expand_engine_config_defaults, resolve_config_with_defaults

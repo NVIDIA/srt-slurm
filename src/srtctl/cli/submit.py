@@ -1689,17 +1689,6 @@ def find_yaml_files(directory: Path) -> list[Path]:
     return sorted(set(yaml_files))
 
 
-def _config_type(config_path: Path, *, force_sweep: bool = False) -> str:
-    """How ``apply`` runs ``config_path`` once its ``extends`` is composed: override, sweep or single."""
-    try:
-        with materialize_config_path(config_path) as config_file:
-            if is_override_config(config_file):
-                return "override"
-            return "sweep" if force_sweep or is_sweep_config(config_file) else "single"
-    except Exception:  # noqa: BLE001 - the error is reported when the file is processed
-        return "invalid"
-
-
 def submit_directory(
     directory: Path,
     dry_run: bool = False,
@@ -1748,8 +1737,12 @@ def submit_directory(
         relative_path = yaml_file.relative_to(directory)
         if yaml_file.resolve() in layers:
             config_type = "extends layer (skipped)"
+        elif is_override_config(yaml_file):
+            config_type = "override"
+        elif force_sweep or is_sweep_config(yaml_file):
+            config_type = "sweep"
         else:
-            config_type = _config_type(yaml_file, force_sweep=force_sweep)
+            config_type = "single"
         table.add_row(str(i), str(relative_path), config_type)
 
     console.print(table)
@@ -1859,7 +1852,7 @@ def parse_config_arg(arg: str) -> tuple[Path, str | None]:
 
 
 def is_override_config(config_path: Path) -> bool:
-    """Check if a YAML file uses override format (has a 'base' top-level key)."""
+    """Check if a YAML file uses override format (has a 'base' top-level key, or variants beside 'extends')."""
     try:
         with open(config_path) as f:
             config = yaml.safe_load(f)
@@ -1868,7 +1861,10 @@ def is_override_config(config_path: Path) -> bool:
         return False
     if not isinstance(config, dict):
         return False
-    return "base" in config
+    return "base" in config or (
+        # The files in `extends` can stand in for `base` (srtctl.core.compose).
+        "extends" in config and any(str(key).startswith(("override_", "zip_override_")) for key in config)
+    )
 
 
 @contextlib.contextmanager
@@ -1877,7 +1873,7 @@ def materialize_config_path(config_path: Path, overrides: Sequence[Any] = (), *,
 
     A recipe with a top-level ``extends`` is composed first (``srtctl.core.compose``): the staged
     file is the recipe with the files it lists merged under it, headed by a comment naming them.
-    Overrides are then applied to the raw document (comments preserved) before any
+    Overrides are applied to the raw document (comments preserved) before any
     reader sees it, so they take effect identically for plain, sweep, and
     override-format files and end up in the config.yaml copied into the job
     output directory. With ``pin_sources`` (submit only), every ``source.rev``
@@ -2241,7 +2237,7 @@ def build_parser() -> argparse.ArgumentParser:
   srtctl cache-inputs -f config.yaml             # Pre-generate benchmark datasets
   srtctl bake-image --image model.sqsh --sa-bench  # Bake dependencies into an image
   srtctl render -f config.yaml --to ./rendered   # Write the sbatch script for someone else to submit
-  srtctl resolve-override -f config.yaml         # Write what each job runs (variants, extends; no submit)
+  srtctl resolve-override -f config.yaml         # Resolve override YAML (no submit)
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
@@ -2436,10 +2432,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     resolve_parser = subparsers.add_parser(
         "resolve-override",
-        help=(
-            "Write the recipe each job runs, without submitting: override variants expanded, "
-            "extends composed, --set applied"
-        ),
+        help="Resolve override YAML, or a recipe with extends, into specialised files without submitting",
     )
     resolve_parser.add_argument(
         "-f",
@@ -2447,7 +2440,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         required=True,
         dest="config",
-        help="Recipe or override YAML file, or file:selector",
+        help="Override YAML file or recipe, or file:selector",
     )
     resolve_parser.add_argument(
         "--stdout",
@@ -2865,21 +2858,26 @@ def main():
                 # Outputs are named after the user's file, not the staged copy (stdin has no file).
                 from_stdin = str(config_path) in {"-", "/dev/stdin"}
                 output_path = effective_config_path if from_stdin else config_path
-                stdout = getattr(args, "stdout", False)
-                if is_override_config(effective_config_path):
-                    resolve_override_cmd(
-                        effective_config_path, selector=selector, stdout=stdout, output_path=output_path
-                    )
-                elif is_sweep_config(effective_config_path):
-                    console.print(
-                        f"[bold red]Error:[/] {config_path} is a sweep; "
-                        f"`srtctl dry-run -f {config_path}` writes the config of every job it expands into"
-                    )
-                    sys.exit(1)
-                else:
+                if not is_override_config(effective_config_path):
+                    if is_sweep_config(effective_config_path):
+                        console.print(
+                            f"[bold red]Error:[/] {config_path} is a sweep; "
+                            f"`srtctl dry-run -f {config_path}` writes the config of every job it expands into"
+                        )
+                        sys.exit(1)
                     if selector:
                         logger.warning(f"Selector ':{selector}' ignored — config is not an override file")
-                    resolve_recipe_cmd(effective_config_path, stdout=stdout, output_path=output_path)
+                    resolve_recipe_cmd(
+                        effective_config_path, stdout=getattr(args, "stdout", False), output_path=output_path
+                    )
+                    restore_console()
+                    return
+                resolve_override_cmd(
+                    effective_config_path,
+                    selector=selector,
+                    stdout=getattr(args, "stdout", False),
+                    output_path=output_path,
+                )
                 restore_console()
                 return
 

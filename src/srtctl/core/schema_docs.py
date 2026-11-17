@@ -816,8 +816,8 @@ def json_schema(root: type = SrtConfig) -> dict[str, Any]:
     # A recipe with `extends` gets the rest of its fields from the files it lists, so only these are required.
     defs["ExtendingRecipe"] = {"$ref": "#/$defs/RecipeBase", "required": ["extends", "schema"]}
     # An override file is `base` plus `override_*` / `zip_override_*` variants deep-merged over it. Variants
-    # are partial (and zip variants hold lists), so only `base` is checked field by field. With `extends`,
-    # the listed files are merged under `base`, which may then be left out; `extends` stays top-level.
+    # are partial (and zip variants hold lists), so only `base` is checked field by field.
+    # With `extends`, the listed files are merged under `base`, which may then be left out.
     override_file = {
         "type": "object",
         "anyOf": [{"required": ["base"]}, {"required": ["extends"]}],
@@ -834,10 +834,7 @@ def json_schema(root: type = SrtConfig) -> dict[str, Any]:
     return {
         "$schema": JSON_SCHEMA_DIALECT,
         "title": "srt-slurm recipe",
-        "description": (
-            "A recipe, or an override file (`base` plus `override_*` / `zip_override_*` variants); "
-            "either may list shared files in `extends`."
-        ),
+        "description": "A recipe, or an override file (`base` plus `override_*` / `zip_override_*` variants).",
         "if": {"type": "object", "anyOf": [{"required": ["base"]}, has_variant]},
         "then": override_file,
         "else": {

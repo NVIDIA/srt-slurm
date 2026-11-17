@@ -229,19 +229,22 @@ def resolve_config(
 
 def _load_raw_config(*, config: dict[str, Any] | None = None, config_yaml: str | None = None) -> dict[str, Any]:
     if config is not None:
-        loaded: Any = config
-    elif config_yaml is None:
+        return _reject_extends(config)
+    if config_yaml is None:
         raise ValueError("Provide either config or config_yaml")
-    else:
-        loaded = yaml.safe_load(config_yaml)
+    loaded = yaml.safe_load(config_yaml)
     if not isinstance(loaded, dict):
         raise TypeError("Config must be a YAML mapping")
-    if EXTENDS_KEY in loaded:
+    return _reject_extends(loaded)
+
+
+def _reject_extends(config: dict[str, Any]) -> dict[str, Any]:
+    if EXTENDS_KEY in config:
         raise ValueError(
             "`extends` names files relative to the recipe file, and an inline config has none: "
             "pass the composed recipe (`srtctl resolve-override -f <recipe> --stdout`) instead"
         )
-    return loaded
+    return config
 
 
 def _reject_cluster_defaults(apply_cluster_defaults: bool) -> None:

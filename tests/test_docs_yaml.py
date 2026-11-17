@@ -2,14 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Every YAML block in docs/ is checked against the published JSON Schema.
 
-A block is classified by its top-level keys: an override file (``base:``, or variants with
-``extends``), a recipe with ``extends`` and a ``srtslurm.yaml`` are validated as written; a recipe
-fragment is laid onto a minimal valid recipe first, with the blocks it names (``engine``,
-``roles``, ...) replacing the base's, so a snippet that shows only ``frontend:`` is still checked
-for unknown keys, bad enums and wrong types. Blocks whose top level is a nested
+A block is classified by its top-level keys: an override file (``base:``) and a ``srtslurm.yaml``
+are validated as written; a recipe fragment is laid onto a minimal valid recipe first, with the blocks
+it names (``engine``, ``roles``, ...) replacing the base's, so a snippet that shows only ``frontend:``
+is still checked for unknown keys, bad enums and wrong types. Blocks whose top level is a nested
 section (``readiness:``, ``args`` flags) are not recipe-shaped and are not checked. Cross-field rules
 are ``srtctl dry-run``'s job, not this test's. Mark an intentionally partial or proposed block with
 ``<!-- docs-yaml: skip -->`` on the line above its fence.
+A block with ``extends`` (a recipe, or an override file without ``base:``) is also validated as written.
 """
 
 from __future__ import annotations

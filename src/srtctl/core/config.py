@@ -1011,7 +1011,7 @@ def load_config(path: Path | str) -> SrtConfig:
 
     from .compose import load_recipe
 
-    # Load raw user config, with any files it lists in `extends` merged under it
+    # Load raw user config
     user_config = load_recipe(path)
     if user_config is None:
         raise ValueError(f"Invalid config in {path}: YAML file is empty")

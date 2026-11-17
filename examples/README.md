@@ -95,7 +95,7 @@ before upgrading the collector. See [power telemetry](../docs/power-telemetry.md
 
 ## Validation
 
-CI validates every file under `examples/`, expanding sweep and override files into their variants and merging `extends`; a file another example lists in `extends` is checked through the recipes that use it. Run the same check locally with:
+CI validates every file under `examples/`, expanding sweep and override files into their variants. A file another example lists in `extends` is checked through the recipes that use it. Run the same check locally with:
 
 ```bash
 uv run python -c "

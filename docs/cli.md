@@ -399,7 +399,7 @@ Every argument: [CLI Reference](cli-reference.md#srtctl-render).
 
 ### `srtctl resolve-override`
 
-Write the recipe each job runs without submitting: an override file expands into one file per variant, `extends` is merged in and `--set` / `--unset` are applied. For a recipe that is not an override file the output is `{stem}_resolved.yaml`; a sweep is rejected (`dry-run` writes the config of each of its jobs).
+Expand an override config, or a recipe with `extends`, and write the specialised YAML file(s) without submitting.
 
 ```bash
 srtctl resolve-override -f <config.yaml> [options]
@@ -423,7 +423,7 @@ srtctl resolve-override -f config.yaml:override_lowmem --stdout
 srtctl resolve-override -f config.yaml:zip_override_tp_sweep[0] --stdout
 ```
 
-The resolved YAML preserves the field order and comments from the source file. Base fields appear first in their original order; override-only fields are appended at the end. Output files follow the same `{stem}_{suffix}.yaml` naming convention used by `apply` and are written next to the source file.
+The resolved YAML preserves the field order and comments from the source file. Base fields appear first in their original order; override-only fields are appended at the end. Output files follow the same `{stem}_{suffix}.yaml` naming convention used by `apply`. A recipe that is not an override file is written to `{stem}_resolved.yaml`.
 
 See [Config Overrides — Resolving Without Submitting](overrides.md#resolving-overrides-without-submitting) for details.
 

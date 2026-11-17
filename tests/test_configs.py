@@ -50,11 +50,7 @@ class TestConfigLoading:
             pytest.fail("Failed to load topology examples:\n" + "\n".join(errors))
 
     def test_every_example_validates(self):
-        """validate_config_file accepts every file under examples/, including sweep and override files.
-
-        A file another example lists in `extends` is a partial recipe; it is validated through the
-        recipes that extend it.
-        """
+        """validate_config_file accepts every file under examples/, including sweep and override files."""
         from srtctl.core.compose import layer_files
         from srtctl.core.config import validate_config_file
 

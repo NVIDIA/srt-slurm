@@ -78,7 +78,7 @@ _RECORDED_KEYS = (
 
 
 def example_recipes() -> list[Path]:
-    """Every example recipe that describes one job (a file another example lists in `extends` is a layer)."""
+    """Every example recipe that describes one job."""
     from srtctl.core.compose import layer_files
 
     examples = sorted(EXAMPLES_DIR.rglob("*.yaml"))

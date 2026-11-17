@@ -16,7 +16,7 @@ Examples:
   srtctl cache-inputs -f config.yaml             # Pre-generate benchmark datasets
   srtctl bake-image --image model.sqsh --sa-bench  # Bake dependencies into an image
   srtctl render -f config.yaml --to ./rendered   # Write the sbatch script for someone else to submit
-  srtctl resolve-override -f config.yaml         # Write what each job runs (variants, extends; no submit)
+  srtctl resolve-override -f config.yaml         # Resolve override YAML (no submit)
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
@@ -172,11 +172,11 @@ Run the native status collector that reporting.status.endpoint can point at
 
 ## `srtctl resolve-override`
 
-Write the recipe each job runs, without submitting: override variants expanded, extends composed, --set applied
+Resolve override YAML, or a recipe with extends, into specialised files without submitting
 
 | Argument | Default | Description |
 | --- | --- | --- |
-| `-f, --file CONFIG` | required | Recipe or override YAML file, or file:selector |
+| `-f, --file CONFIG` | required | Override YAML file or recipe, or file:selector |
 | `--stdout` |  | Print resolved YAML to stdout instead of writing files |
 | `--set KEY=VALUE` |  | Override a recipe value by dotted path before validation (repeatable), e.g. --set health_check.max_attempts=720 or --set 'roles.prefill.args.dist-timeout=1800'. Values parse as YAML scalars or lists; mappings stay literal strings. On override files the value is written into base and every variant. |
 | `--unset KEY` |  | Remove a recipe key by dotted path before validation (repeatable), e.g. --unset health_check |

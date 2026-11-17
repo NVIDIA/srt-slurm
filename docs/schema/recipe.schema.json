@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "srt-slurm recipe",
-  "description": "A recipe, or an override file (`base` plus `override_*` / `zip_override_*` variants); either may list shared files in `extends`.",
+  "description": "A recipe, or an override file (`base` plus `override_*` / `zip_override_*` variants).",
   "if": {
     "type": "object",
     "anyOf": [
