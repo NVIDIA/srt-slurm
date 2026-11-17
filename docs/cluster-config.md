@@ -58,7 +58,7 @@ reporting:
 
 ### Launcher
 
-`launcher` picks where a job's processes run. `slurm` (the default) runs each process as an `srun` step inside the allocation `sbatch` hands out. `docker` runs the whole job on the machine you type `srtctl apply` on, for a single GPU VM without Slurm. It needs Docker with the NVIDIA Container Toolkit (`docker run --gpus all` must work) and the binaries `make setup ARCH=x86_64` (or `aarch64`) installs:
+`launcher` picks where a job's processes run. `slurm` (the default) runs each process as an `srun` step inside the allocation `sbatch` hands out. `docker` runs the whole job on the machine you type `srtctl apply` on, for a single GPU VM without Slurm. `host` also runs the whole job on that machine, but starts every process straight on the host without containers, for a machine with neither Slurm nor a container runtime (see [`launcher: host`](#launcher-host)). `docker` needs Docker with the NVIDIA Container Toolkit (`docker run --gpus all` must work) and the binaries `make setup ARCH=x86_64` (or `aarch64`) installs:
 
 ```yaml
 launcher: docker
@@ -82,6 +82,36 @@ Every container sees the GPUs `docker_gpus` names (all of them by default) and s
 [`examples/docker/vllm-agg-1gpu.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/docker/vllm-agg-1gpu.yaml) is a one-GPU recipe tested this way.
 
 `launcher: docker` checks the recipe before running it and refuses one that needs more than this machine: more than one node, `resources.het_jobs`, a dedicated frontend, benchmark or infra node, service pools (`services[].nodes`), an engine that launches each endpoint as one multi-task MPI step (TRT-LLM), or a `model.container` / `roles.<role>.container` that is an enroot image file (`.sqsh`) rather than a Docker image name. Enroot URIs such as `nvcr.io#nvidia/x:tag` are rewritten to `nvcr.io/nvidia/x:tag`. Containers run as root unless `docker_args` sets `--user`, so files they write under `outputs/` are root-owned. `srtctl monitor` and the MCP job tools read Slurm and do not see Docker-launcher jobs.
+
+#### `launcher: host`
+
+```yaml
+launcher: host
+```
+
+`host` runs a job the way `docker` does (the same job script in the foreground, `SRTCTL_JOB_ID=host-<timestamp>`, the same single-machine checks before it starts, one point of a sweep after another), but starts every process as a process group on this machine instead of in a container. It is for a machine with neither Slurm nor a container runtime: a Mac, a workstation, or a VM without the NVIDIA Container Toolkit.
+
+| | `docker` | `host` |
+|---|---|---|
+| Process launch | `docker run ... <image> bash -c <wrapper>` | `bash -c <wrapper>` on this machine, in its own process group |
+| Image (`model.container`, `roles.<role>.container`) | the container each process runs in | ignored (logged once); the same recipe still runs under `docker` and `slurm` |
+| Engine, benchmark client, tools | inside the image | on the `PATH` of the shell that ran `srtctl apply`, typically the engine installed in a virtualenv |
+| Container mounts (`/logs`, `/model`, `/configs`, `extra_mount`, ...) | bind mounts | container paths in the command line, the exported environment and `container-workdir` are rewritten to the host directories behind them |
+| Graceful stop of a named step | `docker kill --signal=TERM` | `killpg` on the step's process group |
+| Node and address | this host, `127.0.0.1` | same |
+
+Since nothing is mounted, the launcher rewrites each mount's container path to its host directory wherever it appears as a whole path in an argument (a `bash -c` script included): `--model /model` becomes `--model /data/qwen`, `/logs/sa-bench` becomes `outputs/<job_id>/logs/sa-bench`. A container path inside a longer path segment (`/models`, `/data/logs`) or a URL (`http://host:8000/model`) is left alone. Paths written inside a script file (rather than on its command line) are not rewritten: a script that hardcodes `/logs` writes there. The bundled benchmark scripts under `src/srtctl/benchmarks/scripts/` still write their results to a fixed `/logs/...` directory, so under `host` use `benchmark.type: custom` (or `manual`) until they take their output directory from the command line.
+
+A container also keeps whatever a step installs off the machine; on the host nothing does, so `host` guards installs instead:
+
+- Every process starts with `PIP_REQUIRE_VIRTUALENV=1` (unless your environment sets it). `pip install`, with `--user` or `--break-system-packages` too, then refuses any Python that is not a virtualenv, and `uv pip install` already refuses one without `--system`. A step can install into the virtualenv its `pip` belongs to (the one active when you ran `srtctl apply`), never into the system or Homebrew Python.
+- srtctl's own virtualenv, which `uv run` puts first on the orchestrator's `PATH`, moves to the end of each process's `PATH`, and `VIRTUAL_ENV` / `UV_PROJECT_ENVIRONMENT` stop naming it. `python3` is your engine's interpreter, and no step installs into srtctl's environment.
+- Two steps are refused before the job starts. The Dynamo install (`frontend.type: dynamo` with `dynamo.install: true`) marks itself done inside the Python it installed into, so a later job would skip its own install: install `ai-dynamo` where your engine runs and set `dynamo.install: false`. `reporting.ai_analysis` installs Claude Code and the GitHub CLI into your home directory with curl: set `reporting.ai_analysis.enabled: false`.
+- A recipe's `setup_script` and `host_setup` run on this machine as you.
+
+Do not run `make setup` on a Mac: it downloads Linux binaries into `bin/`, which the job script puts first on `PATH`. `uv` from Homebrew or the standalone installer is enough to run the orchestrator; etcd and NATS are only needed for a Dynamo frontend. The job script locks its `uv sync` with `flock` where it exists; macOS has none and syncs without the lock.
+
+[`examples/host/vllm-agg-1gpu.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/host/vllm-agg-1gpu.yaml) is a one-GPU vLLM recipe for `host`, benchmarked with a custom `vllm bench serve` command; it sets nothing launcher-specific, so the same file is a valid `docker` or `slurm` recipe.
 
 ### Running without `srtslurm.yaml`
 

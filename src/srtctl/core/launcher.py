@@ -1,15 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Where the orchestrator's processes run: a Slurm allocation, or Docker on this machine.
+"""Where the orchestrator's processes run: a Slurm allocation, or this machine.
 
 The ``SweepOrchestrator`` asks a ``Launcher`` for everything it used to ask Slurm
 for directly: start a process (``launch``), signal a named step (``signal_step``),
 list running steps (``list_step_ids``), the job's nodes (``nodes``) and their
 addresses (``node_ip``), the job id (``job_id``), and how a rendered job script is
 submitted (``submit`` / ``start``). ``SlurmLauncher`` is the default and keeps the
-srun/sbatch/scancel behavior; ``DockerLauncher`` (``core/docker.py``) runs one
-job on the current machine, with containers under ``docker run``.
+srun/sbatch/scancel behavior. The single-machine launchers share ``LocalLauncher``
+(``core/local.py``): ``DockerLauncher`` (``core/docker.py``) runs one job on the
+current machine with containers under ``docker run``, and ``HostLauncher``
+(``core/host.py``) runs it with every process straight on the host.
 
 The launcher is picked by the ``launcher`` key of ``srtslurm.yaml``
 (``get_launcher``). Nothing outside the launcher modules branches on that name.
@@ -413,8 +415,9 @@ class SlurmLauncher(Launcher):
 def launchers() -> dict[str, type[Launcher]]:
     """Every launcher by its ``srtslurm.yaml`` name."""
     from srtctl.core.docker import DockerLauncher
+    from srtctl.core.host import HostLauncher
 
-    return {cls.name: cls for cls in (SlurmLauncher, DockerLauncher)}
+    return {cls.name: cls for cls in (SlurmLauncher, DockerLauncher, HostLauncher)}
 
 
 @cache
