@@ -951,6 +951,12 @@ class SweepOrchestrator(
             exit_code = self.finalize_cpu_power_host_telemetry(exit_code, interrupted=stop_event.is_set())
             stop_event.set()
             registry.cleanup()
+            # Whatever the job started and still runs (Slurm ends every step with the allocation;
+            # on one machine the launcher has to).
+            try:
+                get_launcher().stop_leftovers()
+            except Exception:
+                logger.exception("Stopping leftover processes failed; some may still be running")
             # After cleanup so the GPUs are idle before node state is reverted.
             self._run_host_teardown()
             if exit_code != 0:

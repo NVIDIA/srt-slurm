@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import socket
 import subprocess
 import time
@@ -15,9 +16,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from srtctl.cli.submit import validate_setup
 from srtctl.core import launcher as launcher_mod
 from srtctl.core.docker import DockerLauncher
-from srtctl.core.host import ContainerPaths, HostLauncher, host_environment
+from srtctl.core.host import HOST_PATH_ENV, HOST_VIRTUAL_ENV_ENV, ContainerPaths, HostLauncher, host_environment
 from srtctl.core.launcher import LaunchSpec, SlurmLauncher, get_launcher, launchers
 from srtctl.core.runtime import Nodes
 from srtctl.core.schema import SrtConfig
@@ -365,8 +367,11 @@ def test_mock_sweep_under_docker_launcher_places_everything_on_this_host(tmp_pat
 
 
 @pytest.fixture
-def host(monkeypatch) -> HostLauncher:
+def host(monkeypatch, tmp_path) -> HostLauncher:
+    """A host launcher whose scratch directory lands under ``tmp_path / "tmp"``."""
     monkeypatch.setenv("SRTCTL_JOB_ID", "host-test")
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr("srtctl.core.host.tempfile.gettempdir", lambda: str(tmp_path / "tmp"))
     return HostLauncher()
 
 
@@ -456,7 +461,19 @@ class TestHostCommand:
             " && unset -- NCCL_DEBUG && cd /home/me/outputs/7/logs"
             " && exec vllm serve /data/qwen --log-file /home/me/outputs/7/logs/worker.log"
         )
-        assert cwd is None
+        # Where the container's process would have started: the job's scratch directory, not the checkout.
+        assert cwd == str(host.scratch_dir())
+
+    def test_the_scratch_directory_is_private_and_outside_the_checkout(self, host, tmp_path):
+        scratch = host.scratch_dir()
+        assert scratch.parent == tmp_path / "tmp" and scratch.name.startswith("srtctl-host-test-")
+        if os.name == "posix":
+            assert scratch.stat().st_mode & 0o777 == 0o700
+        assert host.scratch_dir() == scratch
+
+    def test_srtctls_own_host_commands_keep_the_orchestrators_directory(self, host, cluster):
+        cluster(launcher="host")
+        assert host.host_command(LaunchSpec(command=["tachometer-scraper"]))[2] is None
 
     def test_unwrapped_command_is_rewritten_argument_by_argument(self, host, cluster):
         cluster(launcher="host")
@@ -465,7 +482,15 @@ class TestHostCommand:
             container_mounts={Path("/repo/configs"): Path("/configs")},
             use_bash_wrapper=False,
         )
-        assert host.host_command(spec)[0] == ["/repo/configs/nats-server", "-c", "/repo/configs/nats.conf"]
+        assert host.host_command(spec)[0] == [
+            "bash",
+            "-c",
+            'exec -- "$@"',
+            "bash",
+            "/repo/configs/nats-server",
+            "-c",
+            "/repo/configs/nats.conf",
+        ]
 
     def test_exported_env_and_workdir_are_rewritten(self, host, cluster, caplog):
         cluster(launcher="host")
@@ -490,7 +515,7 @@ class TestHostCommand:
     def test_container_image_is_ignored_and_logged_once(self, host, cluster, caplog):
         cluster(launcher="host")
         with (
-            patch("srtctl.core.local.subprocess.Popen", return_value=MagicMock()) as popen,
+            patch("srtctl.core.local._ProcessGroup", return_value=MagicMock()) as popen,
             caplog.at_level("INFO"),
         ):
             for step in ("a", "b"):
@@ -507,6 +532,27 @@ class TestHostCommand:
     def test_other_hosts_are_rejected(self, host):
         with pytest.raises(ValueError, match="other-node"):
             host.launch(LaunchSpec(command=["true"], nodelist=["other-node"]))
+
+    def test_a_host_path_a_shell_would_split_is_reached_through_a_symlink(self, host, cluster, tmp_path):
+        cluster(launcher="host")
+        model = tmp_path / "My Models" / "qwen"  # not created yet: the alias must not dangle
+        spec = LaunchSpec(command=["vllm", "serve", "/model"], container_mounts={model: Path("/model")})
+        cmd, _, _ = host.host_command(spec)
+        alias = Path(cmd[2].rsplit(" ", 1)[1])
+        assert alias.parent == host.scratch_dir()
+        assert alias.is_symlink() and os.readlink(alias) == os.path.abspath(model.as_posix())
+        assert model.is_dir()
+        assert host.host_command(spec)[0] == cmd  # one alias per host path
+
+    def test_a_missing_binary_fails_the_process_instead_of_the_orchestrator(self, host, cluster, tmp_path):
+        """As in a container: tachometer-scraper or dcgm-exporter not installed costs that process, not the job."""
+        cluster(launcher="host")
+        out = tmp_path / "exporter.out"
+        proc = host.launch(
+            LaunchSpec(command=["no-such-exporter", "--port", "9401"], use_bash_wrapper=False, output=str(out))
+        )
+        assert proc.wait(timeout=10) == 127
+        assert "not found" in out.read_text()
 
 
 class TestHostEnvironment:
@@ -532,6 +578,48 @@ class TestHostEnvironment:
         assert "VIRTUAL_ENV" not in env and "UV_PROJECT_ENVIRONMENT" not in env
         assert env["HOME"] == "/home/me"
         assert base["VIRTUAL_ENV"] == str(own)  # the caller's mapping is not modified
+
+    def test_path_starts_again_from_the_shell_that_ran_apply(self, tmp_path):
+        """What the job script (bin/, ~/.local/bin) and uv run put first goes after the user's PATH."""
+        own = tmp_path / "srt-slurm" / ".venv"
+        user = [str(tmp_path / "vllm-env" / "bin"), "/usr/bin"]
+        added = [str(tmp_path / "srt-slurm" / "bin"), str(tmp_path / "home" / ".local" / "bin")]
+        base = {"PATH": os.pathsep.join([str(own / "bin"), *added, *user]), HOST_PATH_ENV: os.pathsep.join(user)}
+        env = host_environment(base, str(own))
+        assert env["PATH"].split(os.pathsep) == [*user, *added, str(own / "bin")]
+        assert HOST_PATH_ENV not in env
+
+    def test_the_users_virtualenv_comes_back(self, tmp_path):
+        """uv run replaced it with srtctl's; uv pip install must target the same environment pip does."""
+        own = tmp_path / "srt-slurm" / ".venv"
+        engine = tmp_path / "vllm-env"
+        base = {"VIRTUAL_ENV": str(own), HOST_VIRTUAL_ENV_ENV: str(engine)}
+        env = host_environment(base, str(own))
+        assert env["VIRTUAL_ENV"] == str(engine) and HOST_VIRTUAL_ENV_ENV not in env
+        # None active when apply ran, or apply itself ran from srtctl's virtualenv: none comes back.
+        assert "VIRTUAL_ENV" not in host_environment({"VIRTUAL_ENV": str(own), HOST_VIRTUAL_ENV_ENV: ""}, str(own))
+        assert "VIRTUAL_ENV" not in host_environment({HOST_VIRTUAL_ENV_ENV: str(own)}, str(own))
+
+    def test_uv_run_apply_hides_the_users_virtualenv_and_path_finds_it(self, tmp_path):
+        """`uv run srtctl apply` (the README's command) sets VIRTUAL_ENV to srtctl's before srtctl can see the user's."""
+        own = tmp_path / "srt-slurm" / ".venv"
+        engine = tmp_path / "vllm-env"
+        (engine / "bin").mkdir(parents=True)
+        (engine / "bin" / "python3").write_text("")
+        (engine / "pyvenv.cfg").write_text("home = /usr/bin\n")
+        apply_path = [str(own / "bin"), str(engine / "bin"), "/usr/bin"]
+        base = {
+            "PATH": os.pathsep.join([str(tmp_path / "srt-slurm" / "bin"), str(own / "bin"), *apply_path]),
+            "VIRTUAL_ENV": str(own),
+            HOST_PATH_ENV: os.pathsep.join(apply_path),
+            HOST_VIRTUAL_ENV_ENV: str(own),
+        }
+        env = host_environment(base, str(own))
+        assert env["VIRTUAL_ENV"] == str(engine)
+        assert env["PATH"].split(os.pathsep)[0] == str(engine / "bin")
+        # A python3 that is not a virtualenv's (system, Homebrew, conda) names none.
+        (engine / "pyvenv.cfg").unlink()
+        assert "VIRTUAL_ENV" not in host_environment(base, str(own))
 
     def test_another_virtualenv_is_left_alone(self, tmp_path):
         engine = tmp_path / "vllm-env"
@@ -565,6 +653,52 @@ class TestHostProcesses:
         assert proc.wait(timeout=10) == 0
         assert (logs / "marker").read_text().strip() == "hello world"
         assert out.read_text().strip() == "done"
+
+    def test_paths_a_shell_would_split_still_work(self, host, cluster, tmp_path):
+        cluster(launcher="host")
+        logs = tmp_path / "My Runs" / "it's logs"
+        logs.mkdir(parents=True)
+        out = tmp_path / "o.out"
+        proc = host.launch(
+            LaunchSpec(
+                command=["bash", "-c", "echo ok > /logs/marker && cp /logs/marker '/logs/copy'"],
+                container_mounts={logs: Path("/logs")},
+                bash_preamble="cd /logs",
+                output=str(out),
+            )
+        )
+        assert proc.wait(timeout=10) == 0, out.read_text()
+        assert (logs / "marker").read_text() == "ok\n" and (logs / "copy").exists()
+
+    def test_what_an_exited_process_leaves_running_is_stopped(self, host, cluster, tmp_path):
+        cluster(launcher="host")
+        child = tmp_path / "child.pid"
+        proc = host.launch(
+            LaunchSpec(
+                command=["bash", "-c", f"sleep 300 & echo $! > {shlex.quote(child.as_posix())}"],
+                step_name="engine",
+                output=str(tmp_path / "e.out"),
+            )
+        )
+        assert proc.wait(timeout=10) == 0
+        assert _gone_within(int(child.read_text()))
+
+    def test_groups_still_running_after_cleanup_are_stopped(self, host, cluster, tmp_path):
+        cluster(launcher="host")
+        polite = host.launch(LaunchSpec(command=["sleep", "300"], output=str(tmp_path / "p.out")))
+        ready = tmp_path / "stubborn.ready"
+        stubborn = host.launch(
+            LaunchSpec(
+                command=["bash", "-c", f"trap '' TERM; touch {shlex.quote(ready.as_posix())}; sleep 300"],
+                output=str(tmp_path / "s.out"),
+            )
+        )
+        deadline = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < deadline:  # SIGTERM before the trap would just kill it
+            time.sleep(0.05)
+        host.stop_leftovers(grace=1)
+        assert polite.poll() == -15
+        assert stubborn.poll() == -9
 
     def test_the_pip_guard_reaches_the_process(self, host, cluster, tmp_path, monkeypatch):
         cluster(launcher="host")
@@ -603,8 +737,70 @@ class TestHostJob:
         assert host.start("host-1", tmp_path) == 0
         assert (tmp_path / "logs" / "sweep_host-1.log").read_text() == "job=host-1\n"
 
+    def test_start_hands_the_job_this_shells_path_and_virtualenv(self, host, tmp_path, monkeypatch):
+        monkeypatch.setenv("VIRTUAL_ENV", "/opt/vllm-env")
+        (tmp_path / "sbatch_script.sh").write_text(f'echo "${HOST_PATH_ENV}"\necho "${HOST_VIRTUAL_ENV_ENV}"\n')
+        assert host.start("host-2", tmp_path) == 0
+        lines = (tmp_path / "logs" / "sweep_host-2.log").read_text().splitlines()
+        assert lines == [os.environ["PATH"], "/opt/vllm-env"]
+
     def test_status_hint_finds_the_job_by_id(self, host):
         assert "grep -F -- host-1" in host.status_hint("host-1")
+
+
+class TestHostSetup:
+    """`srtctl apply` under host asks for uv (and etcd/NATS when used), not the Linux binaries of make setup."""
+
+    @pytest.fixture
+    def source(self, tmp_path, monkeypatch) -> Path:
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+        source = tmp_path / "srt-slurm"
+        source.mkdir()
+        return source
+
+    def test_uv_on_path_is_enough_without_a_discovery_plane(self, tmp_path, cluster, monkeypatch, source):
+        cluster(launcher="host")
+        monkeypatch.setattr("srtctl.core.host.shutil.which", lambda name: f"/opt/homebrew/bin/{name}")
+        config = _config(tmp_path, SINGLE_NODE_DISAGG)
+        assert HostLauncher().setup_problems(source, config) == []
+        validate_setup(source, config)
+
+    def test_missing_uv_is_reported(self, tmp_path, cluster, monkeypatch, source):
+        cluster(launcher="host")
+        monkeypatch.setattr("srtctl.core.host.shutil.which", lambda name: None)
+        config = _config(tmp_path, SINGLE_NODE_DISAGG)
+        problems = HostLauncher().setup_problems(source, config)
+        assert len(problems) == 1 and problems[0].startswith("uv")
+        with pytest.raises(SystemExit):
+            validate_setup(source, config)
+        (tmp_path / "home" / ".local" / "bin").mkdir(parents=True)
+        (tmp_path / "home" / ".local" / "bin" / "uv").write_text("")
+        assert HostLauncher().setup_problems(source, config) == []
+
+    def test_a_dynamo_frontend_needs_its_critical_services_binaries(self, tmp_path, cluster, monkeypatch, source):
+        cluster(launcher="host")
+        monkeypatch.setattr("srtctl.core.host.shutil.which", lambda name: f"/opt/homebrew/bin/{name}")
+        dynamo = {**SINGLE_NODE_DISAGG, "frontend": {"type": "dynamo"}, "dynamo": {"install": False}}
+        problems = HostLauncher().setup_problems(source, _config(tmp_path, dynamo))
+        # Only the services this recipe runs: etcd for discovery (no NATS on its request plane) and the collector.
+        assert {problem.split(",")[0] for problem in problems} == {"configs/etcd", "configs/otelcol-contrib"}
+        # A service the recipe switches off is not required; one it merely makes non-critical still is,
+        # since the collector checks for its binary before it launches.
+        without_otel = {**dynamo, "services": [{"name": "otel-collector", "type": "otel-collector", "enabled": False}]}
+        problems = HostLauncher().setup_problems(source, _config(tmp_path, without_otel))
+        assert {problem.split(",")[0] for problem in problems} == {"configs/etcd"}
+        optional_otel = {
+            **dynamo,
+            "services": [{"name": "otel-collector", "type": "otel-collector", "critical": False}],
+        }
+        problems = HostLauncher().setup_problems(source, _config(tmp_path, optional_otel))
+        assert "configs/otelcol-contrib" in {problem.split(",")[0] for problem in problems}
+
+    def test_slurm_still_needs_make_setup(self, tmp_path, cluster, source):
+        cluster()
+        with pytest.raises(SystemExit):
+            validate_setup(source, _config(tmp_path, SINGLE_NODE_DISAGG))
 
 
 class TestHostValidation:
@@ -658,15 +854,38 @@ def test_mock_sweep_under_host_launcher_places_everything_on_this_host(tmp_path,
     path = tmp_path / "recipe.yaml"
     path.write_text(yaml.safe_dump(SINGLE_NODE_DISAGG))
     launches: list[dict] = []
-    exit_code = run_mock_sweep(
-        config_path=path,
-        output_dir=tmp_path / "out",
-        job_id="host-mock",
-        options=MockOptions(phase_pause_s=0, on_srun=launches.append),
-    )
+    with patch.object(HostLauncher, "stop_leftovers") as stop_leftovers:
+        exit_code = run_mock_sweep(
+            config_path=path,
+            output_dir=tmp_path / "out",
+            job_id="host-mock",
+            options=MockOptions(phase_pause_s=0, on_srun=launches.append),
+        )
     assert exit_code == 0
     placed = {node for launch in launches for node in launch.get("nodelist") or ()}
     assert placed == {socket.gethostname()}
+    stop_leftovers.assert_called_once_with()
+
+
+def _alive(pid: int) -> bool:
+    """Whether ``pid`` runs; a killed process waiting for its reaper (a zombie) does not."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return True
+
+
+def _gone_within(pid: int, seconds: float = 10.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while _alive(pid):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
+    return True
 
 
 def test_subprocess_is_not_left_running(docker, cluster, tmp_path):

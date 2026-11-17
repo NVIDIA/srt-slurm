@@ -349,6 +349,8 @@ class ProcessRegistry:
         # Name of the signal (SIGTERM, SIGINT) whose handler started the shutdown; None when
         # the run ended on its own or on a process failure. Set by setup_signal_handlers().
         self.received_signal: str | None = None
+        # Threads inside cleanup(); a signal handler on one of them must not call it again.
+        self._cleaning_threads: set[int] = set()
 
     def add_process(self, process: ManagedProcess) -> None:
         """Add a process to the registry.
@@ -456,6 +458,18 @@ class ProcessRegistry:
         and a tier is fully stopped before the next is signalled, so nothing is
         left deregistering from a plane that has already gone away.
         """
+        thread = threading.get_ident()
+        self._cleaning_threads.add(thread)
+        try:
+            self._stop_registered()
+        finally:
+            self._cleaning_threads.discard(thread)
+
+    def cleaning_on_this_thread(self) -> bool:
+        """Whether the calling thread is inside ``cleanup`` (a signal handler interrupted it there)."""
+        return threading.get_ident() in self._cleaning_threads
+
+    def _stop_registered(self) -> None:
         with self._lock:
             running = [proc for proc in self._processes.values() if proc.is_running]
             logger.info("Cleaning up %d processes (%d running)...", len(self._processes), len(running))
@@ -537,14 +551,26 @@ class ProcessRegistry:
             return len(self._processes)
 
 
+# Signals that stop the job with a cleanup: SIGTERM (scancel, walltime, `docker stop`), SIGINT
+# (Ctrl+C), and SIGHUP (the terminal a `launcher: docker` or `host` job runs in was closed;
+# its processes run in sessions of their own, so nothing else would stop them). POSIX only
+# for SIGHUP, hence the lookup by name.
+SHUTDOWN_SIGNALS = tuple(sig for sig in signal.Signals if sig.name in ("SIGTERM", "SIGINT", "SIGHUP"))
+
+
 def setup_signal_handlers(
     stop_event: threading.Event,
     registry: ProcessRegistry,
 ) -> None:
-    """Setup signal handlers for graceful shutdown.
+    """Setup signal handlers for graceful shutdown (``SHUTDOWN_SIGNALS``).
 
     The handler records the signal on ``registry.received_signal`` so the
     cleanup path can tell a walltime or scancel shutdown from a process failure.
+    A signal that interrupts a cleanup already running on this thread (a second
+    SIGHUP from a closed terminal, Ctrl+C during the run's own final cleanup) lets
+    that cleanup finish instead of re-entering it, which would block on its lock
+    forever; a later signal stops the job again, as before. A SIGHUP that is ignored
+    (``nohup srtctl apply``) stays ignored.
 
     Args:
         stop_event: Event to signal shutdown
@@ -553,14 +579,21 @@ def setup_signal_handlers(
 
     def signal_handler(signum, frame):
         sig_name = signal.Signals(signum).name
+        if registry.cleaning_on_this_thread():
+            logger.warning("Received signal %s during cleanup; letting it finish", sig_name)
+            registry.received_signal = registry.received_signal or sig_name
+            stop_event.set()
+            return
         logger.warning("Received signal %s, initiating cleanup...", sig_name)
         registry.received_signal = sig_name
         stop_event.set()
         registry.cleanup()
         sys.exit(1)
 
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
+    for sig in SHUTDOWN_SIGNALS:
+        if sig.name == "SIGHUP" and signal.getsignal(sig) == signal.SIG_IGN:
+            continue
+        signal.signal(sig, signal_handler)
 
 
 def start_process_monitor(

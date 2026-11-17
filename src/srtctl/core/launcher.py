@@ -40,6 +40,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LAUNCHER = "slurm"
 
+# What `make setup ARCH=<compute_arch>` installs that a job needs, relative to the srt-slurm
+# checkout: path -> how a missing one is reported.
+MAKE_SETUP_FILES: dict[str, str] = {
+    "configs/nats-server": "configs/nats-server",
+    "configs/etcd": "configs/etcd",
+    "bin/uv": "bin/uv (compute-arch uv)",
+    "bin/tachometer-scraper": "bin/tachometer-scraper (compute-arch Tachometer scraper)",
+}
+
 
 @dataclass(frozen=True)
 class LaunchSpec:
@@ -180,6 +189,28 @@ class Launcher(ABC):
     def validate(self, config: SrtConfig) -> list[str]:
         """Reasons ``config`` cannot run under this launcher; empty when it can."""
         return []
+
+    def setup_problems(self, srtctl_source: Path, config: SrtConfig | None) -> list[str]:
+        """What a job under this launcher needs installed and is missing; empty when ready.
+
+        By default the binaries ``make setup`` puts in the srt-slurm checkout.
+        """
+        return [label for path, label in MAKE_SETUP_FILES.items() if not (srtctl_source / path).exists()]
+
+    def setup_hint(self, srtctl_source: Path) -> list[str]:
+        """Lines that tell the user how to install what ``setup_problems`` reports."""
+        return [
+            "Run make setup ARCH=<compute_arch> first:",
+            f"  cd {srtctl_source}",
+            "  make setup ARCH=aarch64  # for GB200/Grace compute nodes",
+            "  make setup ARCH=x86_64   # for x86_64 compute nodes",
+        ]
+
+    def stop_leftovers(self) -> None:  # noqa: B027 - optional end-of-job hook
+        """Stop whatever the job started that still runs after the orchestrator stopped its processes.
+
+        Nothing by default: Slurm ends every step with the allocation.
+        """
 
 
 class SlurmLauncher(Launcher):

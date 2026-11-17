@@ -21,7 +21,7 @@ import signal
 import threading
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -31,7 +31,7 @@ from test_release_idle_nodes import EVIDENCE, JOB_ID, TWO_NODES, _allocation_shr
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.core import processes as processes_module
 from srtctl.core import slurm as slurm_module
-from srtctl.core.processes import ProcessRegistry, setup_signal_handlers
+from srtctl.core.processes import SHUTDOWN_SIGNALS, ManagedProcess, ProcessRegistry, setup_signal_handlers
 from srtctl.core.slurm import _kept_node_cpus
 
 # What sbatch exports to a 2-node batch script, on top of the four variables the mock sets.
@@ -95,8 +95,8 @@ def _recording_shrink(attempts: list[str]):
 
 @pytest.fixture
 def restore_signal_handlers():
-    """``SweepOrchestrator.run`` installs SIGTERM/SIGINT handlers process-wide; put pytest's back."""
-    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    """``SweepOrchestrator.run`` installs SHUTDOWN_SIGNALS handlers process-wide; put pytest's back."""
+    previous = {sig: signal.getsignal(sig) for sig in SHUTDOWN_SIGNALS}
     yield
     for sig, handler in previous.items():
         signal.signal(sig, handler)
@@ -311,15 +311,46 @@ def test_signal_driven_cleanup_does_not_attempt_a_release(
     assert signal.Signals(signum).name in (evidence["reason"] or ""), evidence
 
 
-def test_received_signal_is_recorded_by_the_handler(restore_signal_handlers: None) -> None:
+@pytest.mark.parametrize("signum", SHUTDOWN_SIGNALS, ids=lambda sig: sig.name)
+def test_received_signal_is_recorded_by_the_handler(restore_signal_handlers: None, signum: signal.Signals) -> None:
+    """SIGHUP too: closing the terminal of a single-machine job stops it with a cleanup, like Ctrl+C."""
+    if signum.name == "SIGHUP":
+        signal.signal(signum, signal.SIG_DFL)  # a runner started under nohup ignores it, and so would the handler
     registry = ProcessRegistry(job_id="1")
     stop = threading.Event()
     setup_signal_handlers(stop, registry)
     assert registry.received_signal is None
     with pytest.raises(SystemExit):
-        signal.raise_signal(signal.SIGINT)
-    assert registry.received_signal == "SIGINT"
+        signal.raise_signal(signum)
+    assert registry.received_signal == signum.name
     assert stop.is_set()
+
+
+def test_a_signal_during_cleanup_lets_it_finish(restore_signal_handlers: None) -> None:
+    """A second SIGHUP from a closed terminal, or Ctrl+C during the run's final cleanup, used to re-enter
+    the cleanup on the same thread and block on its lock forever."""
+    registry = ProcessRegistry(job_id="1")
+    stop = threading.Event()
+    setup_signal_handlers(stop, registry)
+    popen = MagicMock()
+    popen.poll.return_value = None
+    popen.wait.return_value = 0
+    popen.terminate.side_effect = lambda: signal.raise_signal(signal.SIGINT)  # arrives mid-cleanup
+    registry.add_process(ManagedProcess(name="engine", popen=popen, critical=False))
+    registry.cleanup()  # returns: the handler saw the cleanup running and let it finish
+    assert registry.received_signal == "SIGINT" and stop.is_set()
+    popen.wait.assert_called()
+    # Outside a cleanup, a later signal stops the job again.
+    with pytest.raises(SystemExit):
+        signal.raise_signal(signal.SIGINT)
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="SIGHUP is POSIX-only")
+def test_an_ignored_sighup_stays_ignored(restore_signal_handlers: None) -> None:
+    """``nohup srtctl apply ... &`` must keep the job running after logout."""
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    setup_signal_handlers(threading.Event(), ProcessRegistry(job_id="1"))
+    assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
 
 
 # ---------------------------------------------------------------------------

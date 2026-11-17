@@ -11,6 +11,7 @@ it; ``HostLauncher`` (``core/host.py``) runs every process straight on the host.
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import shlex
@@ -52,6 +53,48 @@ _IGNORED_SRUN_OPTIONS = frozenset(
 )
 
 
+def _killpg(pgid: int, sig: signal.Signals) -> None:
+    """Signal a process group; one that is already gone is not an error."""
+    try:
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        pass
+    except PermissionError as exc:
+        logger.warning("killpg %s %d failed: %s", sig.name, pgid, exc)
+
+
+class _ProcessGroup(subprocess.Popen):
+    """A host process started as a process group of its own (``start_new_session``); the group ends with it.
+
+    When a Slurm step's task exits, Slurm stops what is left of the step, and when a
+    container's PID 1 exits, the kernel kills the rest of the container. On the host
+    nothing would, so an engine's children (vLLM's EngineCore, SGLang's schedulers)
+    could outlive it holding GPU memory and ports. The first ``poll`` or ``wait`` that
+    sees this process exit SIGKILLs whatever is left of its group. The group id cannot
+    have been reused by then: the exited process kept its pid until that same call
+    reaped it, and any member still running keeps the group.
+    """
+
+    _group_ended = False
+
+    def poll(self) -> int | None:
+        returncode = super().poll()
+        if returncode is not None:
+            self._end_group()
+        return returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        returncode = super().wait(timeout)
+        self._end_group()
+        return returncode
+
+    def _end_group(self) -> None:
+        if self._group_ended:
+            return
+        self._group_ended = True
+        _killpg(self.pid, signal.SIGKILL)
+
+
 @dataclass
 class _LocalStep:
     popen: subprocess.Popen
@@ -67,6 +110,8 @@ class LocalLauncher(Launcher):
 
     def __init__(self) -> None:
         self._steps: dict[str, _LocalStep] = {}
+        # Every host process this launcher started, named or not, for stop_leftovers.
+        self._groups: list[subprocess.Popen] = []
         self._lock = threading.Lock()
         self._counter = 0
         self._warned_srun_options: set[str] = set()
@@ -115,24 +160,68 @@ class LocalLauncher(Launcher):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> subprocess.Popen:
-        """Run ``cmd`` in a process group of its own and record it under ``spec.step_name``."""
+        """Run ``cmd`` in a process group of its own and record it under ``spec.step_name``.
+
+        A host process (no ``container``) is a ``_ProcessGroup``: its group ends with it.
+        """
         logger.info("%s launcher command: %s", self.name, shlex.join(cmd))
+        popen_class = subprocess.Popen if container is not None else _ProcessGroup
         if spec.output:
             Path(spec.output).parent.mkdir(parents=True, exist_ok=True)
             with open(spec.output, "w") as out:
                 # start_new_session: a host process gets its own process group so the
                 # whole tree can be signalled; docker run forwards signals itself.
-                popen = subprocess.Popen(
-                    cmd, stdout=out, stderr=subprocess.STDOUT, env=env, cwd=cwd, start_new_session=True
-                )
+                popen = popen_class(cmd, stdout=out, stderr=subprocess.STDOUT, env=env, cwd=cwd, start_new_session=True)
         else:
-            popen = subprocess.Popen(
+            popen = popen_class(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, cwd=cwd, start_new_session=True
             )
-        if spec.step_name:
-            with self._lock:
+        with self._lock:
+            if container is None:
+                if not self._groups:
+                    atexit.register(self._at_exit)
+                self._groups.append(popen)
+            if spec.step_name:
                 self._steps[spec.step_name] = _LocalStep(popen=popen, container=container)
         return popen
+
+    def _at_exit(self) -> None:
+        """When the orchestrator exits, once this launcher has started a host process.
+
+        The run's finally calls stop_leftovers, but the host teardown and post-processing
+        launch after it, and a signal can end the orchestrator while they run.
+        """
+        self.stop_leftovers()
+
+    def stop_leftovers(self, grace: float = 10.0) -> None:
+        """SIGTERM every host process group still running, then SIGKILL what outlives ``grace`` seconds.
+
+        Runs after the orchestrator stopped the processes it registered: a launch it never
+        registered, or a group whose stop did not land, would otherwise outlive the job,
+        which neither Slurm nor Docker allows. Polling a group whose process already exited
+        ends what is left of it (``_ProcessGroup``).
+        """
+        with self._lock:
+            running = [popen for popen in self._groups if popen.poll() is None]
+        if not running:
+            return
+        logger.warning(
+            "Stopping %d process group(s) still running after cleanup: %s",
+            len(running),
+            ", ".join(str(popen.pid) for popen in running),
+        )
+        for popen in running:
+            _killpg(popen.pid, signal.SIGTERM)
+        deadline = time.monotonic() + grace
+        for popen in running:
+            try:
+                popen.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                _killpg(popen.pid, signal.SIGKILL)
+                try:
+                    popen.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.error("Process group %d survived SIGKILL", popen.pid)
 
     # -- signalling ----------------------------------------------------------
 
@@ -208,6 +297,10 @@ class LocalLauncher(Launcher):
         now = time.time()
         return f"{self.name}-{time.strftime('%Y%m%d-%H%M%S', time.localtime(now))}-{int(now * 1000) % 1000:03d}"
 
+    def _job_environment(self) -> dict[str, str]:
+        """Variables the job script gets besides this environment and the job id."""
+        return {}
+
     def start(self, job_id: str, job_output_dir: Path) -> int:
         """Run the staged job script in the foreground, teeing it to ``logs/sweep_<job_id>.log``.
 
@@ -217,6 +310,7 @@ class LocalLauncher(Launcher):
         log_path = job_output_dir / "logs" / f"sweep_{job_id}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         env = {k: v for k, v in os.environ.items() if not k.startswith("SLURM_")}
+        env.update(self._job_environment())
         env[JOB_ID_ENV] = job_id
         with open(log_path, "a") as log:
             proc = subprocess.Popen(
