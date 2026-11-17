@@ -33,7 +33,11 @@ SNAPSHOT_DIR = Path(__file__).resolve().parent / "snapshots" / "launch"
 JOB_ID = "4242"
 
 # Recipes that are not a single runnable job: overrides and sweeps expand into several.
-NOT_A_JOB = {"examples/features/override.yaml", "examples/features/sweep.yaml"}
+NOT_A_JOB = {
+    "examples/features/override.yaml",
+    "examples/features/sweep.yaml",
+    "examples/features/extends/variants.yaml",
+}
 
 # Environment required to exercise an example's documented launch mode.
 EXAMPLE_ENV = {"examples/trtllm/trtllm-serve-disagg-eval-only.yaml": {"EVAL_ONLY": "true"}}
@@ -74,8 +78,12 @@ _RECORDED_KEYS = (
 
 
 def example_recipes() -> list[Path]:
-    """Every example recipe that describes one job."""
-    return sorted(p for p in EXAMPLES_DIR.rglob("*.yaml") if p.relative_to(REPO_ROOT).as_posix() not in NOT_A_JOB)
+    """Every example recipe that describes one job (a file another example lists in `extends` is a layer)."""
+    from srtctl.core.compose import layer_files
+
+    examples = sorted(EXAMPLES_DIR.rglob("*.yaml"))
+    layers = layer_files(examples)
+    return [p for p in examples if p.relative_to(REPO_ROOT).as_posix() not in NOT_A_JOB and p.resolve() not in layers]
 
 
 def snapshot_path(recipe: Path) -> Path:

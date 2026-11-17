@@ -229,10 +229,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
-      - name: Validate every example (sweep and override files are expanded)
+      - name: Validate every example (sweep and override files are expanded, extends merged)
         run: |
           uv run python -c "
           from pathlib import Path
+          from srtctl.core.compose import layer_files
           from srtctl.core.config import validate_config_file
 
           examples = sorted(Path('examples').rglob('*.yaml'))
@@ -240,6 +241,10 @@ jobs:
           if not examples:
               print('No examples found')
               exit(1)
+
+          # A file another example lists in extends is a partial recipe, checked through those that use it.
+          layers = layer_files(examples)
+          examples = [example for example in examples if example.resolve() not in layers]
 
           all_errors = []
           for example in examples:

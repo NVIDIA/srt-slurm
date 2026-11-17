@@ -34,7 +34,6 @@ from typing import (
     get_args,
 )
 
-import yaml
 from marshmallow import Schema, ValidationError, fields, validate
 from marshmallow_dataclass import dataclass
 
@@ -4148,13 +4147,14 @@ class SrtConfig:
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":
         """Load a recipe file without cluster defaults (``load_config`` applies them).
 
-        Runs the same gate and engine-default expansions as ``load_config``: a
-        pre-2.0 recipe is rejected before the schema loads the document.
+        Runs the same composition, gate and engine-default expansions as ``load_config``:
+        ``extends`` is merged in, and a pre-2.0 recipe is rejected before the schema loads
+        the document.
         """
+        from srtctl.core.compose import load_recipe
         from srtctl.core.config import expand_engine_config_defaults, resolve_config_with_defaults
 
-        with open(yaml_path) as f:
-            data = yaml.safe_load(f)
+        data = load_recipe(Path(yaml_path))
         resolved = resolve_config_with_defaults(data, None)
         expand_engine_config_defaults(resolved)
         schema = cls.Schema()

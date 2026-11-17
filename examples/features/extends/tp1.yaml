@@ -1,0 +1,13 @@
+# A recipe built from shared files. `extends` merges them left to right, then this file on top:
+# mappings merge, lists and scalars replace, null deletes. See docs/extends.md.
+#
+#   srtctl dry-run -f examples/features/extends/tp1.yaml
+#   srtctl resolve-override -f examples/features/extends/tp1.yaml --stdout   # the merged recipe
+
+schema: 2
+extends: [qwen3-0.6b-agg.yaml, sa-bench-128.yaml]
+
+name: "qwen3-0.6b-extends-tp1"
+
+benchmark:
+  concurrencies: [4, 8, 16]   # replaces the shared list

@@ -800,24 +800,51 @@ def json_schema(root: type = SrtConfig) -> dict[str, Any]:
         ),
         "additionalProperties": {"type": "array"},
     }
+    body["properties"]["extends"] = {"$ref": "#/$defs/Extends"}
     defs["Recipe"] = body
     defs["RecipeBase"] = {key: value for key, value in body.items() if key != "required"}
+    defs["Extends"] = {
+        "description": (
+            "Shared partial recipes merged under this file, left to right (docs/extends.md). Paths are "
+            "relative to this file; a listed file cannot use `extends` itself or hold variants."
+        ),
+        "oneOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": True},
+        ],
+    }
+    # A recipe with `extends` gets the rest of its fields from the files it lists, so only these are required.
+    defs["ExtendingRecipe"] = {"$ref": "#/$defs/RecipeBase", "required": ["extends", "schema"]}
     # An override file is `base` plus `override_*` / `zip_override_*` variants deep-merged over it. Variants
-    # are partial (and zip variants hold lists), so only `base` is checked field by field.
+    # are partial (and zip variants hold lists), so only `base` is checked field by field. With `extends`,
+    # the listed files are merged under `base`, which may then be left out; `extends` stays top-level.
     override_file = {
         "type": "object",
-        "required": ["base"],
+        "anyOf": [{"required": ["base"]}, {"required": ["extends"]}],
         "additionalProperties": False,
-        "properties": {"schema": body["properties"]["schema"], "base": {"$ref": "#/$defs/RecipeBase"}},
+        "properties": {
+            "schema": body["properties"]["schema"],
+            "extends": {"$ref": "#/$defs/Extends"},
+            "base": {"$ref": "#/$defs/RecipeBase", "not": {"required": ["extends"]}},
+        },
         "patternProperties": {"^(zip_)?override_": {"type": "object"}},
+        "dependentRequired": {"extends": ["schema"]},
     }
+    has_variant = {"not": {"propertyNames": {"not": {"pattern": "^(zip_)?override_"}}}}
     return {
         "$schema": JSON_SCHEMA_DIALECT,
         "title": "srt-slurm recipe",
-        "description": "A recipe, or an override file (`base` plus `override_*` / `zip_override_*` variants).",
-        "if": {"type": "object", "required": ["base"]},
+        "description": (
+            "A recipe, or an override file (`base` plus `override_*` / `zip_override_*` variants); "
+            "either may list shared files in `extends`."
+        ),
+        "if": {"type": "object", "anyOf": [{"required": ["base"]}, has_variant]},
         "then": override_file,
-        "else": {"$ref": "#/$defs/Recipe"},
+        "else": {
+            "if": {"type": "object", "required": ["extends"]},
+            "then": {"$ref": "#/$defs/ExtendingRecipe"},
+            "else": {"$ref": "#/$defs/Recipe"},
+        },
         "$defs": dict(sorted(defs.items())),
     }
 

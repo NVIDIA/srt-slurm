@@ -1,17 +1,39 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "srt-slurm recipe",
-  "description": "A recipe, or an override file (`base` plus `override_*` / `zip_override_*` variants).",
+  "description": "A recipe, or an override file (`base` plus `override_*` / `zip_override_*` variants); either may list shared files in `extends`.",
   "if": {
     "type": "object",
-    "required": [
-      "base"
+    "anyOf": [
+      {
+        "required": [
+          "base"
+        ]
+      },
+      {
+        "not": {
+          "propertyNames": {
+            "not": {
+              "pattern": "^(zip_)?override_"
+            }
+          }
+        }
+      }
     ]
   },
   "then": {
     "type": "object",
-    "required": [
-      "base"
+    "anyOf": [
+      {
+        "required": [
+          "base"
+        ]
+      },
+      {
+        "required": [
+          "extends"
+        ]
+      }
     ],
     "additionalProperties": false,
     "properties": {
@@ -21,18 +43,42 @@
         ],
         "description": "Recipe schema version. Every recipe declares `schema: 2`; a recipe without it is the pre-2.0 layout and does not load (see [legacy-v1.md](legacy-v1.md) and `srtctl migrate`)."
       },
+      "extends": {
+        "$ref": "#/$defs/Extends"
+      },
       "base": {
-        "$ref": "#/$defs/RecipeBase"
+        "$ref": "#/$defs/RecipeBase",
+        "not": {
+          "required": [
+            "extends"
+          ]
+        }
       }
     },
     "patternProperties": {
       "^(zip_)?override_": {
         "type": "object"
       }
+    },
+    "dependentRequired": {
+      "extends": [
+        "schema"
+      ]
     }
   },
   "else": {
-    "$ref": "#/$defs/Recipe"
+    "if": {
+      "type": "object",
+      "required": [
+        "extends"
+      ]
+    },
+    "then": {
+      "$ref": "#/$defs/ExtendingRecipe"
+    },
+    "else": {
+      "$ref": "#/$defs/Recipe"
+    }
   },
   "$defs": {
     "AIAnalysisConfig": {
@@ -886,6 +932,31 @@
         }
       },
       "description": "Where Dynamo comes from. Exactly one of ``git``, ``pypi``, or ``wheel``."
+    },
+    "ExtendingRecipe": {
+      "$ref": "#/$defs/RecipeBase",
+      "required": [
+        "extends",
+        "schema"
+      ]
+    },
+    "Extends": {
+      "description": "Shared partial recipes merged under this file, left to right (docs/extends.md). Paths are relative to this file; a listed file cannot use `extends` itself or hold variants.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      ]
     },
     "FileProbe": {
       "type": "object",
@@ -2066,6 +2137,9 @@
           "additionalProperties": {
             "type": "array"
           }
+        },
+        "extends": {
+          "$ref": "#/$defs/Extends"
         }
       },
       "description": "Complete srtctl job configuration (frozen, immutable).",
@@ -2291,6 +2365,9 @@
           "additionalProperties": {
             "type": "array"
           }
+        },
+        "extends": {
+          "$ref": "#/$defs/Extends"
         }
       },
       "description": "Complete srtctl job configuration (frozen, immutable)."

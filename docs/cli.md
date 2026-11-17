@@ -399,7 +399,7 @@ Every argument: [CLI Reference](cli-reference.md#srtctl-render).
 
 ### `srtctl resolve-override`
 
-Expand an override config and write the specialised YAML file(s) without submitting.
+Write the recipe each job runs without submitting: an override file expands into one file per variant, `extends` is merged in and `--set` / `--unset` are applied. For a recipe that is not an override file the output is `{stem}_resolved.yaml`; a sweep is rejected (`dry-run` writes the config of each of its jobs).
 
 ```bash
 srtctl resolve-override -f <config.yaml> [options]
@@ -423,7 +423,7 @@ srtctl resolve-override -f config.yaml:override_lowmem --stdout
 srtctl resolve-override -f config.yaml:zip_override_tp_sweep[0] --stdout
 ```
 
-The resolved YAML preserves the field order and comments from the source file. Base fields appear first in their original order; override-only fields are appended at the end. Output files follow the same `{stem}_{suffix}.yaml` naming convention used by `apply`.
+The resolved YAML preserves the field order and comments from the source file. Base fields appear first in their original order; override-only fields are appended at the end. Output files follow the same `{stem}_{suffix}.yaml` naming convention used by `apply` and are written next to the source file.
 
 See [Config Overrides — Resolving Without Submitting](overrides.md#resolving-overrides-without-submitting) for details.
 
@@ -609,6 +609,8 @@ srtctl apply -f override-config.yaml:base
 The `:selector` syntax works with `apply`, `dry-run`, and `resolve-override`. If the selector is used on a non-override config, a warning is logged and the config is processed normally.
 
 Override configs also work with directory submission — override files in the directory are auto-detected and expanded.
+
+A recipe can also list shared partial recipes in a top-level `extends`; srtctl merges them under it before submitting, and directory submission skips the shared files. See [Shared Recipe Files](extends.md).
 
 To inspect the resolved YAML before submitting (preserving field order and comments), use `resolve-override`:
 

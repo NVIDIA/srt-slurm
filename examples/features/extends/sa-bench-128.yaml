@@ -1,0 +1,13 @@
+# Shared benchmark settings for the recipes in this directory (a partial recipe, see
+# qwen3-0.6b-agg.yaml).
+
+schema: 2
+
+slurm:
+  time_limit: "00:30:00"
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: [4, 8]

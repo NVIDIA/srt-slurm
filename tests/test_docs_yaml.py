@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Every YAML block in docs/ is checked against the published JSON Schema.
 
-A block is classified by its top-level keys: an override file (``base:``) and a ``srtslurm.yaml``
-are validated as written; a recipe fragment is laid onto a minimal valid recipe first, with the blocks
-it names (``engine``, ``roles``, ...) replacing the base's, so a snippet that shows only ``frontend:``
-is still checked for unknown keys, bad enums and wrong types. Blocks whose top level is a nested
+A block is classified by its top-level keys: an override file (``base:``, or variants with
+``extends``), a recipe with ``extends`` and a ``srtslurm.yaml`` are validated as written; a recipe
+fragment is laid onto a minimal valid recipe first, with the blocks it names (``engine``,
+``roles``, ...) replacing the base's, so a snippet that shows only ``frontend:`` is still checked
+for unknown keys, bad enums and wrong types. Blocks whose top level is a nested
 section (``readiness:``, ``args`` flags) are not recipe-shaped and are not checked. Cross-field rules
 are ``srtctl dry-run``'s job, not this test's. Mark an intentionally partial or proposed block with
 ``<!-- docs-yaml: skip -->`` on the line above its fence.
@@ -33,6 +34,7 @@ SKIP_MARKER = "<!-- docs-yaml: skip -->"
 FENCE = re.compile(r"^```ya?ml[^\n]*\n(.*?)^```", re.MULTILINE | re.DOTALL)
 PLACEHOLDER = re.compile(r"\{\w+\}")
 REPLACED_BLOCKS = {"engine", "roles", "benchmark", "frontend"}
+VARIANT_PREFIXES = ("override_", "zip_override_")
 BASE_RECIPE = REPO_ROOT / "examples" / "mocker" / "dynamo-agg.yaml"
 
 RECIPE_SCHEMA = json_schema(SrtConfig)
@@ -61,8 +63,10 @@ def _kind(doc: Any) -> str | None:
     if not isinstance(doc, dict) or not doc:
         return None
     keys = set(doc)
-    if "base" in keys:
+    if "base" in keys or ("extends" in keys and any(str(key).startswith(VARIANT_PREFIXES) for key in keys)):
         return "override"
+    if "extends" in keys and keys - {"extends"} <= RECIPE_KEYS:
+        return "extending"  # the rest comes from the files it lists: checked as written
     if keys <= RECIPE_KEYS:
         return "recipe"
     if keys <= CLUSTER_KEYS:

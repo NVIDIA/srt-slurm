@@ -654,6 +654,7 @@ def resolve_override_yaml(
 def validate_config_file(path: Path | str) -> list[str]:
     """Validate a recipe YAML, handling both plain and override-format files.
 
+    A recipe with ``extends`` is validated as composed (``srtctl.core.compose``).
     For plain configs, validates the single config.
     For override configs (has a ``base`` key), expands all variants and
     validates each one.
@@ -665,11 +666,14 @@ def validate_config_file(path: Path | str) -> list[str]:
     if not path.exists():
         return [f"{path}: file not found"]
 
+    from .compose import ExtendsError, load_recipe
+
     try:
-        with open(path) as f:
-            raw = yaml.safe_load(f)
+        raw = load_recipe(path)
     except yaml.YAMLError as e:
         return [f"{path}: YAML parse error: {e}"]
+    except ExtendsError as e:
+        return [str(e)]
 
     if not isinstance(raw, dict):
         return [f"{path}: not a YAML mapping"]
@@ -1005,9 +1009,10 @@ def load_config(path: Path | str) -> SrtConfig:
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
-    # Load raw user config
-    with open(path) as f:
-        user_config = yaml.safe_load(f)
+    from .compose import load_recipe
+
+    # Load raw user config, with any files it lists in `extends` merged under it
+    user_config = load_recipe(path)
     if user_config is None:
         raise ValueError(f"Invalid config in {path}: YAML file is empty")
     if not isinstance(user_config, dict):

@@ -173,7 +173,8 @@ def _spawn_mock_worker(submission: dict, tick_s: float) -> None:
     process can exit cleanly while the child keeps ticking.
     """
     output_dir = Path(submission["output_dir"])
-    config_path = submission["config_path"]
+    # The copy in the output directory, as the sbatch script runs it (the submitted path may be gone).
+    config_path = submission["runtime_config_path"]
     job_id = submission["slurm_job_id"]
     log_path = output_dir / "mock_worker.log"
     log_fh = log_path.open("w")
@@ -1424,6 +1425,9 @@ def submit_with_orchestrator(
                 "output_dir": str(job_output_dir),
                 "metadata_path": str(job_output_dir / f"{job_id}.json"),
                 "config_path": str(config_path),
+                # What the job runs: the sbatch script hands this copy to do_sweep. config_path can
+                # be a staged file (`extends` composed, --set applied) that is gone after apply exits.
+                "runtime_config_path": str(job_output_dir / runtime_config_filename),
                 "tags": list(tags) if tags else None,
             }
         )
@@ -1523,6 +1527,13 @@ def submit_single(
     else:
         raw_config = SrtConfig.Schema().dump(config)
 
+    from srtctl.core.compose import has_extends
+
+    if has_extends(raw_config):
+        # The job copies this file into its output directory and loads it there, away from the files
+        # in extends; `apply` submits the composed recipe that materialize_config_path stages instead.
+        raise ValueError(f"{config_path} has `extends`: stage it with materialize_config_path before submitting")
+
     if enforce_preflight:
         _assert_preflight_passed(raw_config, label=str(config_path or "<inline-config>"))
 
@@ -1571,10 +1582,13 @@ def submit_sweep(
         enforce_preflight: When False, skip the pre-submit model/container/telemetry
             FS checks for every variant (propagated to submit_single).
     """
+    from srtctl.core.compose import composition_header
     from srtctl.core.sweep import generate_sweep_configs
 
-    with open(config_path) as f:
-        sweep_config = yaml.safe_load(f)
+    sweep_text = config_path.read_text()
+    sweep_config = yaml.safe_load(sweep_text)
+    # A composed sweep names the files it came from; every job's config.yaml keeps that record.
+    header = composition_header(sweep_text)
 
     configs = generate_sweep_configs(sweep_config)
 
@@ -1610,6 +1624,7 @@ def submit_sweep(
         sweep_dir.mkdir(parents=True, exist_ok=True)
 
         with open(sweep_dir / "sweep_config.yaml", "w") as f:
+            f.write(header)
             yaml.dump(sweep_config, f, default_flow_style=False)
 
         for i, (config_dict, _params) in enumerate(configs, 1):
@@ -1617,6 +1632,7 @@ def submit_sweep(
             job_dir = sweep_dir / f"job_{i:03d}_{job_name}"
             job_dir.mkdir(exist_ok=True)
             with open(job_dir / "config.yaml", "w") as f:
+                f.write(header)
                 yaml.dump(config_dict, f, default_flow_style=False)
 
         console.print(f"[dim]📁 Output:[/] {sweep_dir}")
@@ -1638,6 +1654,7 @@ def submit_sweep(
             fd, temp_config_path = tempfile.mkstemp(suffix=".yaml", prefix="srtctl_sweep_", text=True)
             try:
                 with os.fdopen(fd, "w") as f:
+                    f.write(header)
                     yaml.dump(config_dict, f)
 
                 config = load_config(Path(temp_config_path))
@@ -1672,6 +1689,17 @@ def find_yaml_files(directory: Path) -> list[Path]:
     return sorted(set(yaml_files))
 
 
+def _config_type(config_path: Path, *, force_sweep: bool = False) -> str:
+    """How ``apply`` runs ``config_path`` once its ``extends`` is composed: override, sweep or single."""
+    try:
+        with materialize_config_path(config_path) as config_file:
+            if is_override_config(config_file):
+                return "override"
+            return "sweep" if force_sweep or is_sweep_config(config_file) else "single"
+    except Exception:  # noqa: BLE001 - the error is reported when the file is processed
+        return "invalid"
+
+
 def submit_directory(
     directory: Path,
     dry_run: bool = False,
@@ -1682,6 +1710,9 @@ def submit_directory(
     enforce_preflight: bool = True,
 ) -> None:
     """Submit all YAML configs in a directory recursively.
+
+    A file that another file in the directory lists in ``extends`` is a shared layer, not a job,
+    and is skipped; every other file is composed with its ``extends`` before it is submitted.
 
     Args:
         directory: Directory containing YAML config files
@@ -1694,6 +1725,8 @@ def submit_directory(
             FS checks for every config (propagated to submit_single / submit_sweep /
             submit_override).
     """
+    from srtctl.core.compose import layer_files
+
     yaml_files = find_yaml_files(directory)
 
     if not yaml_files:
@@ -1703,6 +1736,8 @@ def submit_directory(
     console.print(f"[bold cyan]📁 Found {len(yaml_files)} YAML file(s) in:[/] {directory}")
     console.print()
 
+    layers = layer_files(yaml_files)
+
     # Display table of files to be processed
     table = Table(title=f"Configs to {'validate' if dry_run else 'submit'}")
     table.add_column("#", style="dim", width=4)
@@ -1711,12 +1746,10 @@ def submit_directory(
 
     for i, yaml_file in enumerate(yaml_files, 1):
         relative_path = yaml_file.relative_to(directory)
-        if is_override_config(yaml_file):
-            config_type = "override"
-        elif force_sweep or is_sweep_config(yaml_file):
-            config_type = "sweep"
+        if yaml_file.resolve() in layers:
+            config_type = "extends layer (skipped)"
         else:
-            config_type = "single"
+            config_type = _config_type(yaml_file, force_sweep=force_sweep)
         table.add_row(str(i), str(relative_path), config_type)
 
     console.print(table)
@@ -1728,36 +1761,43 @@ def submit_directory(
 
     for i, yaml_file in enumerate(yaml_files, 1):
         relative_path = yaml_file.relative_to(directory)
+        if yaml_file.resolve() in layers:
+            console.print(
+                f"[bold]({i}/{len(yaml_files)})[/] Skipping: {relative_path} (another file lists it in extends)"
+            )
+            console.print()
+            continue
         console.print(f"[bold]({i}/{len(yaml_files)})[/] Processing: {relative_path}")
 
         try:
-            if is_override_config(yaml_file):
-                submit_override(
-                    yaml_file,
-                    dry_run=dry_run,
-                    setup_script=setup_script,
-                    tags=tags,
-                    output_dir=output_dir,
-                    enforce_preflight=enforce_preflight,
-                )
-            elif force_sweep or is_sweep_config(yaml_file):
-                submit_sweep(
-                    yaml_file,
-                    dry_run=dry_run,
-                    setup_script=setup_script,
-                    tags=tags,
-                    output_dir=output_dir,
-                    enforce_preflight=enforce_preflight,
-                )
-            else:
-                submit_single(
-                    config_path=yaml_file,
-                    dry_run=dry_run,
-                    setup_script=setup_script,
-                    tags=tags,
-                    output_dir=output_dir,
-                    enforce_preflight=enforce_preflight,
-                )
+            with materialize_config_path(yaml_file) as config_file:
+                if is_override_config(config_file):
+                    submit_override(
+                        config_file,
+                        dry_run=dry_run,
+                        setup_script=setup_script,
+                        tags=tags,
+                        output_dir=output_dir,
+                        enforce_preflight=enforce_preflight,
+                    )
+                elif force_sweep or is_sweep_config(config_file):
+                    submit_sweep(
+                        config_file,
+                        dry_run=dry_run,
+                        setup_script=setup_script,
+                        tags=tags,
+                        output_dir=output_dir,
+                        enforce_preflight=enforce_preflight,
+                    )
+                else:
+                    submit_single(
+                        config_path=config_file,
+                        dry_run=dry_run,
+                        setup_script=setup_script,
+                        tags=tags,
+                        output_dir=output_dir,
+                        enforce_preflight=enforce_preflight,
+                    )
             success_count += 1
         except Exception as e:
             console.print(f"[bold red]  ❌ Error:[/] {e}")
@@ -1771,6 +1811,10 @@ def submit_directory(
         console.print(f"[bold green]✅ Validated {success_count} config(s)[/]", end="")
     else:
         console.print(f"[bold green]✅ Submitted {success_count} job(s)[/]", end="")
+
+    skipped = sum(1 for yaml_file in yaml_files if yaml_file.resolve() in layers)
+    if skipped:
+        console.print(f" [dim]({skipped} extends layer(s) skipped)[/]", end="")
 
     if error_count > 0:
         console.print(f" [bold red]({error_count} failed)[/]")
@@ -1829,9 +1873,11 @@ def is_override_config(config_path: Path) -> bool:
 
 @contextlib.contextmanager
 def materialize_config_path(config_path: Path, overrides: Sequence[Any] = (), *, pin_sources: bool = False):
-    """Stage stdin-backed, --set/--unset-modified, or source-pinned configs to a temporary YAML file.
+    """Stage stdin-backed, composed, --set/--unset-modified, or source-pinned configs to a temporary YAML file.
 
-    Overrides are applied to the raw document (comments preserved) before any
+    A recipe with a top-level ``extends`` is composed first (``srtctl.core.compose``): the staged
+    file is the recipe with the files it lists merged under it, headed by a comment naming them.
+    Overrides are then applied to the raw document (comments preserved) before any
     reader sees it, so they take effect identically for plain, sweep, and
     override-format files and end up in the config.yaml copied into the job
     output directory. With ``pin_sources`` (submit only), every ``source.rev``
@@ -1839,10 +1885,9 @@ def materialize_config_path(config_path: Path, overrides: Sequence[Any] = (), *,
     as ``source.sha`` in that same document, so the job builds exactly the
     commit the lockfile names. The source file is never modified.
     """
+    from srtctl.core.compose import compose_recipe_text
+
     from_stdin = str(config_path) in {"-", "/dev/stdin"}
-    if not from_stdin and not overrides and not pin_sources:
-        yield config_path
-        return
     if not from_stdin and (not config_path.exists() or config_path.is_dir()):
         if config_path.is_dir() and overrides:
             raise ValueError("--set/--unset apply to a single config file, not a directory")
@@ -1850,21 +1895,26 @@ def materialize_config_path(config_path: Path, overrides: Sequence[Any] = (), *,
         return
 
     payload = sys.stdin.read() if from_stdin else config_path.read_text()
+    composed = compose_recipe_text(payload, path=None if from_stdin else config_path)
+    if not from_stdin and composed is None and not overrides and not pin_sources:
+        yield config_path  # nothing to stage; the loader reads (and reports) the file itself
+        return
     if not payload.strip():
         raise ValueError("No YAML received on stdin" if from_stdin else f"{config_path} is empty")
 
-    changed = from_stdin
-    if overrides or pin_sources:
+    changed = from_stdin or composed is not None
+    if overrides or pin_sources or composed is not None:
         from srtctl.core.yaml_utils import dump_yaml_with_comments, load_yaml_text_with_comments
 
-        document = load_yaml_text_with_comments(payload)
+        document = composed.document if composed is not None else load_yaml_text_with_comments(payload)
         if overrides:
             from srtctl.core.overrides import apply_overrides_to_recipe
 
             for entry in apply_overrides_to_recipe(document, overrides):
                 logger.info("Applied override: %s", entry)
             changed = True
-        if pin_sources and "source" in payload:
+        # A `source:` block can come from a file in extends, so a composed recipe is always checked.
+        if pin_sources and (composed is not None or "source" in payload):
             from srtctl.core.source import pin_source_revs
 
             pinned = pin_source_revs(document)
@@ -1874,6 +1924,9 @@ def materialize_config_path(config_path: Path, overrides: Sequence[Any] = (), *,
             changed = changed or bool(pinned)
         if changed:
             payload = dump_yaml_with_comments(document) or ""
+        if composed is not None:
+            payload = composed.header + payload
+            logger.info("Composed %s from %s", config_path, ", ".join(composed.sources[:-1]))
 
     if not changed:
         yield config_path
@@ -2007,6 +2060,7 @@ def resolve_override_cmd(
     config_path: Path,
     selector: str | None = None,
     stdout: bool = False,
+    output_path: Path | None = None,
 ) -> None:
     """Resolve an override config and write the specialised YAML file(s).
 
@@ -2019,10 +2073,14 @@ def resolve_override_cmd(
         config_path: Path to the override YAML file.
         selector: Optional variant selector (same syntax as apply -f file:selector).
         stdout: When True, print the resolved YAML to stdout instead of writing files.
+        output_path: The file the outputs are named after and written next to; defaults to
+            ``config_path``. The CLI passes the user's file when ``config_path`` is the staged copy
+            (``extends`` composed, ``--set`` applied).
     """
     from srtctl.core.config import resolve_override_yaml
     from srtctl.core.yaml_utils import dump_yaml_with_comments
 
+    output_path = output_path or config_path
     variants = resolve_override_yaml(config_path, selector=selector)
 
     if stdout:
@@ -2037,13 +2095,29 @@ def resolve_override_cmd(
 
     written: list[Path] = []
     for suffix, cm in variants:
-        out_path = config_path.parent / f"{config_path.stem}_{suffix}.yaml"
+        out_path = output_path.parent / f"{output_path.stem}_{suffix}.yaml"
         with open(out_path, "w") as f:
             dump_yaml_with_comments(cm, f)
         written.append(out_path)
 
     for p in written:
         console.print(f"[green]Wrote:[/] {p}")
+
+
+def resolve_recipe_cmd(config_path: Path, *, stdout: bool = False, output_path: Path | None = None) -> None:
+    """Write (or print) a plain recipe as its job runs it: ``extends`` composed, ``--set`` applied.
+
+    ``config_path`` is the staged recipe; the output is ``<stem>_resolved.yaml`` next to
+    ``output_path`` (default: ``config_path``).
+    """
+    text = config_path.read_text()
+    if stdout:
+        print(text, end="")
+        return
+    output_path = output_path or config_path
+    out_path = output_path.parent / f"{output_path.stem}_resolved.yaml"
+    out_path.write_text(text)
+    console.print(f"[green]Wrote:[/] {out_path}")
 
 
 def _resolve_container_alias(name: str) -> Path:
@@ -2167,7 +2241,7 @@ def build_parser() -> argparse.ArgumentParser:
   srtctl cache-inputs -f config.yaml             # Pre-generate benchmark datasets
   srtctl bake-image --image model.sqsh --sa-bench  # Bake dependencies into an image
   srtctl render -f config.yaml --to ./rendered   # Write the sbatch script for someone else to submit
-  srtctl resolve-override -f config.yaml         # Resolve override YAML (no submit)
+  srtctl resolve-override -f config.yaml         # Write what each job runs (variants, extends; no submit)
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
@@ -2362,7 +2436,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     resolve_parser = subparsers.add_parser(
         "resolve-override",
-        help="Resolve override YAML into specialised files without submitting",
+        help=(
+            "Write the recipe each job runs, without submitting: override variants expanded, "
+            "extends composed, --set applied"
+        ),
     )
     resolve_parser.add_argument(
         "-f",
@@ -2370,7 +2447,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         required=True,
         dest="config",
-        help="Override YAML file, or file:selector",
+        help="Recipe or override YAML file, or file:selector",
     )
     resolve_parser.add_argument(
         "--stdout",
@@ -2785,14 +2862,24 @@ def main():
 
             # resolve-override has its own simple dispatch path
             if args.command == "resolve-override":
-                if not is_override_config(effective_config_path):
-                    console.print(f"[bold red]Error:[/] {config_path} is not an override config (missing 'base' key)")
+                # Outputs are named after the user's file, not the staged copy (stdin has no file).
+                from_stdin = str(config_path) in {"-", "/dev/stdin"}
+                output_path = effective_config_path if from_stdin else config_path
+                stdout = getattr(args, "stdout", False)
+                if is_override_config(effective_config_path):
+                    resolve_override_cmd(
+                        effective_config_path, selector=selector, stdout=stdout, output_path=output_path
+                    )
+                elif is_sweep_config(effective_config_path):
+                    console.print(
+                        f"[bold red]Error:[/] {config_path} is a sweep; "
+                        f"`srtctl dry-run -f {config_path}` writes the config of every job it expands into"
+                    )
                     sys.exit(1)
-                resolve_override_cmd(
-                    effective_config_path,
-                    selector=selector,
-                    stdout=getattr(args, "stdout", False),
-                )
+                else:
+                    if selector:
+                        logger.warning(f"Selector ':{selector}' ignored — config is not an override file")
+                    resolve_recipe_cmd(effective_config_path, stdout=stdout, output_path=output_path)
                 restore_console()
                 return
 

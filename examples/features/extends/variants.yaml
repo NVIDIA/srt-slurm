@@ -1,0 +1,25 @@
+# Variants over the shared files. An override file with `extends` and no `base` takes the merged
+# files as its base; each variant lists only what changes. See docs/extends.md.
+#
+#   srtctl apply -f examples/features/extends/variants.yaml                 # every variant
+#   srtctl apply -f examples/features/extends/variants.yaml:override_tp2    # one variant
+#   srtctl resolve-override -f examples/features/extends/variants.yaml --stdout
+
+schema: 2
+extends: [qwen3-0.6b-agg.yaml, sa-bench-128.yaml]
+
+# One TP2 worker instead of two TP1 workers; named qwen3-0.6b-extends_tp2 (the base name plus the suffix).
+override_tp2:
+  roles:
+    agg:
+      workers: 1
+      gpus: 2
+      args:
+        tensor-parallel-size: 2
+
+# Two context lengths, zipped: the i-th element of each list goes to variant i.
+zip_override_context:
+  roles:
+    agg:
+      args:
+        context-length: [2048, 8192]

@@ -55,7 +55,12 @@ def find_examples(root: Path | None = None) -> list[Path]:
     if not examples_dir.exists():
         return []
 
-    return sorted(examples_dir.rglob("*.yaml"))
+    from srtctl.core.compose import layer_files
+
+    examples = sorted(examples_dir.rglob("*.yaml"))
+    # A file another example lists in `extends` is a shared layer, not a job.
+    layers = layer_files(examples)
+    return [example for example in examples if example.resolve() not in layers]
 
 
 def display_config_summary(config: dict[str, Any], title: str = "Configuration") -> None:
@@ -202,6 +207,21 @@ def confirm_submission(config_path: Path, config: dict, is_sweep: bool) -> bool:
     ).ask()
 
 
+def _staged(config_path: Path) -> Path:
+    """``config_path``, or a temp copy of it composed with its ``extends`` (the submit path copies the file)."""
+    import tempfile
+
+    from srtctl.core.compose import compose_recipe_text
+
+    composed = compose_recipe_text(config_path.read_text(), path=config_path)
+    if composed is None:
+        return config_path
+    fd, temp_path = tempfile.mkstemp(suffix=".yaml", prefix="srtctl_composed_", text=True)
+    with open(fd, "w") as f:
+        f.write(composed.text())
+    return Path(temp_path)
+
+
 def preview_sbatch(config_path: Path, config: dict) -> None:
     """Preview the generated sbatch script."""
     from srtctl.cli.submit import generate_minimal_sbatch_script
@@ -283,7 +303,8 @@ def run_interactive() -> int:
         console.print(f"[red]Config not found: {config_path}[/]")
         return 1
 
-    # Load config
+    # Load config; a recipe with `extends` is staged composed, as `srtctl apply` does
+    config_path = _staged(config_path)
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
@@ -317,7 +338,7 @@ def run_interactive() -> int:
             selected_config_path = select_example()
             if not selected_config_path:
                 continue
-            config_path = selected_config_path
+            config_path = _staged(selected_config_path)
             with open(config_path) as f:
                 config = yaml.safe_load(f)
             is_sweep = "sweep" in config

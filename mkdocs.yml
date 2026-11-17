@@ -84,6 +84,7 @@ nav:
           - Pools: pools.md
           - Mooncake KV Store: mooncake-kv-store.md
       - Config Overrides: overrides.md
+      - Shared Recipe Files: extends.md
       - Parameter Sweeps: sweeps.md
       - Workloads:
           - Native Sidecars: sidecars.md

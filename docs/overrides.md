@@ -24,7 +24,7 @@ An override config file has a `base` top-level key plus one or more variant keys
 | `override_<name>` | 1 | Manual — you write the values |
 | `zip_override_<name>` | N | Zip — list leaves zipped in parallel |
 
-Override files are auto-detected by the presence of a `base` key:
+Override files are auto-detected by the presence of a `base` key (or, in a file with [`extends`](extends.md), of any variant):
 
 ```bash
 srtctl apply -f config.yaml       # submit all override_* and zip_override_* variants (base excluded)
@@ -321,6 +321,7 @@ outputs/6717/
 
 - Use `dry-run` before any real submission to verify expansion
 - Put shared defaults in `base` to keep variants minimal
+- Put settings several files share in a separate file and list it in [`extends`](extends.md); an override file with `extends` can leave `base` out
 - Use `zip_override_*` when parameters belong together (e.g. tp-size + node count)
 - Override files are `schema: 2` documents like any other recipe; the v1 layout is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it, variants included
 - Use `override_*` for one-off named configurations

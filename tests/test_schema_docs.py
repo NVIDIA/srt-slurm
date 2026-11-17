@@ -374,14 +374,23 @@ def _example_documents() -> list[tuple[Path, dict]]:
 
 
 def test_json_schema_accepts_every_example() -> None:
+    """Every example matches the schema; a file another example lists in `extends` is a partial recipe,
+    checked for unknown keys and wrong types (`RecipeBase`) but not for required ones."""
+    from srtctl.core.compose import layer_files
+
     jsonschema = pytest.importorskip("jsonschema")
-    validator = jsonschema.Draft202012Validator(json_schema(SrtConfig))
+    schema = json_schema(SrtConfig)
+    validator = jsonschema.Draft202012Validator(schema)
     jsonschema.Draft202012Validator.check_schema(validator.schema)
-    failures = {
-        str(path): [error.message for error in validator.iter_errors(doc)]
-        for path, doc in _example_documents()
-        if not validator.is_valid(doc)
-    }
+    layer_validator = jsonschema.Draft202012Validator({"$ref": "#/$defs/RecipeBase", "$defs": schema["$defs"]})
+    documents = _example_documents()
+    layers = layer_files(path for path, _ in documents)
+    assert layers
+    failures = {}
+    for path, doc in documents:
+        checker = layer_validator if path.resolve() in layers else validator
+        if not checker.is_valid(doc):
+            failures[str(path)] = [error.message for error in checker.iter_errors(doc)]
     assert failures == {}
 
 

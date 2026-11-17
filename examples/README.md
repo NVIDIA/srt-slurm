@@ -29,6 +29,8 @@ Every example is written in the 2.0 layout: `engine:` names the engine (a string
 | [features/sglang-sidecar-multinode-disagg-dp.yaml](features/sglang-sidecar-multinode-disagg-dp.yaml) | One TP2/attention DP2 prefill worker and one TP2/attention DP2 decode worker across four one-GPU nodes, with a prefill telemetry relay, NIXL transfer, and KV routing |
 | `features/sweep.yaml` | `sweep:` plus `{placeholder}` substitution; one job per combination |
 | `features/override.yaml` | `base` plus `override_*` and `zip_override_*` variants in one file |
+| `features/extends/tp1.yaml` | `extends:` merging shared partial recipes (`qwen3-0.6b-agg.yaml`, `sa-bench-128.yaml`) under a recipe |
+| `features/extends/variants.yaml` | an override file over the same shared files, with no `base` |
 | `features/profiling.yaml` | `profiling:` torch capture on an aggregated worker |
 | `features/observability-vllm.yaml` | `observability.enabled: true` on a TP2 vLLM worker behind the Dynamo frontend: nsys with vLLM's NVTX scopes, tachometer, and the DCGM, node and process exporters. See [../docs/profiling.md](../docs/profiling.md#observability-capture) |
 | [`features/amd-power-telemetry.yaml`](features/amd-power-telemetry.yaml) | SGLang on MI300X with AMD device-metrics-exporter power collection. Set the `sglang-rocm` container alias and `visible_devices_env: ROCR_VISIBLE_DEVICES` in `srtslurm.yaml`. See [power telemetry](../docs/power-telemetry.md#amd-amd-device-metrics) |
@@ -93,14 +95,18 @@ before upgrading the collector. See [power telemetry](../docs/power-telemetry.md
 
 ## Validation
 
-CI validates every file under `examples/`, expanding sweep and override files into their variants. Run the same check locally with:
+CI validates every file under `examples/`, expanding sweep and override files into their variants and merging `extends`; a file another example lists in `extends` is checked through the recipes that use it. Run the same check locally with:
 
 ```bash
 uv run python -c "
 from pathlib import Path
+from srtctl.core.compose import layer_files
 from srtctl.core.config import validate_config_file
-for p in sorted(Path('examples').rglob('*.yaml')):
-    print(validate_config_file(p) or f'ok {p}')
+files = sorted(Path('examples').rglob('*.yaml'))
+layers = layer_files(files)
+for p in files:
+    if p.resolve() not in layers:
+        print(validate_config_file(p) or f'ok {p}')
 "
 ```
 
