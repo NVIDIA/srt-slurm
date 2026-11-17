@@ -34,17 +34,17 @@ for build, HOST_NUMA and Fabric/IMEX requirements.
 
 Three Mooncake settings differ from BTK:
 
-- **Direct KV copies** (`stage_through_host: false`). Prefill workers register
-  their GPU KV pools with Mooncake, which copies pages directly between the
-  providers' host DRAM and the KV cache. BTK passes every page through pinned
-  host slots, which its RDMA transport needs without GPUDirect. On RapLab, staged
-  EGM loads peaked near 13GiB/s per prefill rank, and waiting on them was most of
-  TTFT. This mode has not run over EGM before: if registration fails, prefill
-  workers stop at startup with `MooncakeDistributedStore.register_buffer failed`.
-  To run the staged path for comparison, set
-  `TRTLLM_MOONCAKE_STORE_STAGE_THROUGH_HOST: '1'` in `roles.prefill.env`; the
-  recipe's `staging_buffer_bytes: 4GiB` then gives each load worker RapLab's
-  1GiB.
+- **Native direct KV copies** (`TRTLLM_M31_STORE_EGM: '1'`,
+  `TRTLLM_M31_DISABLE_EGM_DIRECT: '0'`, `stage_through_host: false`). The connector
+  copies between provider host DRAM and raw KV device pointers without registering
+  GPU pools or bouncing through host slots. Direct saves, grouped loads and saves,
+  two copy streams per load and a private loop stream match the
+  [optimized RapLab recipe](../vrnvl72-lab-w2-fp8/README.md#optimized-c620-fp8-egm-recipe).
+  For a staged comparison, set `TRTLLM_M31_DISABLE_EGM_DIRECT: '1'` in
+  `roles.prefill.env`; to stage saves alone, keep that switch at `0` and set
+  `TRTLLM_M31_EGM_DIRECT_SAVE: '0'`. The fallback budget is `4GiB` per active
+  transfer direction. Keep `global_segment_size: 0` and the external providers;
+  do not add `store_host_donor` capacity.
 - **Four async-load workers** (BTK: two). FP8 KV loads (p50 4.7GiB, p90 14.7GiB)
   queued 1.5-2.6s behind two workers.
 - **A 300-second object lease** (BTK: 60 seconds). Lookups renew the lease, and
@@ -53,13 +53,13 @@ Three Mooncake settings differ from BTK:
 
 ## Hecate settings
 
-- Model, image, flashinfer cache, Dynamo wheels, the AgentX checkout and the
+- Model, flashinfer cache, Dynamo wheels, the AgentX checkout and the
   aiperf mmap cache live under `/lustre/fsw/coreai_comparch_inferencex/rihuo`;
   `/lustre` is mounted at the same path.
-- The image is wave 2's
-  `tensorrt-llm-arm64-rubin-glm5-4bad965-feat_rubin-glm5-mega-30454-mooncake-cuda13-0.3.14.dev20261021.sqsh`.
-  RapLab uses its `-glm53mk` variant, which adds only the GLM-5 megakernel fix;
-  this point does not enable the megakernel.
+- The image is
+  `/lustre/share/coreai_comparch_inferencex/rihuo/tensorrt-llm-arm64-feat_rubin-glm5-mega-30454-mooncake-egm-optimization.sqsh`.
+  It supplies tekit `bcc8ec9e65`, the ARM64 CUDA 13 Mooncake `0.3.14rc3` client
+  and Release sf4 master. The master service invokes `mooncake_master` from PATH.
 - Worker nodes lock GPU memory clocks to 4752 MHz with
   `sudo -n nvidia-smi -lmc 4752,4752` and reset them during teardown.
 - UCX uses every NIC (`UCX_NET_DEVICES: all`) instead of RapLab's NIC, MPI and

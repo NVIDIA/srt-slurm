@@ -8,12 +8,11 @@
 # and the vrnvl72 EGM recipes.
 # Dynamo from local wheels on the GLM-5.3 Rubin image and the local AgentX client.
 # Model and image paths are explicit; configure cluster mounts in srtslurm.yaml.
-# EGM/NVLink four-provider variant of the BTK Mooncake pool; preserves paths and tuning,
-# except four async-load workers (BTK: two), a 300s object lease (BTK: 60s) and KV pages
-# copied directly between the GPU and the pool (BTK: through 2GiB of pinned host staging).
-# Requires an ARM64 CUDA 13 Mooncake wheel containing
-# db195f7f7cad61a0a3c3141b8ecf6ca399a54fca or its upstream equivalent,
-# built with USE_VRAM_SEGMENT=OFF (the default); see README.md#egm-over-nvlink.
+# EGM/NVLink four-provider variant of the BTK Mooncake pool; preserves topology and
+# engine tuning with four async-load workers, a 300s object lease and native direct
+# NVLink copies, grouped transfers, two copy streams per load and a private loop stream.
+# Requires native tekit EGM support (bcc8ec9e65), the ARM64 CUDA 13 Mooncake 0.3.14rc3
+# client and Release sf4 master supplied by the optimized image; see README.md#egm-over-nvlink.
 # Preserve 9320GiB capacity: 5 x (4 x 256GiB) prefill + 4 x 1050GiB decode.
 # Twenty prefill owners plus 4 decode owners; 10 nodes including frontend/client.
 # Pin whole pools: donors 0/1 on host NUMA 0, donors 2/3 on host NUMA 1.
@@ -24,7 +23,7 @@ schema: 2
 name: glm5.3-disagg-5p1d-tp4-dep16-c620-egm-4x256-fp8kv
 model:
   path: /lustre/fsw/coreai_comparch_inferencex/rihuo/GLM-5.3-NVFP4
-  container: /lustre/fsw/coreai_comparch_inferencex/rihuo/tensorrt-llm-arm64-rubin-glm5-4bad965-feat_rubin-glm5-mega-30454-mooncake-cuda13-0.3.14.dev20261021-glm53mk.sqsh
+  container: /lustre/share/coreai_comparch_inferencex/rihuo/tensorrt-llm-arm64-feat_rubin-glm5-mega-30454-mooncake-egm-optimization.sqsh
   precision: nvfp4
 resources:
   gpu_type: vrnvl72
@@ -75,6 +74,14 @@ roles:
       MC_USE_TENT: '0'
       MC_USE_TEV1: '0'
       MOONCAKE_STORE_BACKEND: cpp
+      # Select the native EGM path and pin its transfer/stream optimizations.
+      TRTLLM_M31_STORE_EGM: '1'
+      TRTLLM_M31_DISABLE_EGM_DIRECT: '0'
+      TRTLLM_M31_EGM_DIRECT_SAVE: '1'
+      TRTLLM_M31_EGM_GROUPED_LOADS: '1'
+      TRTLLM_M31_EGM_GROUPED_SAVES: '1'
+      TRTLLM_M31_EGM_LOAD_STREAMS: '2'
+      TRTLLM_M31_EGM_PRIVATE_LOOP_STREAM: '1'
       FLASHINFER_CACHE_DIR: /lustre/fsw/coreai_comparch_inferencex/rihuo/flashinfer-cache
       FLASHINFER_WORKSPACE_BASE: /lustre/fsw/coreai_comparch_inferencex/rihuo/flashinfer-cache
       DYN_TOOL_CALL_PARSER: glm47
@@ -288,10 +295,9 @@ services:
   start: infra
   placement:
     node: head
+  # Use the optimized image's Release sf4 master, selected by its PATH symlink.
   command:
-  - python3
-  - -m
-  - mooncake.cli
+  - mooncake_master
   - --rpc_port={master_port}
   - --metrics_port=8702
   # Lookups renew the lease and leased objects are never evicted. AgentX sessions idle up
@@ -313,13 +319,11 @@ services:
       global_segment_size: 0
       local_buffer_size: 64MiB
       transfer_batch_size: 512
-      # Prefill workers register their GPU KV pools with Mooncake, so NVLink copies
-      # pages directly between the providers' host DRAM and the KV cache. BTK stages
-      # through pinned host slots, which its RDMA transport needs without GPUDirect;
-      # on RapLab, staged EGM loads peaked near 13GiB/s per prefill rank.
+      # Native EGM copies use raw KV device pointers without registration or a
+      # host bounce. Fixed external providers own all capacity; the clients lend zero.
       stage_through_host: false
-      # Used only when TRTLLM_MOONCAKE_STORE_STAGE_THROUGH_HOST=1 in roles.prefill.env
-      # restores staging: 4GiB keeps RapLab's 1GiB (346 FP8 pages) per load worker.
+      # Fallback per-direction budget when TRTLLM_M31_DISABLE_EGM_DIRECT=1 stages both directions,
+      # or TRTLLM_M31_EGM_DIRECT_SAVE=0 stages saves only.
       staging_buffer_bytes: 4GiB
       async_load: true
       # BTK runs two async-load workers. FP8 KV loads (p50 4.7GiB, p90 14.7GiB)
