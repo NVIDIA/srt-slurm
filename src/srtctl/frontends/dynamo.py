@@ -97,6 +97,27 @@ def vllm_health_entries(
     return logical_workers * dp_size
 
 
+def dynamo_sidecar_health_entries(config: Any, processes: list["Process"]) -> tuple[int, int]:
+    """Return expected Dynamo generate registrations, as (prefill, decode), in sidecar mode.
+
+    Each sidecar registers its own generate instance, so a worker counts once for
+    every process its backend runs a sidecar on: every node that hosts SGLang Rust
+    listeners, or a TensorRT-LLM worker's leader. Aggregate workers count as decode.
+    """
+    endpoints: dict[tuple[str, int], list[Process]] = {}
+    for process in processes:
+        endpoints.setdefault((process.endpoint_mode, process.endpoint_index), []).append(process)
+    n_prefill = n_decode = 0
+    for (mode, _index), endpoint_processes in endpoints.items():
+        backend = config.backend_for_role(mode)
+        sidecars = sum(backend.runs_dynamo_sidecar(process, endpoint_processes) for process in endpoint_processes)
+        if mode == "prefill":
+            n_prefill += sidecars
+        else:
+            n_decode += sidecars
+    return n_prefill, n_decode
+
+
 @register_frontend("dynamo")
 class DynamoFrontend(DynamicFrontend):
     """Dynamo frontend implementation.
@@ -203,12 +224,16 @@ class DynamoFrontend(DynamicFrontend):
         """Dynamo's /health counts registered generate instances.
 
         A vLLM worker registers one per DP rank (per_gpu launch) or one per
-        node-local process (per_node launch); every other engine registers one per
-        logical worker.
+        node-local process (per_node launch). With native-gRPC sidecars, another
+        engine registers one per sidecar (``dynamo_sidecar_health_entries``);
+        otherwise it registers one per logical worker.
         """
         logical_prefill, logical_decode, worker_desc = logical_health_expectations(config)
         if not isinstance(config.backend, VLLMBackend):
-            return logical_prefill, logical_decode, worker_desc
+            if processes is None or not config.dynamo.sidecar:
+                return logical_prefill, logical_decode, worker_desc
+            n_prefill, n_decode = dynamo_sidecar_health_entries(config, processes)
+            return n_prefill, n_decode, f"{n_prefill}P + {n_decode}D Dynamo sidecars; logical workers: {worker_desc}"
         if config.topology.num_agg > 0:
             n_prefill = 0
             n_decode = vllm_health_entries(config, "aggregated", logical_decode, processes)

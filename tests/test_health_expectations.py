@@ -9,6 +9,7 @@ from srtctl.backends import SGLangBackend, VLLMBackend
 from srtctl.cli.mixins.benchmark_stage import _get_health_expectations
 from srtctl.frontends.dynamo import vllm_data_parallel_size
 from srtctl.core.schema import RoleConfig
+from srtctl.core.topology import Endpoint
 
 
 def _config(
@@ -170,6 +171,58 @@ def test_dynamo_non_vllm_backend_uses_logical_worker_counts():
 
     assert (n_prefill, n_decode, num_workers) == (6, 1, 7)
     assert count_desc == "6P + 1D"
+
+
+def _sglang_sidecar_config(roles, *, sidecar=True, num_prefill=0, num_decode=0, num_agg=0):
+    """A Dynamo + SGLang stand-in whose role engine is the one SGLang backend."""
+    backend = SGLangBackend(roles=roles)
+    return SimpleNamespace(
+        frontend=SimpleNamespace(type="dynamo"),
+        backend=backend,
+        backend_for_role=lambda mode: backend,
+        dynamo=SimpleNamespace(sidecar=sidecar),
+        topology=SimpleNamespace(num_prefill=num_prefill, num_decode=num_decode, num_agg=num_agg),
+    )
+
+
+def _endpoint(mode, nodes, index=0):
+    """One endpoint over ``nodes`` with one GPU each."""
+    return Endpoint(mode=mode, index=index, nodes=tuple(nodes), gpu_indices=frozenset({0}), gpus_per_node=1)
+
+
+def test_dynamo_sglang_sidecar_counts_one_instance_per_listener_node():
+    """Every node that hosts SGLang Rust listeners runs a sidecar, which registers its own generate instance."""
+    attention_dp2 = RoleConfig(args={"tp-size": 2, "attn-dp-size": 2})
+    config = _sglang_sidecar_config({"agg": attention_dp2}, num_agg=1)
+    processes = config.backend.endpoints_to_processes([_endpoint("agg", ["n0", "n1"])], dynamo_sidecar=True)
+    n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(config, processes)
+    assert (n_prefill, n_decode, num_workers) == (0, 2, 2)
+    assert count_desc == "0P + 2D Dynamo sidecars; logical workers: 1 agg"
+
+    config = _sglang_sidecar_config({"prefill": attention_dp2, "decode": attention_dp2}, num_prefill=1, num_decode=1)
+    endpoints = [_endpoint("prefill", ["n0", "n1"]), _endpoint("decode", ["n2", "n3"])]
+    processes = config.backend.endpoints_to_processes(endpoints, dynamo_sidecar=True)
+    n_prefill, n_decode, _count_desc, num_workers = _get_health_expectations(config, processes)
+    assert (n_prefill, n_decode, num_workers) == (2, 2, 4)
+
+
+def test_dynamo_sglang_sidecar_tp_follower_adds_no_instance():
+    """TP over two nodes leads one listener, on node 0; the follower runs the engine only."""
+    config = _sglang_sidecar_config({"agg": RoleConfig(args={"tp-size": 2})}, num_agg=1)
+    processes = config.backend.endpoints_to_processes([_endpoint("agg", ["n0", "n1"])], dynamo_sidecar=True)
+    n_prefill, n_decode, _count_desc, num_workers = _get_health_expectations(config, processes)
+    assert (n_prefill, n_decode, num_workers) == (0, 1, 1)
+
+
+def test_dynamo_sglang_without_sidecar_uses_logical_worker_counts():
+    """Without sidecars the Python worker registers once per logical worker, whatever its DP layout."""
+    config = _sglang_sidecar_config(
+        {"agg": RoleConfig(args={"tp-size": 2, "attn-dp-size": 2})}, sidecar=False, num_agg=1
+    )
+    processes = config.backend.endpoints_to_processes([_endpoint("agg", ["n0", "n1"])])
+    n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(config, processes)
+    assert (n_prefill, n_decode, num_workers) == (0, 1, 1)
+    assert count_desc == "1 agg"
 
 
 def test_vllm_data_parallel_size_reads_both_key_styles_and_defaults():
