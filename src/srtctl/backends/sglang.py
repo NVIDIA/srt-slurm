@@ -357,8 +357,9 @@ class SGLangBackend(Backend):
         leader_ip = get_hostname_ip(endpoint_nodes[0], runtime.network_interface)
 
         # Direct frontends run the native server; Dynamo frontends run the registering worker.
+        # A frontend may name a module that wraps the native server (Infera registers it in etcd).
         use_sglang = frontend.worker_launch == "direct"
-        python_module = "sglang.launch_server" if use_sglang else "dynamo.sglang"
+        python_module = frontend.worker_module(self.type) or ("sglang.launch_server" if use_sglang else "dynamo.sglang")
 
         # Get served model name from config
         served_model_name = self.get_served_model_name(runtime.model_path.name)
@@ -368,11 +369,9 @@ class SGLangBackend(Backend):
         # Start with nsys prefix if provided
         cmd: list[str] = list(nsys_prefix) if nsys_prefix else []
 
+        cmd.extend(["python3", "-m", python_module, *frontend.worker_launcher_args(self, process, runtime)])
         cmd.extend(
             [
-                "python3",
-                "-m",
-                python_module,
                 "--model-path",
                 model_arg,
                 "--served-model-name",

@@ -1,0 +1,63 @@
+# Two aggregated SGLang workers behind the llm-d router (docs/llm-d.md).
+#
+# On the router node srtctl starts llm-d's Endpoint Picker (EPP) and Envoy on the
+# public port; the EPP reads both workers from an endpoints file srtctl writes
+# (`llm-d.ai/engine-type: sglang`) and picks one per request with the scorers below.
+#
+# Aliases (`qwen3-0.6b`, `llm-d-sglang`) resolve through srtslurm.yaml; see
+# examples/README.md. `llm-d-sglang` is an SGLang image that also ships the `epp`,
+# `pd-sidecar`, and `envoy` executables on PATH (docs/llm-d.md#images).
+
+schema: 2
+name: "qwen3-0.6b-sglang-llm-d-agg"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "llm-d-sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+frontend:
+  type: llm-d
+  enable_multiple_frontends: false
+  # Prefix-cache affinity weighted over queue depth; srtctl adds the file-discovery plugin.
+  epp_config:
+    plugins:
+      - type: approx-prefix-cache-producer
+      - type: prefix-cache-scorer
+      - type: queue-scorer
+      - type: max-score-picker
+    schedulingProfiles:
+      - name: default
+        plugins:
+          - pluginRef: prefix-cache-scorer
+            weight: 3
+          - pluginRef: queue-scorer
+            weight: 2
+          - pluginRef: max-score-picker
+
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      context-length: 4096
+      disable-piecewise-cuda-graph: true
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"
