@@ -60,7 +60,7 @@ class TRTLLMServeFrontend(Frontend):
 
     # The disaggregated orchestrator serves Prometheus text at /prometheus/metrics, as
     # its trtllm-serve workers do (TRTLLMBackend.prometheus_metrics_path).
-    metrics_path: ClassVar[str] = "/prometheus/metrics"
+    metrics_path: ClassVar[str | None] = "/prometheus/metrics"
 
     def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:
         """P/D leaders serve Prometheus on their OpenAI port; followers bind nothing. Aggregate is out of scope."""

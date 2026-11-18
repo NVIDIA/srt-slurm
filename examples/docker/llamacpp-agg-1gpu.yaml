@@ -1,0 +1,41 @@
+# llama.cpp on one NVIDIA GPU, using the official CUDA server image.
+# Set launcher: docker in srtslurm.yaml. Put the named GGUF in model.path,
+# adjust the GPU metadata for your machine, then run srtctl apply -f this file.
+# The image is pinned to b12464 (source d3c3e242c16b8cbf51400fad410cd69b22d64f35).
+# See docs/llamacpp.md for setup and a separate-container benchmark client.
+
+schema: 2
+name: "qwen3-0.6b-llamacpp-docker-agg"
+
+model:
+  path: "/models/Qwen3-0.6B-GGUF"
+  container: "ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:ae96e52f8b2106ea82bad786ee2d08bb9b0a8c93403df9c27ae1bf065a118089"
+  precision: "q8_0"
+
+resources:
+  gpu_type: "l4"
+  gpus_per_node: 1
+
+engine:
+  type: llamacpp
+  model_file: "Qwen3-0.6B-Q8_0.gguf"
+
+frontend:
+  type: llamacpp
+  enable_multiple_frontends: false
+
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    env:
+      CUDA_VISIBLE_DEVICES: "0"
+    args:
+      alias: "Qwen3-0.6B"
+      ctx-size: 4096
+      n-gpu-layers: 99
+      parallel: 1
+
+benchmark:
+  type: manual

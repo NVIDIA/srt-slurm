@@ -15,7 +15,7 @@ Top-level keys of a recipe YAML.
 | `resources` | [ResourceConfig](#resourceconfig) | required | GPU type, GPUs per node, and allocation knobs. The worker topology is `roles`. |
 | `schema` | one of `2` | required | Recipe schema version. Every recipe declares `schema: 2`; a recipe without it is the pre-2.0 layout and does not load (see [legacy-v1.md](legacy-v1.md) and `srtctl migrate`). |
 | `slurm` | [SlurmConfig](#slurmconfig) | `SlurmConfig()` | Slurm account, partition, and time limit; unset values come from srtslurm.yaml. |
-| `engine` | str \| mapping | optional when every role sets `engine` | The engine type (`atom`, `sglang`, `tilert`, `tokenspeed`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
+| `engine` | str \| mapping | optional when every role sets `engine` | The engine type (`atom`, `llamacpp`, `sglang`, `tilert`, `tokenspeed`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
 | `roles` | dict[str, [RoleConfig](#roleconfig)] | `{}` | One block per worker role (`prefill`, `decode`, `agg`): nodes, workers, GPUs, env, engine args. |
 | `frontend` | [FrontendConfig](#frontendconfig) | `FrontendConfig()` | The HTTP entry point in front of the workers (Dynamo frontend, router, nginx) and where it runs. |
 | `dynamo` | [DynamoConfig](#dynamoconfig) | `DynamoConfig()` | Which Dynamo to install, its request/event planes, and native sidecar mode. |
@@ -45,7 +45,7 @@ Three vocabularies carry the engine, the topology, and the placement. `engine` a
 
 ### engine
 
-`engine: <type>` or `engine: {type: <type>, ...}`. `type` is one of `atom`, `sglang`, `tilert`, `tokenspeed`, `trtllm`, `vllm`, `mocker`; the remaining keys are that engine's knobs, listed under [Engine types](#engine-types).
+`engine: <type>` or `engine: {type: <type>, ...}`. `type` is one of `atom`, `llamacpp`, `sglang`, `tilert`, `tokenspeed`, `trtllm`, `vllm`, `mocker`; the remaining keys are that engine's knobs, listed under [Engine types](#engine-types).
 Use either one top-level engine or an explicit engine on every role, never both. Role engines do not inherit options from each other.
 
 ### roles
@@ -125,7 +125,7 @@ Frontend/router configuration.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `type` | str | `'dynamo'` | Frontend type - "dynamo" (default) and "infera" (Infera router, SGLang workers register in etcd); "sglang-router" (SGLang Model Gateway), "vllm-router", "smg" (Shepherd Model Gateway, any backend), "llm-d" (llm-d Endpoint Picker behind Envoy, vLLM), "atomesh", and "tilert-router" (static routers); "sglang", "vllm", and "trtllm_serve" (direct: the single aggregate worker binds the public port, no router process); "none" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). Pre-2.0 recipes spelled the router "sglang"; ``srtctl migrate`` rewrites that to "sglang-router". |
+| `type` | str | `'dynamo'` | Frontend type - "dynamo" (default) and "infera" (Infera router, SGLang workers register in etcd); "sglang-router" (SGLang Model Gateway), "vllm-router", "smg" (Shepherd Model Gateway, any backend), "llm-d" (llm-d Endpoint Picker behind Envoy, vLLM), "atomesh", and "tilert-router" (static routers); "sglang", "vllm", "trtllm_serve", and "llamacpp" (direct: the single aggregate worker binds the public port, no router process); "none" (services-only job: no router, no OpenAI endpoint, no worker-count health gate; requires no engine roles). Pre-2.0 recipes spelled the router "sglang"; ``srtctl migrate`` rewrites that to "sglang-router". |
 | `enable_multiple_frontends` | bool | `True` | Scale with nginx + multiple routers. When ``True`` (default), srtctl stands up nginx and fans out to ``num_additional_frontends + 1`` router replicas. When ``False``, there is NO nginx proxy — the benchmark must target the single master router (or a worker) directly at ``http://localhost:<port>``. ``benchmark.command`` has no placeholder substitution, so write the URL out literally. |
 | `num_additional_frontends` | int | `9` | Additional routers beyond master (default: 9) |
 | `nginx_container` | str | `'nginx:1.27.4'` | Custom nginx container image (default: nginx:1.27.4) |
@@ -694,6 +694,19 @@ Launch ``atom.entrypoints.openai_server`` on ROCm workers.
 | `type` | one of `'atom'` | `'atom'` | Engine type discriminator. |
 | `connector` | one of `'mooncake'` | `'mooncake'` | KV-transfer connector between prefill and decode workers. |
 | `mooncake_protocol` | one of `'rdma'`, `'tcp'` \| None | `None` | Mooncake transport; unset lets ATOM choose. |
+
+### LlamaCppBackend
+
+`engine.type: llamacpp`
+
+Run one ``llama-server`` against a GGUF file inside ``model.path``.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `model_file` | str | required | GGUF filename relative to the model.path directory (may include subdirectories). |
+| `type` | one of `'llamacpp'` | `'llamacpp'` | Engine type discriminator. |
+| `server_binary` | str | `'/app/llama-server'` | Server executable inside the container; override for a custom image. |
+| `metrics` | bool | `True` | Enable llama.cpp's /metrics endpoint on the server's HTTP port. |
 
 ### SGLangBackend
 

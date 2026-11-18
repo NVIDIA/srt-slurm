@@ -45,6 +45,7 @@ from marshmallow import validate
 
 from srtctl.backends import (
     AtomBackend,
+    LlamaCppBackend,
     MockerBackend,
     SGLangBackend,
     TileRTBackend,
@@ -77,6 +78,7 @@ GENERATED_NOTICE = (
 # backend.type value -> dataclass. Order is the documentation order.
 BACKEND_TYPES: tuple[tuple[str, type], ...] = (
     ("atom", AtomBackend),
+    ("llamacpp", LlamaCppBackend),
     ("sglang", SGLangBackend),
     ("tilert", TileRTBackend),
     ("tokenspeed", TokenSpeedBackend),
@@ -105,7 +107,7 @@ _ENGINE_ROW = FieldDoc(
     type_label="str \\| mapping",
     default="optional when every role sets `engine`",
     description=(
-        "The engine type (`atom`, `sglang`, `tilert`, `tokenspeed`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` "
+        "The engine type (`atom`, `llamacpp`, `sglang`, `tilert`, `tokenspeed`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` "
         "plus the engine-wide knobs listed under [Engine types](#engine-types)."
     ),
 )
