@@ -45,6 +45,7 @@ roles:
     nodes: 1
     workers: 2
     gpus: 1
+    sidecar: false                # failover runs the Python dynamo.vllm worker
     restart:
       policy: always              # relaunch an exited engine in place as the new shadow
     args:
@@ -111,6 +112,7 @@ engine:
     shared_dir: /dev/shm               # node-local host path every container on the node sees
 roles:
   agg:
+    sidecar: false                     # required: vLLM behind Dynamo defaults to a sidecar
     restart:                           # see topology.md, section "restart"
       policy: always
       backoff_seconds: 5
@@ -127,7 +129,7 @@ services:                              # optional: only to change the implied gm
 | `shadow_engines` | `1` | Standby engines per worker. Each one costs its CUDA context, captured graphs and communicator buffers in HBM while parked, and no weights. |
 | `shared_dir` | `/dev/shm` | Where `srtctl-<job_id>/<role>_<index>/` (sockets and lock file) is created. It must be the same directory in every container on the node and it must be node-local: enroot bind-mounts the host's `/dev/shm` into every container, while `/tmp` is a fresh tmpfs per container and a Unix socket cannot be shared through the cluster filesystem. |
 
-Validation refuses `engine.failover` without `frontend.type: dynamo` (the election lives in `dynamo.vllm`; a static router would also list the parked shadows), with `dynamo.sidecar: true`, with `data-parallel-size` on any role, or with a `load-format` other than `gms`. It warns when Dynamo is pip-installed at job start, because that path cannot supply `gpu_memory_service`. A declared `gms` service is refused without `engine.failover` or with `placement.per: node`.
+Validation refuses `engine.failover` without `frontend.type: dynamo` (the election lives in `dynamo.vllm`; a static router would also list the parked shadows), with a sidecar (set `roles.<role>.sidecar: false`, since vLLM behind the Dynamo frontend defaults to one), with `data-parallel-size` on any role, or with a `load-format` other than `gms`. It warns when Dynamo is pip-installed at job start, because that path cannot supply `gpu_memory_service`. A declared `gms` service is refused without `engine.failover` or with `placement.per: node`.
 
 ## Sizing GPU Memory
 

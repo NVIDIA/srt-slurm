@@ -2649,7 +2649,7 @@
               "type": "null"
             }
           ],
-          "description": "Run the native engine with a Dynamo sidecar (turns on `dynamo.sidecar`); every role must agree.",
+          "description": "Run the native engine with a Dynamo sidecar (turns on `dynamo.sidecar`); every role must agree. Default: on for vLLM with the Dynamo frontend; set false to keep the Python worker.",
           "default": null
         },
         "critical": {

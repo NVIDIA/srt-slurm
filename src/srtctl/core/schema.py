@@ -890,6 +890,7 @@ class RoleConfig(RoleSettings):
     # `options.store_config`, so prefill and decode can differ. Pool-wide keys stay there.
     mooncake_store_config: dict[str, Any] = field(default_factory=dict)
     # Run the native engine with a Dynamo sidecar (turns on `dynamo.sidecar`); every role must agree.
+    # Default: on for vLLM with the Dynamo frontend; set false to keep the Python worker.
     sidecar: bool | None = field(
         default=None,
         metadata={"marshmallow_field": fields.Boolean(truthy={True}, falsy={False}, allow_none=True)},
@@ -3103,6 +3104,8 @@ class SrtConfig:
             if wanted and not self.dynamo.sidecar:
                 # The sidecar mode is job-wide: a role asking for it turns it on for the job.
                 object.__setattr__(self, "dynamo", dataclasses.replace(self.dynamo, sidecar=True))
+        elif self.frontend.type == "dynamo" and isinstance(self.engine, VLLMBackend):
+            object.__setattr__(self, "dynamo", dataclasses.replace(self.dynamo, sidecar=True))
 
     def _validate_role_backends(self) -> None:
         """Reject job-wide orchestration that is not yet role-aware."""

@@ -364,6 +364,22 @@ def test_per_role_kv_events_and_sidecar() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("engine", "frontend", "role_sidecar", "expected"),
+    [
+        ("vllm", "dynamo", None, True),
+        ("vllm", "dynamo", False, False),
+        ("vllm", "vllm", None, False),
+        ("sglang", "dynamo", None, False),
+    ],
+)
+def test_vllm_behind_dynamo_defaults_to_sidecar(engine, frontend, role_sidecar, expected) -> None:
+    role = {"nodes": 1, "workers": 1} if role_sidecar is None else {"nodes": 1, "workers": 1, "sidecar": role_sidecar}
+    frontend_config = {"type": frontend, "enable_multiple_frontends": False}
+    cfg = SrtConfig.Schema().load(_minimal(engine=engine, roles={"agg": role}, frontend=frontend_config))
+    assert cfg.dynamo.sidecar is expected
+
+
 def test_per_role_critical_feeds_the_worker_flag() -> None:
     recipe = _roles_sglang_disagg()
     recipe["roles"]["prefill"]["critical"] = False

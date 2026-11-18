@@ -46,6 +46,7 @@ roles:
     nodes: 1
     workers: 2
     gpus: 1
+    sidecar: false
     env:
       DYN_HEALTH_CHECK_ENABLED: "false"
       PYTHONUNBUFFERED: "1"

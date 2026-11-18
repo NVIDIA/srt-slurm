@@ -802,7 +802,11 @@ class TestProfilingTargetSelection:
             name="profiling-default",
             model=ModelConfig(path="/model", container="/container", precision="fp8"),
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=4),
-            roles={"agg": RoleConfig(nodes=4, workers=2, args={"data-parallel-size": 8, "tensor-parallel-size": 1})},
+            roles={
+                "agg": RoleConfig(
+                    nodes=4, workers=2, sidecar=False, args={"data-parallel-size": 8, "tensor-parallel-size": 1}
+                )
+            },
             engine=backend,
             profiling=ProfilingConfig(type="nsys", aggregated=phase),
         )
