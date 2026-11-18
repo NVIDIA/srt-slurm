@@ -23,6 +23,7 @@ from srtctl.ports import (
     FRONTEND_PUBLIC_PORT,
     HTTP_PORTS,
     KV_EVENTS_PORTS,
+    LLM_D_DP_RANK_PORTS,
     MORIIO_HANDSHAKE_PORTS,
     MORIIO_NOTIFY_PORTS,
     NCCL_PORTS,
@@ -106,6 +107,7 @@ class TestNodePortAllocator:
             TOKENSPEED_METRICS_PORTS,
             SIDECAR_GRPC_PORTS,
             PROXY_PORTS,
+            LLM_D_DP_RANK_PORTS,
         ]
         assert len({kind.name for kind in kinds}) == len(kinds)
         assert len({kind.base for kind in kinds}) == len(kinds)

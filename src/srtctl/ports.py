@@ -52,6 +52,8 @@ LLM_D_ENVOY_ADMIN_PORT = 9901
 LLM_D_EPP_KV_EVENTS_PORT = 5557
 # Per-worker proxy listeners, including llm-d decode sidecars; see PROXY_PORTS.
 WORKER_PROXY_PORT_BASE = 9600
+# llm-d listeners, one per SGLang DP rank the EPP routes to; see LLM_D_DP_RANK_PORTS.
+LLM_D_DP_RANK_PORT_BASE = 9700
 
 # TRT-LLM torch.distributed bootstrap, one port per MPI endpoint.
 TRTLLM_DIST_INIT_PORT_BASE = 29500
@@ -155,6 +157,8 @@ KVBM_ZMQ_PORTS = PortKind("kvbm_zmq", KVBM_ZMQ_PORT_BASE, 2)
 SIDECAR_GRPC_PORTS = PortKind("sidecar_grpc", DYNAMO_SIDECAR_GRPC_PORT)
 # Allocated on each worker's node for Frontend.proxied_worker_modes.
 PROXY_PORTS = PortKind("proxy", WORKER_PROXY_PORT_BASE, per_node=True)
+# Allocated by the llm-d frontend on each SGLang DP server's node (runtime_scripts/llm_d_dp_rank_proxy.py).
+LLM_D_DP_RANK_PORTS = PortKind("llm_d_dp_rank", LLM_D_DP_RANK_PORT_BASE, per_node=True)
 # Engine-specific: the backend allocates these for its own processes.
 NCCL_PORTS = PortKind("nccl", SGLANG_NCCL_PORT_BASE)
 DIST_INIT_PORTS = PortKind("dist_init", SGLANG_DIST_INIT_PORT_BASE, per_node=True)
