@@ -101,7 +101,7 @@ srtctl writes three files into the log directory (every container sees it at `/l
   `agg` or `prefill` server with DP > 1 is one endpoint per DP rank (`<name>-dp<rank>`),
   at a port of the DP-rank proxy on the server's node: SGLang serves every rank on one port
   and each rank has its own radix cache, so prefix affinity has to pick the rank. The proxy
-  ([`llm_d_dp_rank_proxy.py`](../src/srtctl/runtime_scripts/llm_d_dp_rank_proxy.py))
+  ([`llm_d_dp_rank_proxy.py`](https://github.com/NVIDIA/srt-slurm/blob/main/src/srtctl/runtime_scripts/llm_d_dp_rank_proxy.py))
   forwards with `X-Data-Parallel-Rank` and serves `/metrics` narrowed to that rank's
   `dp_rank` samples. With prefill/decode, set
   `SGLANG_DISAGGREGATION_FORCE_QUERY_PREFILL_DP_RANK=1` on both roles (checked at load) so
@@ -176,8 +176,10 @@ profile that scores by queue depth and KV-cache utilization alone, and the
 `disagg-profile-handler` with `always-disagg-pd-decider`. (The EPP's own default applies
 only to a configuration file without plugins, and srtctl's always carries file
 discovery.) See
-[`examples/vllm/llm-d-disagg.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/llm-d-disagg.yaml) and
-[`examples/vllm/llm-d-agg.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/llm-d-agg.yaml).
+[`examples/vllm/llm-d-disagg.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/llm-d-disagg.yaml),
+[`examples/vllm/llm-d-agg.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/llm-d-agg.yaml),
+[`examples/sglang/llm-d-disagg.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/sglang/llm-d-disagg.yaml), and
+[`examples/sglang/llm-d-agg.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/sglang/llm-d-agg.yaml).
 
 ## Routing to DP ranks
 
@@ -191,7 +193,8 @@ allocated HTTP port, on one node or across several, and lists each rank in the e
 file. Each rank's step and log carry `_dp<r>` (`agg_0_<node>_dp3`, `<node>_agg_w0_dp3.out`),
 and in a prefill/decode job every decode rank gets its own P/D sidecar. vLLM accepts
 external load balancing for MoE models only. See
-[`examples/vllm/llm-d-dp-ranks.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/llm-d-dp-ranks.yaml).
+[`examples/vllm/llm-d-dp-ranks.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/llm-d-dp-ranks.yaml) and
+[`examples/sglang/llm-d-dp-ranks.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/sglang/llm-d-dp-ranks.yaml).
 
 ```yaml
 roles:

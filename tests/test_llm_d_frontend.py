@@ -671,6 +671,8 @@ def test_sglang_dp_prefill_ranks_are_endpoints_behind_a_proxy_on_their_node(tmp_
         ("decode-0-0", "10.0.0.2", "9600"),
     ]
     assert [p.name for p in managed] == ["llm-d-dp-rank-proxy_0", "llm-d-epp_0", "llm-d-envoy_0"]
+    # Readiness waits for every rank's endpoint, so the EPP has scraped each node's proxy.
+    assert LLMDFrontend().health_expectations(config, processes) == (4, 1, "5 llm-d endpoints")
     proxy = start.call_args_list[0].kwargs
     assert proxy["nodelist"] == ["node0"] and proxy["container_image"] == "sglang.sqsh"
     assert proxy["command"] == [
@@ -678,6 +680,14 @@ def test_sglang_dp_prefill_ranks_are_endpoints_behind_a_proxy_on_their_node(tmp_
         "/srtctl-runtime/llm_d_dp_rank_proxy.py",
         *[f"{LLM_D_DP_RANK_PORT_BASE + rank}=http://10.0.0.1:6100#{rank}" for rank in range(4)],
     ]
+
+
+@pytest.mark.parametrize("truthy", ["1", "true", "TRUE", "yes", "Y"])
+def test_sglang_dp_prefill_accepts_sglang_envbool_truthy_values(truthy: str) -> None:
+    recipe = _sglang_dp_prefill_recipe(force_query=False)
+    for role in ("prefill", "decode"):
+        recipe["roles"][role]["env"] = {"SGLANG_DISAGGREGATION_FORCE_QUERY_PREFILL_DP_RANK": truthy}
+    assert _load(recipe).frontend.type == "llm-d"
 
 
 def test_sglang_dp_prefill_requires_force_query_prefill_dp_rank() -> None:

@@ -302,7 +302,7 @@ class LLMDFrontend(StaticRouterFrontend):
                 roles = ("prefill", "decode") if prefill_backend.num_dp_ranks("prefill") > 1 else ()
                 for role in roles:
                     env = {**config.environment, **config.backend_for_role(role).get_environment_for_mode(role)}
-                    if env.get(SGLANG_FORCE_QUERY_PREFILL_DP_RANK) not in ("1", "true", "True"):
+                    if str(env.get(SGLANG_FORCE_QUERY_PREFILL_DP_RANK, "")).lower() not in ("1", "true", "yes", "y"):
                         raise ValueError(
                             f"frontend.type: llm-d routes to each SGLang prefill DP rank: set "
                             f"{SGLANG_FORCE_QUERY_PREFILL_DP_RANK}=1 in roles.{role}.env, or SGLang rejects "
@@ -323,6 +323,8 @@ class LLMDFrontend(StaticRouterFrontend):
 
     def _validate_kv_events(self, config: Any) -> None:
         """Workers publish KV-cache events exactly when the EPP has a precise prefix-cache producer to index them."""
+        from srtctl.backends.sglang import SGLangBackend
+
         epp_config = config.frontend.epp_config
         token_producers = [plugin for plugin in _plugins(epp_config, TOKEN_PRODUCER) if _vllm_token_producer(plugin)]
         if any("url" in (_parameters(plugin).get("vllm") or {}) for plugin in token_producers):
@@ -337,7 +339,7 @@ class LLMDFrontend(StaticRouterFrontend):
             )
             if count and config.backend_for_role(mode).get_kv_events_config_for_mode(mode)
         ]
-        sglang_publishing = [mode for mode in publishing if config.backend_for_role(mode).type == "sglang"]
+        sglang_publishing = [mode for mode in publishing if isinstance(config.backend_for_role(mode), SGLangBackend)]
         if sglang_publishing:
             raise ValueError(
                 f"roles.{sglang_publishing[0]}.kv_events is not supported with frontend.type: llm-d and SGLang; "
@@ -435,13 +437,22 @@ class LLMDFrontend(StaticRouterFrontend):
         return LLM_D_EPP_METRICS_PORT
 
     def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:
-        """Count routable processes, including individual external-LB DP ranks."""
+        """Count the EPP's endpoints: routable processes, including external-LB and pinned SGLang DP ranks."""
         if processes is None:
             return super().health_expectations(config, processes)
         routable = [process for process in processes if process.http_port > 0]
-        prefill = sum(process.endpoint_mode == "prefill" for process in routable)
-        decode = len(routable) - prefill
-        return prefill, decode, f"{len(routable)} llm-d endpoints"
+        prefill = sum(self.pinned_dp_ranks(config, p) for p in routable if p.endpoint_mode == "prefill")
+        total = sum(self.pinned_dp_ranks(config, p) for p in routable)
+        return prefill, total - prefill, f"{total} llm-d endpoints"
+
+    def pinned_dp_ranks(self, config: Any, process: Process) -> int:
+        """Endpoints the EPP gets for a routable worker: one per DP rank of an SGLang agg/prefill server."""
+        from srtctl.backends.sglang import SGLangBackend
+
+        backend = config.backend_for_role(process.endpoint_mode)
+        if process.endpoint_mode == "decode" or not isinstance(backend, SGLangBackend):
+            return 1
+        return backend.num_dp_ranks(process.endpoint_mode)
 
     def probe_ready(
         self, host: str, port: int, expected_prefill: int, expected_decode: int, config: Any
@@ -494,7 +505,6 @@ class LLMDFrontend(StaticRouterFrontend):
         SGLang bootstrap host from it. Decode keeps one endpoint: the KV transfer fills its cache.
         Returns the endpoints and each node's proxy ``PORT=URL#RANK`` routes.
         """
-        from srtctl.backends.sglang import SGLangBackend
         from srtctl.core.topology import NodePortAllocator
         from srtctl.ports import LLM_D_DP_RANK_PORTS
 
@@ -503,9 +513,8 @@ class LLMDFrontend(StaticRouterFrontend):
         pinned: list[dict[str, Any]] = []
         routes: dict[str, list[str]] = {}
         for process, endpoint in zip(routable, endpoints, strict=True):
-            backend = config.backend_for_role(process.endpoint_mode)
-            ranks = backend.num_dp_ranks(process.endpoint_mode) if isinstance(backend, SGLangBackend) else 1
-            if ranks == 1 or process.endpoint_mode == "decode":
+            ranks = self.pinned_dp_ranks(config, process)
+            if ranks == 1:
                 pinned.append(endpoint)
                 continue
             upstream = f"http://{endpoint['address']}:{process.http_port}"
