@@ -69,7 +69,7 @@ env_to_set:
     SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
     SGLANG_RUST_BUILD_MODE: never
 bash_preamble: |
-    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    case ",${UCX_TLS:-all}," in *,all,*|*,cuda,*|*,cuda_copy,*|,^*) ;; *) echo "srtctl: UCX_TLS=$UCX_TLS has no CUDA transport for NIXL; prepending cuda_copy,cuda_ipc,sm,self" >&2 && export UCX_TLS="cuda_copy,cuda_ipc,sm,self,$UCX_TLS" ;; esac && ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
     __FINGERPRINT_EOF__
     ) || true )
@@ -161,7 +161,7 @@ env_to_set:
     SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
     SGLANG_RUST_BUILD_MODE: never
 bash_preamble: |
-    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    case ",${UCX_TLS:-all}," in *,all,*|*,cuda,*|*,cuda_copy,*|,^*) ;; *) echo "srtctl: UCX_TLS=$UCX_TLS has no CUDA transport for NIXL; prepending cuda_copy,cuda_ipc,sm,self" >&2 && export UCX_TLS="cuda_copy,cuda_ipc,sm,self,$UCX_TLS" ;; esac && ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
     __FINGERPRINT_EOF__
     ) || true )
@@ -253,7 +253,7 @@ env_to_set:
     SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
     SGLANG_RUST_BUILD_MODE: never
 bash_preamble: |
-    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    case ",${UCX_TLS:-all}," in *,all,*|*,cuda,*|*,cuda_copy,*|,^*) ;; *) echo "srtctl: UCX_TLS=$UCX_TLS has no CUDA transport for NIXL; prepending cuda_copy,cuda_ipc,sm,self" >&2 && export UCX_TLS="cuda_copy,cuda_ipc,sm,self,$UCX_TLS" ;; esac && ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
     __FINGERPRINT_EOF__
     ) || true )
@@ -345,7 +345,7 @@ env_to_set:
     SGLANG_PYSPY_DUMP_BEFORE_CRASH: 0
     SGLANG_RUST_BUILD_MODE: never
 bash_preamble: |
-    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    case ",${UCX_TLS:-all}," in *,all,*|*,cuda,*|*,cuda_copy,*|,^*) ;; *) echo "srtctl: UCX_TLS=$UCX_TLS has no CUDA transport for NIXL; prepending cuda_copy,cuda_ipc,sm,self" >&2 && export UCX_TLS="cuda_copy,cuda_ipc,sm,self,$UCX_TLS" ;; esac && ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
     __FINGERPRINT_EOF__
     ) || true )

@@ -150,6 +150,8 @@ Environment variable values support per-worker templating with these placeholder
 
 **Note**: For per-role environment variables, use `roles.prefill.env`, `roles.decode.env`, or `roles.agg.env` (see [roles](topology.md#roles)). The role's `env` is applied first and the global `environment` after it, so a key set in both takes the global value.
 
+**NIXL and `UCX_TLS`**: for prefill and decode workers that move KV over NIXL, srtctl prepends `cuda_copy,cuda_ipc,sm,self` to an inherited `UCX_TLS` that NIXL would reject, such as a container-injected `UCX_TLS=tcp`. A `UCX_TLS` set in `environment` or `roles.<role>.env` is used as written.
+
 ## extra_mount
 
 Additional container mounts as a list of mount specifications.

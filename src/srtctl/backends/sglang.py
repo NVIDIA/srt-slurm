@@ -177,6 +177,11 @@ class SGLangBackend(Backend):
         config = self.get_config_for_mode(mode)
         return config.get("grpc-mode", False)
 
+    def uses_nixl(self, mode: WorkerMode) -> bool:
+        """Prefill and decode workers with ``disaggregation-transfer-backend: nixl``."""
+        config = {key.replace("_", "-"): value for key, value in self.get_config_for_mode(mode).items()}
+        return mode != "agg" and config.get("disaggregation-transfer-backend") == "nixl"
+
     def num_dp_ranks(self, mode: WorkerMode) -> int:
         """DP ranks (one scheduler and KV cache each) a worker of ``mode`` runs: replicas x attention-DP width.
 
