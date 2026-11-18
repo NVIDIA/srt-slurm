@@ -5,6 +5,8 @@
 
 import json
 import logging
+import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from srtctl.core.schema import (
@@ -855,6 +857,24 @@ class TestCopyConfigToLogs:
 
         assert (log_dir / GIT_STATE_FILENAME).exists()
         assert (log_dir / GIT_STATE_FILENAME).read_text() == "# srtctl git state snapshot\n"
+
+    def test_copies_when_the_log_dir_refuses_mode_changes(self, tmp_path, monkeypatch, caplog):
+        """Test files are copied without a warning when chmod is refused (SMB/CIFS fixed modes)."""
+        mixin, log_dir = self._create_mixin_with_runtime(tmp_path)
+        (tmp_path / "config.yaml").write_text("name: test\n")
+        real_chmod = os.chmod
+
+        def chmod_refused_in_log_dir(path, mode, *args, **kwargs):
+            if Path(path).resolve().is_relative_to(log_dir):
+                raise PermissionError(1, "Operation not permitted", str(path))
+            return real_chmod(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(os, "chmod", chmod_refused_in_log_dir)
+        with caplog.at_level(logging.WARNING):
+            mixin._copy_config_to_logs()
+
+        assert (log_dir / "config.yaml").read_text() == "name: test\n"
+        assert "Failed to copy" not in caplog.text
 
     def test_copy_failure_does_not_raise(self, tmp_path):
         """Test graceful handling when copy fails."""

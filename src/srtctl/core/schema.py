@@ -461,6 +461,15 @@ class ClusterConfig:
     # other nodes return to the scheduler before the S3 upload and AI analysis, which then run
     # on the batch host. Needs job shrinking enabled (no `disable_job_shrink`); skipped for het jobs.
     release_nodes_before_postprocess: bool = False
+    # Where processes run: `slurm` (srun steps inside an sbatch allocation) or `local`
+    # (one job on this machine, containers under `docker run`). See docs/cluster-config.md#launcher.
+    launcher: Literal["slurm", "docker"] = "slurm"
+    # Extra `docker run` arguments for every container under `launcher: docker`, e.g. `["--user", "1000:1000"]`.
+    docker_args: list[str] | None = None
+    # The `--gpus` value for every container under `launcher: docker` (default `all`), e.g. `"device=2,3,4,5"`
+    # on a shared or partly faulty machine. Docker renumbers the listed devices from 0, so the per-worker
+    # `CUDA_VISIBLE_DEVICES` masks the orchestrator computes stay valid.
+    docker_gpus: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 

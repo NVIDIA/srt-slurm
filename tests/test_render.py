@@ -4,6 +4,7 @@
 
 import logging
 import stat
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -215,3 +216,21 @@ def test_the_ready_marker_records_the_health_gate(tmp_path: Path) -> None:
     assert marker == tmp_path / SERVER_READY_FILENAME
     assert json.loads(marker.read_text())["ready_at_unix"] > 0
     assert write_server_ready_marker(tmp_path / "missing" / "dir") is None
+
+
+@pytest.mark.parametrize(
+    ("env", "venv"),
+    [({"SLURM_JOB_ID": "123"}, ".venv-compute"), ({"SRTCTL_JOB_ID": "docker-1"}, ".venv")],
+)
+def test_job_script_picks_the_venv_for_the_launcher(recipe: Path, env: dict[str, str], venv: str) -> None:
+    body = submit.generate_minimal_sbatch_script(config=SrtConfig.from_yaml(recipe), config_path=recipe)
+    start = body.index('if [ -n "${SRTCTL_JOB_ID:-}" ]')
+    block = body[start : body.index("\nfi\n", start) + 4]
+    result = subprocess.run(
+        ["bash", "-c", block + 'echo "$UV_PROJECT_ENVIRONMENT"'],
+        env={"PATH": "/usr/bin:/bin", "SRTCTL_SOURCE": "/src", **env},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == f"/src/{venv}"
