@@ -39,6 +39,7 @@ from srtctl.backends.base import (
 )
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
+    BOOTSTRAP_PORTS,
     DP_RPC_PORTS,
     DYN_SYSTEM_PORT_BASE,
     HTTP_PORTS,
@@ -360,9 +361,10 @@ class VLLMBackend(Backend):
     # Use an environment mask instead of the engine's --device-ids option.
     set_visible_devices: bool = False
 
-    # Default KV connector: "nixl", "lmcache", "lmcache-mp", "kvbm", "moriio", or a raw JSON string for --kv-transfer-config.
-    # Can be overridden per role by setting "connector" in roles.<role>.args; connector_for_mode resolves it.
-    # "moriio" (ROCm MoRI-IO) registers workers with the vLLM Router and needs frontend.type: vllm-router.
+    # Default KV connector: "nixl", "lmcache", "lmcache-mp", "kvbm", "moriio", "mooncake", or a raw JSON string for
+    # --kv-transfer-config. Can be overridden per role by setting "connector" in roles.<role>.args; connector_for_mode
+    # resolves it. "moriio" (ROCm MoRI-IO) registers workers with the vLLM Router and needs frontend.type: vllm-router.
+    # "mooncake" (vLLM MooncakeConnector) runs the vLLM Router in --kv-connector mooncake mode.
     # dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).
     connector: str | None = "nixl"
 
@@ -524,7 +526,13 @@ class VLLMBackend(Backend):
         connector = self._effective_connector_for_mode(mode)
         if not connector or connector.lower() in ("null", "none"):
             return ()
-        payload = json.loads(_connector_to_kv_transfer_config(connector, mode))
+        try:
+            payload = json.loads(_connector_to_kv_transfer_config(connector, mode))
+        except json.JSONDecodeError as e:
+            raise ValidationError(
+                f"{mode} KV connector {connector!r} is neither a known connector "
+                f"({', '.join(sorted(_CONNECTOR_MAP))}) nor a JSON kv-transfer-config"
+            ) from e
         wrapped = (payload.get("kv_connector_extra_config") or {}).get("connectors") or []
         return tuple(
             name for name in (payload.get("kv_connector"), *(inner.get("kv_connector") for inner in wrapped)) if name
@@ -538,6 +546,19 @@ class VLLMBackend(Backend):
         vLLM Router's ``validate`` requires both roles to agree.
         """
         return any(row is not None and row.discovery for row in map(self.kv_connector_for_mode, ("prefill", "decode")))
+
+    def bootstrap_connector(self, mode: WorkerMode) -> str | None:
+        """Table name of the effective bootstrap connector, including a MultiConnector child."""
+        classes = self.kv_connector_classes(mode)
+        return next(
+            (name for name, row in _CONNECTOR_MAP.items() if row.bootstrap_port_env and row.kv_connector in classes),
+            None,
+        )
+
+    def bootstrap_port_env(self, mode: WorkerMode) -> str | None:
+        """The variable naming the bootstrap server a mode's connector opens for the vLLM Router; None without one."""
+        name = self.bootstrap_connector(mode)
+        return _CONNECTOR_MAP[name].bootstrap_port_env if name is not None else None
 
     def kv_transfer_config(
         self,
@@ -658,6 +679,8 @@ class VLLMBackend(Backend):
         - VLLM_NIXL_SIDE_CHANNEL_HOST: Routable IP for NIXL side channel
           (vLLM defaults to ``0.0.0.0`` / ``localhost`` which breaks the
           multi-node NIXL handshake)
+        - The connector's ``bootstrap_port_env`` (``VLLM_MOONCAKE_BOOTSTRAP_PORT``):
+          the prefill engine's bootstrap port, shared by every node of that engine
         - VLLM_PORT: private base for vLLM's get_open_port() scans, unique per
           process so co-located workers don't race for the same rendezvous port
           (see the notes on VLLM_PORT_BASE in srtctl.ports)
@@ -676,6 +699,11 @@ class VLLMBackend(Backend):
         if process.nixl_port is not None and not discovery:
             env["VLLM_NIXL_SIDE_CHANNEL_PORT"] = str(process.nixl_port)
             env["VLLM_NIXL_SIDE_CHANNEL_HOST"] = get_hostname_ip(process.node)
+        bootstrap_port_env = self.bootstrap_port_env(process.endpoint_mode)
+        if process.endpoint_mode == "prefill" and bootstrap_port_env is not None:
+            if process.bootstrap_port is None:
+                raise ValueError("prefill bootstrap connector requires an allocated bootstrap_port")
+            env[bootstrap_port_env] = str(process.bootstrap_port)
         # Unique per-process VLLM_PORT base to avoid EADDRINUSE rendezvous races
         # when endpoints are co-located on a node. E.g. PD 4xDEP2+1xDEP8 on
         # 4xGB200 nodes: each prefill endpoint is DEP2 (uses 2 of the 4 GPUs), so
@@ -1072,7 +1100,23 @@ class VLLMBackend(Backend):
             processes = self._dp_per_node_endpoints_to_processes(endpoints, allocator, sidecar_grpc=dynamo_sidecar)
         else:
             processes = self._dp_per_gpu_endpoints_to_processes(endpoints, allocator, sidecar_grpc=dynamo_sidecar)
+        processes = self._with_bootstrap_ports(processes, allocator)
         return [self._with_connector_ports(process, allocator) for process in processes]
+
+    def _with_bootstrap_ports(self, processes: list[Process], allocator: NodePortAllocator) -> list[Process]:
+        """Allocate on each prefill engine's leader; its other nodes register at that same port."""
+        if self.bootstrap_port_env("prefill") is None:
+            return processes
+        ports: dict[tuple[int, int], int] = {}
+        result = []
+        for process in processes:
+            if process.endpoint_mode == "prefill":
+                key = (process.endpoint_index, process.engine_id)
+                if key not in ports:
+                    ports[key] = allocator.next(BOOTSTRAP_PORTS, process.node)
+                process = replace(process, bootstrap_port=ports[key])
+            result.append(process)
+        return result
 
     def _with_connector_ports(self, process: Process, allocator: NodePortAllocator) -> Process:
         """Allocate the per-process listeners the mode's KV connector needs.
@@ -1897,13 +1941,17 @@ class KVConnector:
     other through the vLLM Router's ZMQ discovery endpoint instead of being
     listed on the router command line; ``VLLMBackend.kv_transfer_config`` adds
     the realized topology to its ``kv_connector_extra_config`` and the allocator
-    reserves its handshake and notify listeners per process.
+    reserves its handshake and notify listeners per process. ``bootstrap_port_env``
+    names the variable through which a prefill worker opens the bootstrap server
+    the vLLM Router queries for its engine IDs; srtctl sets it to the port the
+    Router is given for that prefill.
     """
 
     kv_connector: str
     kv_role: str | None = "kv_both"
     module_path: str | None = None
     discovery: bool = False
+    bootstrap_port_env: str | None = None
     # Static ``kv_connector_extra_config``; a discovery row's topology-derived extras replace it.
     extra_config: dict[str, Any] | None = None
     # Service kind the connector talks to on its worker's node; implied when the recipe declares none.
@@ -1934,6 +1982,9 @@ _CONNECTOR_MAP: dict[str, KVConnector] = {
     "kvbm": KVConnector("DynamoConnector", module_path="kvbm.vllm_integration.connector"),
     # AMD MoRI-IO (ROCm): prefill produces and decode consumes KV; workers register with the vLLM Router.
     "moriio": KVConnector("MoRIIOConnector", kv_role=None, discovery=True),
+    # Mooncake: prefill produces and decode consumes KV; the vLLM Router reads each prefill's
+    # engine IDs from its bootstrap server and hands them to decode.
+    "mooncake": KVConnector("MooncakeConnector", kv_role=None, bootstrap_port_env="VLLM_MOONCAKE_BOOTSTRAP_PORT"),
 }
 
 

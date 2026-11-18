@@ -3732,7 +3732,7 @@
               "type": "null"
             }
           ],
-          "description": "Default KV connector: \"nixl\", \"lmcache\", \"lmcache-mp\", \"kvbm\", \"moriio\", or a raw JSON string for --kv-transfer-config. Can be overridden per role by setting \"connector\" in roles.<role>.args; connector_for_mode resolves it. \"moriio\" (ROCm MoRI-IO) registers workers with the vLLM Router and needs frontend.type: vllm-router. dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).",
+          "description": "Default KV connector: \"nixl\", \"lmcache\", \"lmcache-mp\", \"kvbm\", \"moriio\", \"mooncake\", or a raw JSON string for --kv-transfer-config. Can be overridden per role by setting \"connector\" in roles.<role>.args; connector_for_mode resolves it. \"moriio\" (ROCm MoRI-IO) registers workers with the vLLM Router and needs frontend.type: vllm-router. \"mooncake\" (vLLM MooncakeConnector) runs the vLLM Router in --kv-connector mooncake mode. dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).",
           "default": "nixl"
         },
         "failover": {

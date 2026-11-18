@@ -158,6 +158,44 @@ class VLLMRouterFrontend(StaticRouterFrontend):
 
         if config.backend.discovers_workers():
             self._validate_discovery(config)
+        elif any(
+            config.backend.bootstrap_port_env(mode) is not None for mode, count in endpoint_gpu_counts.items() if count
+        ):
+            self._validate_bootstrap(config)
+
+    def _validate_bootstrap(self, config: Any) -> None:
+        """Rules for a connector whose prefill bootstrap server the Router queries (Mooncake).
+
+        The Router hands each decode request the prefill's engine ID, so both roles
+        run the connector, and it runs one ``--kv-connector`` for every pair.
+        """
+        backend = config.backend
+        if config.topology.num_agg:
+            raise ValueError(
+                "the Mooncake connector requires a prefill/decode topology; aggregate workers transfer no KV"
+            )
+        connectors = {mode: backend.bootstrap_connector(mode) for mode in ("prefill", "decode")}
+        if connectors["prefill"] != connectors["decode"]:
+            names = ", ".join(f"{mode}={backend.kv_connector_classes(mode)}" for mode in connectors)
+            raise ValueError(f"the Mooncake connector must be set on both prefill and decode; got {names}")
+        if config.health_check is None:
+            raise ValueError(
+                "the Mooncake connector requires health_check so prefill registers before the Router starts"
+            )
+        if config.topology.worker_restart("prefill").enabled:
+            raise ValueError(
+                "the Mooncake connector requires prefill restart: never; the Router caches engine IDs at startup"
+            )
+        if (backend._get_dp_size("prefill") or 1) > 1:
+            raise ValueError("the Mooncake connector currently requires prefill data-parallel-size: 1")
+        frontend_args = {str(key).replace("_", "-"): value for key, value in (config.frontend.args or {}).items()}
+        configured = frontend_args.get("kv-connector")
+        derived = connectors["prefill"]
+        if configured is not None and str(configured) != derived:
+            raise ValueError(
+                f"frontend.args.kv-connector conflicts with the workers' connector: configured {configured}, "
+                f"derived {derived}"
+            )
 
     def _validate_discovery(self, config: Any) -> None:
         """Rules for a discovery connector (MoRI-IO): both roles on it, one router on the head node, a P/D topology.
@@ -292,16 +330,39 @@ class VLLMRouterFrontend(StaticRouterFrontend):
             health_check = config.health_check
             timeout_seconds = health_check.max_attempts * health_check.interval_seconds
             managed_args.extend(["--worker-startup-timeout-secs", str(timeout_seconds)])
+        if self.queries_prefill_bootstrap(backend) and "kv-connector" not in normalized_frontend_args:
+            managed_args.extend(["--kv-connector", backend.bootstrap_connector("prefill")])
         return managed_args
+
+    def waits_for_workers_before_start(self, backend: Any) -> bool:
+        """Wait for KV registration before the Router caches the prefill bootstrap answer.
+
+        The Router reads each prefill's bootstrap ``/query`` once, while it starts, and
+        keeps the answer (vllm-project/router db02f358, ``VllmPDRouter::new``). It exits
+        when the server does not answer within 30 retries (about 4.5 minutes), and an
+        answer from before the prefill's workers registered (in ``register_kv_caches``,
+        vllm-project/vllm 96710245) holds no engine IDs, so decode requests then carry no
+        ``kv_transfer_params`` and decode recomputes every prompt.
+        """
+        return self.queries_prefill_bootstrap(backend)
 
     def discovers_workers(self, backend: Any) -> bool:
         """Discovery mode when the P/D connector registers workers with the Router instead of being listed."""
         return backend.discovers_workers()
 
+    def queries_prefill_bootstrap(self, backend: Any) -> bool:
+        """Whether the Router reads each prefill's engine IDs from its bootstrap server (Mooncake)."""
+        return backend.bootstrap_port_env("prefill") is not None
+
     def worker_bootstrap_port(self, backend: Any, process: Process) -> int | None:
-        """Advertise vLLM's NIXL side-channel port for static P/D routing; discovered workers bring their own."""
+        """Advertise vLLM's NIXL side-channel port for static P/D routing; discovered workers bring their own.
+
+        A Mooncake prefill uses its engine's separately allocated bootstrap port.
+        """
         if self.discovers_workers(backend):
             return None
+        if self.queries_prefill_bootstrap(backend):
+            return process.bootstrap_port
         return process.nixl_port
 
     def health_expectations(self, config: Any, processes: list[Process] | None) -> tuple[int, int, str]:
