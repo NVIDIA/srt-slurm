@@ -1,7 +1,7 @@
 # SGLang disaggregated prefill/decode with attention DP behind the llm-d router (docs/llm-d.md).
 #
-# One TP4/attention-DP4 prefill worker and one TP4/attention-DP4 decode worker on two
-# 4-GPU nodes, KV over NIXL. Because an SGLang server exposes every DP rank on a single
+# One TP4/attention-DP4 prefill worker and one TP4/attention-DP4 decode worker sharing
+# one 8-GPU node, KV over NIXL. Because an SGLang server exposes every DP rank on a single
 # port and each rank owns its own radix cache, srtctl launches `llm_d_dp_rank_proxy.py`
 # on the prefill node (`LLM_D_DP_RANK_PORTS`, 9700+) and writes one endpoint per prefill
 # DP rank (`prefill-0-0-dp0`..`dp3`) into `llm-d-endpoints.yaml`, pinning requests with
@@ -23,8 +23,8 @@ model:
   precision: "bf16"
 
 resources:
-  gpu_type: "gb200"
-  gpus_per_node: 4
+  gpu_type: "h100"
+  gpus_per_node: 8
 frontend:
   type: llm-d
   enable_multiple_frontends: false
@@ -73,7 +73,7 @@ roles:
       mem-fraction-static: 0.8
       context-length: 4096
   decode:
-    nodes: 1
+    nodes: colocate
     workers: 1
     gpus: 4
     env:
