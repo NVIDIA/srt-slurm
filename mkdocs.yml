@@ -75,6 +75,7 @@ nav:
           - vLLM Router: vllm-router.md
           - Shepherd Model Gateway: smg.md
           - llm-d Router: llm-d.md
+          - Infera Router: infera.md
       - Benchmarks:
           - Benchmarks: benchmarks.md
           - Accuracy Benchmarks: accuracy.md
