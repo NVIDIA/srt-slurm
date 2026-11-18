@@ -39,6 +39,7 @@ from srtctl.backends.base import (
 )
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
+    BOOTSTRAP_PORTS,
     DP_RPC_PORTS,
     DYN_SYSTEM_PORT_BASE,
     HTTP_PORTS,
@@ -540,10 +541,18 @@ class VLLMBackend(Backend):
         """
         return any(row is not None and row.discovery for row in map(self.kv_connector_for_mode, ("prefill", "decode")))
 
+    def bootstrap_connector(self, mode: WorkerMode) -> str | None:
+        """Table name of the effective bootstrap connector, including a MultiConnector child."""
+        classes = self.kv_connector_classes(mode)
+        return next(
+            (name for name, row in _CONNECTOR_MAP.items() if row.bootstrap_port_env and row.kv_connector in classes),
+            None,
+        )
+
     def bootstrap_port_env(self, mode: WorkerMode) -> str | None:
         """The variable naming the bootstrap server a mode's connector opens for the vLLM Router; None without one."""
-        row = self.kv_connector_for_mode(mode)
-        return row.bootstrap_port_env if row is not None else None
+        name = self.bootstrap_connector(mode)
+        return _CONNECTOR_MAP[name].bootstrap_port_env if name is not None else None
 
     def kv_transfer_config(
         self,
@@ -665,7 +674,7 @@ class VLLMBackend(Backend):
           (vLLM defaults to ``0.0.0.0`` / ``localhost`` which breaks the
           multi-node NIXL handshake)
         - The connector's ``bootstrap_port_env`` (``VLLM_MOONCAKE_BOOTSTRAP_PORT``):
-          the same port, which the vLLM Router queries as the prefill's bootstrap server
+          the prefill engine's bootstrap port, shared by every node of that engine
         - VLLM_PORT: private base for vLLM's get_open_port() scans, unique per
           process so co-located workers don't race for the same rendezvous port
           (see the notes on VLLM_PORT_BASE in srtctl.ports)
@@ -684,8 +693,11 @@ class VLLMBackend(Backend):
         if process.nixl_port is not None and not discovery:
             env["VLLM_NIXL_SIDE_CHANNEL_PORT"] = str(process.nixl_port)
             env["VLLM_NIXL_SIDE_CHANNEL_HOST"] = get_hostname_ip(process.node)
-            if row is not None and row.bootstrap_port_env is not None:
-                env[row.bootstrap_port_env] = str(process.nixl_port)
+        bootstrap_port_env = self.bootstrap_port_env(process.endpoint_mode)
+        if process.endpoint_mode == "prefill" and bootstrap_port_env is not None:
+            if process.bootstrap_port is None:
+                raise ValueError("prefill bootstrap connector requires an allocated bootstrap_port")
+            env[bootstrap_port_env] = str(process.bootstrap_port)
         # Unique per-process VLLM_PORT base to avoid EADDRINUSE rendezvous races
         # when endpoints are co-located on a node. E.g. PD 4xDEP2+1xDEP8 on
         # 4xGB200 nodes: each prefill endpoint is DEP2 (uses 2 of the 4 GPUs), so
@@ -1082,7 +1094,23 @@ class VLLMBackend(Backend):
             processes = self._dp_per_node_endpoints_to_processes(endpoints, allocator, sidecar_grpc=dynamo_sidecar)
         else:
             processes = self._dp_per_gpu_endpoints_to_processes(endpoints, allocator, sidecar_grpc=dynamo_sidecar)
+        processes = self._with_bootstrap_ports(processes, allocator)
         return [self._with_connector_ports(process, allocator) for process in processes]
+
+    def _with_bootstrap_ports(self, processes: list[Process], allocator: NodePortAllocator) -> list[Process]:
+        """Allocate on each prefill engine's leader; its other nodes register at that same port."""
+        if self.bootstrap_port_env("prefill") is None:
+            return processes
+        ports: dict[tuple[int, int], int] = {}
+        result = []
+        for process in processes:
+            if process.endpoint_mode == "prefill":
+                key = (process.endpoint_index, process.engine_id)
+                if key not in ports:
+                    ports[key] = allocator.next(BOOTSTRAP_PORTS, process.node)
+                process = replace(process, bootstrap_port=ports[key])
+            result.append(process)
+        return result
 
     def _with_connector_ports(self, process: Process, allocator: NodePortAllocator) -> Process:
         """Allocate the per-process listeners the mode's KV connector needs.

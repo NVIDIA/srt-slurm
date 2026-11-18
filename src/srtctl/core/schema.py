@@ -2914,10 +2914,10 @@ class SrtConfig:
         self._validate_mooncake_kv_store()
         self._validate_het_jobs()
         self._validate_colocated_decode()
+        self._validate_vllm_router_connector()
         self._validate_frontend()
         self._validate_dynamo_sidecar()
         self._validate_vllm_failover()
-        self._validate_vllm_discovery_connector()
         self._validate_host_setup()
         self._validate_benchmark_type()
         self._validate_services_only()
@@ -3261,21 +3261,25 @@ class SrtConfig:
                 "if something outside this recipe set the node state"
             )
 
-    def _validate_vllm_discovery_connector(self) -> None:
-        """A discovery connector (vLLM MoRI-IO) needs the router that runs its registration endpoint.
-
-        Workers learn each other's transfer addresses from the vLLM Router's ZMQ
-        discovery listener, which no other frontend runs. The Router's own rules
-        (both roles on the connector, one router on the head node, a P/D
-        topology) live in ``VLLMRouterFrontend.validate``.
-        """
-        if not isinstance(self.backend, VLLMBackend) or not self.backend.discovers_workers():
+    def _validate_vllm_router_connector(self) -> None:
+        """Discovery and bootstrap connectors need the vLLM Router's transfer metadata."""
+        if not isinstance(self.backend, VLLMBackend):
+            return
+        discovery = self.backend.discovers_workers()
+        bootstrap = any(
+            self.backend.bootstrap_connector(mode) is not None
+            for mode in ("prefill", "decode", "agg")
+            if mode in self.roles
+        )
+        if not discovery and not bootstrap:
             return
         if self.frontend.type != "vllm-router":
-            raise ValidationError(
-                "a discovery connector (engine.connector: moriio) registers workers with the vLLM Router; "
-                f"it requires frontend.type: vllm-router (got {self.frontend.type!r})"
+            reason = (
+                "a discovery connector (engine.connector: moriio) registers workers with the vLLM Router"
+                if discovery
+                else "the Mooncake connector needs the vLLM Router's bootstrap transfer metadata"
             )
+            raise ValidationError(f"{reason}; it requires frontend.type: vllm-router (got {self.frontend.type!r})")
 
     def _validate_vllm_failover(self) -> None:
         """Rules for ``backend.failover`` (vLLM shadow engine recovery).

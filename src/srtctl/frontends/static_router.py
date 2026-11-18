@@ -95,6 +95,10 @@ class StaticRouterFrontend(Frontend):
     # static registration expires when model loading outlasts its startup window sets this.
     wait_for_workers_before_start: ClassVar[bool] = False
 
+    def waits_for_workers_before_start(self, backend: Any) -> bool:
+        """Whether this backend must be healthy before the router registers its workers."""
+        return self.wait_for_workers_before_start
+
     @property
     def health_endpoint(self) -> str:
         return "/workers"
@@ -326,7 +330,7 @@ class StaticRouterFrontend(Frontend):
             runtime.network_interface,
             frontend_node=topology.frontend_nodes[0] if topology.frontend_nodes else None,
         )
-        if self.wait_for_workers_before_start:
+        if self.waits_for_workers_before_start(backend):
             self.wait_for_workers(workers, config, stop_event)
 
         processes: list[ManagedProcess] = []

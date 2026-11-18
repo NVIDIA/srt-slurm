@@ -9,14 +9,15 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 from marshmallow import ValidationError
 
 from srtctl.backends import VLLMBackend
 from srtctl.cli.mixins.benchmark_stage import _get_health_expectations
-from srtctl.core.schema import FrontendConfig, PlacementConfig, ResourceConfig, RoleConfig, SrtConfig
+from srtctl.core.schema import FrontendConfig, PlacementConfig, ResourceConfig, RestartPolicy, RoleConfig, SrtConfig
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 from srtctl.frontends import VLLMRouterFrontend, get_frontend
-from srtctl.frontends.static_router import RouterWorker
+from srtctl.frontends.static_router import RouterWorker, StaticRouterFrontend
 from srtctl.frontends.vllm_router import node_local_data_parallel_size, routed_process_dp_size
 from srtctl.ports import VLLM_DISCOVERY_PORT
 
@@ -213,7 +214,7 @@ def test_a_discovering_router_lists_no_worker_urls_and_no_bootstrap_port() -> No
 
 def _pd_processes() -> list[Process]:
     return [
-        Process("p0", frozenset({0}), 7500, 6100, "prefill", 0, nixl_port=5400),
+        Process("p0", frozenset({0}), 7500, 6100, "prefill", 0, nixl_port=5400, bootstrap_port=7200),
         Process("d0", frozenset({1}), 7501, 6101, "decode", 0, nixl_port=5401),
     ]
 
@@ -248,7 +249,7 @@ def test_mooncake_prefill_opens_its_bootstrap_server_on_the_advertised_port() ->
 
 
 def test_an_explicit_mooncake_transfer_config_keeps_the_router_mode() -> None:
-    """A role's own kv-transfer-config (here with CPU offload) replaces the preset; connector: mooncake still applies."""
+    """A MultiConnector's Mooncake child selects bootstrap routing and preserves CPU offload."""
     payload = {
         "kv_connector": "MultiConnector",
         "kv_role": "kv_both",
@@ -264,6 +265,222 @@ def test_an_explicit_mooncake_transfer_config_keeps_the_router_mode() -> None:
     assert json.loads(backend.kv_transfer_config("prefill")) == payload
     assert backend.bootstrap_port_env("prefill") == "VLLM_MOONCAKE_BOOTSTRAP_PORT"
     assert VLLMRouterFrontend().queries_prefill_bootstrap(backend) is True
+
+
+def test_mooncake_cpu_offload_runs_one_tp4_prefill_and_two_tp4_decodes(tmp_path: Path, monkeypatch) -> None:
+    """InferenceX #5090's connector/topology contract goes through the real orchestrator without a patch."""
+    from srtctl.mock import MockOptions, run_mock_sweep
+
+    monkeypatch.setenv("SRTSLURM_CONFIG", str(tmp_path / "absent-srtslurm.yaml"))
+    recipe = yaml.safe_load(Path("examples/vllm/vllm-router-mooncake-disagg.yaml").read_text())
+    recipe["model"] = {"path": "hf:fake/mock-model", "container": "nvcr.io/fake:latest", "precision": "fp4"}
+    recipe["observability"] = {"enabled": False, "tachometer": {"enabled": False}}
+    prefill_transfer = {
+        "kv_connector": "MultiConnector",
+        "kv_role": "kv_both",
+        "kv_connector_extra_config": {
+            "connectors": [
+                {
+                    "kv_connector": "MooncakeConnector",
+                    "kv_role": "kv_producer",
+                    "kv_connector_extra_config": {"mooncake_protocol": "rdma", "num_workers": 10},
+                },
+                {
+                    "kv_connector": "SimpleCPUOffloadConnector",
+                    "kv_role": "kv_both",
+                    "kv_connector_extra_config": {
+                        "cpu_bytes_to_use": 1349000000000,
+                        "lazy_offload": False,
+                        "cpu_lru_eviction": True,
+                    },
+                },
+            ]
+        },
+    }
+    decode_transfer = {
+        "kv_connector": "MooncakeConnector",
+        "kv_role": "kv_consumer",
+        "kv_connector_extra_config": {"mooncake_protocol": "rdma", "num_workers": 10},
+    }
+    recipe["engine"]["set_visible_devices"] = True
+    recipe["resources"] = {"gpu_type": "mi355x", "gpus_per_node": 8}
+    recipe["roles"] = {
+        mode: {
+            "nodes": 1,
+            "workers": workers,
+            "gpus": 4,
+            "args": {"tensor-parallel-size": 4, "kv-transfer-config": json.dumps(payload)},
+        }
+        for mode, workers, payload in (("prefill", 1, prefill_transfer), ("decode", 2, decode_transfer))
+    }
+    recipe["benchmark"] = {"type": "custom", "command": "echo mooncake-smoke"}
+    path = tmp_path / "recipe.yaml"
+    path.write_text(yaml.safe_dump(recipe))
+    calls = []
+    events = []
+
+    def launched(call: dict) -> None:
+        calls.append(call)
+        events.append(call.get("step_name"))
+
+    def wait(self, workers, config, stop_event) -> None:
+        assert len(workers) == 3
+        StaticRouterFrontend.wait_for_workers(self, workers, config, stop_event)
+        events.append("workers-healthy")
+
+    with patch.object(VLLMRouterFrontend, "wait_for_workers", new=wait):
+        assert (
+            run_mock_sweep(
+                config_path=path,
+                output_dir=tmp_path / "output",
+                job_id="42042",
+                options=MockOptions(
+                    child_duration_s=0,
+                    phase_pause_s=0,
+                    on_srun=launched,
+                    nodelist=("n0", "n1", "n2", "n3"),
+                ),
+            )
+            == 0
+        )
+
+    prefills = [call for call in calls if str(call.get("step_name", "")).startswith("prefill_")]
+    decodes = [call for call in calls if str(call.get("step_name", "")).startswith("decode_")]
+    router = next(call for call in calls if call.get("step_name") == "vllm_router_0")
+    assert len(prefills) == 1 and len(decodes) == 2
+    assert events.index("workers-healthy") < events.index("vllm_router_0") < events.index("benchmark")
+    for call, payload in [(prefills[0], prefill_transfer), *((call, decode_transfer) for call in decodes)]:
+        assert events.index(call["step_name"]) < events.index("workers-healthy")
+        command = call["command"]
+        assert json.loads(command[command.index("--kv-transfer-config") + 1]) == payload
+        assert command[command.index("--tensor-parallel-size") + 1] == "4"
+    assert all("VLLM_MOONCAKE_BOOTSTRAP_PORT" not in call["env_to_set"] for call in decodes)
+    command = router["command"]
+    assert command[command.index("--prefill") + 2] == prefills[0]["env_to_set"]["VLLM_MOONCAKE_BOOTSTRAP_PORT"]
+    assert command[command.index("--kv-connector") + 1] == "mooncake"
+
+
+@pytest.mark.parametrize("decode_dp", [1, 2])
+def test_multinode_mooncake_prefill_shares_one_allocated_bootstrap_port(decode_dp: int) -> None:
+    """TP16 followers register at the leader's port, including the per_node DP conversion path."""
+    backend = VLLMBackend(
+        connector="mooncake",
+        roles={
+            "prefill": RoleConfig(args={"tensor-parallel-size": 16, "data-parallel-size": 1}),
+            "decode": RoleConfig(args={"tensor-parallel-size": 1, "data-parallel-size": decode_dp}),
+        },
+    )
+    endpoints = [
+        Endpoint("prefill", 0, ("n0", "n1")),
+        Endpoint("decode", 0, ("n2",), gpu_indices=frozenset(range(decode_dp))),
+    ]
+    allocator = NodePortAllocator(bases={"bootstrap": 7300})
+    processes = backend.endpoints_to_processes(endpoints, port_allocator=allocator, frontend_type="vllm-router")
+    prefills = [process for process in processes if process.endpoint_mode == "prefill"]
+    assert len(prefills) == 2
+    assert {process.bootstrap_port for process in prefills} == {7300}
+    with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+        assert {backend.get_process_environment(p)["VLLM_MOONCAKE_BOOTSTRAP_PORT"] for p in prefills} == {"7300"}
+        for process in processes:
+            assert process.bootstrap_port != process.nixl_port
+            if process.endpoint_mode == "decode":
+                assert "VLLM_MOONCAKE_BOOTSTRAP_PORT" not in backend.get_process_environment(process)
+    frontend = VLLMRouterFrontend()
+    with patch("srtctl.frontends.static_router.get_hostname_ip", side_effect=lambda node, *_: node):
+        workers = frontend.collect_workers(backend, processes)
+    command = frontend.build_router_command(workers, "0.0.0.0", 8000, backend)
+    start = command.index("--prefill")
+    assert command[start : start + 3] == ["--prefill", "http://n0:6100", "7300"]
+    assert all("n1" not in worker.url for worker in workers)
+
+
+def test_colocated_mooncake_prefills_get_distinct_bootstrap_ports() -> None:
+    backend = VLLMBackend(connector="mooncake")
+    endpoints = [Endpoint("prefill", i, ("n0",), gpu_indices=frozenset({i})) for i in range(2)]
+    processes = backend.endpoints_to_processes(endpoints, frontend_type="vllm-router")
+    assert [process.bootstrap_port for process in processes] == [7200, 7201]
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_raw_mooncake_transfer_configs_select_bootstrap_routing(as_json: bool) -> None:
+    roles = {}
+    for mode, kv_role in (("prefill", "kv_producer"), ("decode", "kv_consumer")):
+        payload = {"kv_connector": "MooncakeConnector", "kv_role": kv_role}
+        roles[mode] = RoleConfig(args={"kv-transfer-config": json.dumps(payload) if as_json else payload})
+    backend = VLLMBackend(roles=roles)
+    assert backend.bootstrap_connector("prefill") == backend.bootstrap_connector("decode") == "mooncake"
+    config = SimpleNamespace(
+        frontend=SimpleNamespace(args={}),
+        backend_for_role=lambda mode: backend,
+        health_check=SimpleNamespace(max_attempts=360, interval_seconds=10),
+    )
+    assert VLLMRouterFrontend().get_managed_frontend_args(config, backend, _pd_processes())[-2:] == [
+        "--kv-connector",
+        "mooncake",
+    ]
+
+
+def test_transfer_overrides_can_replace_mooncake_on_both_roles() -> None:
+    backend = VLLMBackend(
+        connector="mooncake",
+        roles={
+            mode: RoleConfig(args={"kv-transfer-config": {"kv_connector": "NixlConnector"}})
+            for mode in ("prefill", "decode")
+        },
+    )
+    assert not VLLMRouterFrontend().queries_prefill_bootstrap(backend)
+    assert backend.bootstrap_port_env("prefill") is None
+
+
+@pytest.mark.parametrize("frontend_type", ["dynamo", "smg", "llm-d"])
+def test_mooncake_requires_the_vllm_router(frontend_type: str) -> None:
+    with pytest.raises(ValidationError, match="requires frontend.type: vllm-router"):
+        SrtConfig(
+            name="mooncake",
+            model={"path": "model", "container": "image", "precision": "bf16"},
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
+            roles={mode: RoleConfig(nodes=1, workers=1, gpus=1) for mode in ("prefill", "decode")},
+            frontend=FrontendConfig(type=frontend_type),
+            engine=VLLMBackend(connector="mooncake"),
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"roles": {"agg": RoleConfig(nodes=1, workers=1, gpus=1)}}, "prefill/decode topology"),
+        ({"health_check": None}, "requires health_check"),
+        (
+            {
+                "roles": {
+                    "prefill": RoleConfig(nodes=1, workers=1, gpus=1, restart=RestartPolicy(policy="on-failure")),
+                    "decode": RoleConfig(nodes=1, workers=1, gpus=1),
+                }
+            },
+            "prefill restart: never",
+        ),
+        (
+            {
+                "roles": {
+                    mode: RoleConfig(nodes=1, workers=1, gpus=2, args={"data-parallel-size": 2})
+                    for mode in ("prefill", "decode")
+                }
+            },
+            "prefill data-parallel-size: 1",
+        ),
+    ],
+)
+def test_mooncake_rejects_unsupported_lifecycle_and_topology(overrides: dict, message: str) -> None:
+    fields = {
+        "name": "mooncake",
+        "model": {"path": "model", "container": "image", "precision": "bf16"},
+        "resources": ResourceConfig(gpu_type="h100", gpus_per_node=8),
+        "roles": {mode: RoleConfig(nodes=1, workers=1, gpus=1) for mode in ("prefill", "decode")},
+        "frontend": FrontendConfig(type="vllm-router"),
+        "engine": VLLMBackend(connector="mooncake"),
+    }
+    with pytest.raises(ValidationError, match=message):
+        SrtConfig(**(fields | overrides))
 
 
 @pytest.mark.parametrize(
@@ -292,6 +509,11 @@ def test_mooncake_router_gets_its_kv_connector_once(connector: str, frontend_arg
     [
         ({"decode": {"connector": "nixl", "tensor-parallel-size": 1}}, "both prefill and decode"),
         ({"frontend_args": {"kv-connector": "nixl"}}, "conflicts with the workers' connector"),
+        ({"frontend_args": {"kv-connector": "Mooncake"}}, "conflicts with the workers' connector"),
+        (
+            {"decode": {"kv-transfer-config": {"kv_connector": "NixlConnector"}, "tensor-parallel-size": 1}},
+            "both prefill and decode",
+        ),
     ],
 )
 def test_mooncake_recipe_rules(recipe: dict, message: str) -> None:
@@ -343,7 +565,7 @@ def test_mooncake_router_starts_only_after_workers_are_healthy(connector: str, w
         return MagicMock()
 
     with (
-        patch("srtctl.frontends.static_router.get_hostname_ip", return_value="10.0.0.1"),
+        patch("srtctl.frontends.static_router.get_hostname_ip", return_value="10.0.0.1") as resolve,
         patch.object(frontend, "wait_for_workers", side_effect=wait),
         patch.object(frontend, "start_process", side_effect=start),
     ):
@@ -351,6 +573,7 @@ def test_mooncake_router_starts_only_after_workers_are_healthy(connector: str, w
 
     probed = [["http://10.0.0.1:6100", "http://10.0.0.1:6101"]] if waits else []
     assert events == [*probed, "start"]
+    assert resolve.call_count == 2
 
 
 def test_collect_workers_uses_positive_http_ports_and_configured_interface() -> None:
