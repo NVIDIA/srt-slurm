@@ -64,6 +64,16 @@ _TRTLLM_MOONCAKE_BLOCK_ONLY_KEYS: dict[str, str] = {
     "master_timeout": "srtctl starts the master before the workers",
 }
 
+# Placeholders in ``kv_connector_config.mooncake_store.run_dir`` that TRT-LLM builds with
+# per-server run directories expand when the server starts: ``{host}`` to the server's
+# short hostname and ``{gpus}`` to its GPU list, read from ``TRTLLM_PACKED_VISIBLE_DEVICES``
+# (``,`` becomes ``-``). One live server owns a run_dir, so this is how the servers of a
+# role with several workers share one ``mooncake_store`` block. A build without them
+# keeps the braces, and every server of the role names the same directory.
+TRTLLM_MOONCAKE_RUN_DIR_HOST = "{host}"
+TRTLLM_MOONCAKE_RUN_DIR_GPUS = "{gpus}"
+TRTLLM_PACKED_VISIBLE_DEVICES_ENV = "TRTLLM_PACKED_VISIBLE_DEVICES"
+
 # TRT-LLM parses sizes in its Mooncake client config with ``parse_size(...,
 # strict_units=True)``: byte counts or binary units only. ``GB``/``MB`` are refused
 # because vLLM's reader of the same file scales them by 1024 and TRT-LLM's by 1000.
@@ -443,18 +453,21 @@ class TRTLLMBackend(Backend):
         return f"{_CONTAINER_LOG_DIR}/worker_priv/{process.endpoint_mode}_w{process.endpoint_index}"
 
     def get_process_environment(self, process: "Process") -> dict[str, str]:
-        """Per-worker DWDP environment (see the DWDP note at the top of this module); empty otherwise.
+        """Per-worker environment: the GPU list a ``{gpus}`` Mooncake run_dir expands, and DWDP's.
 
-        The master address is not known here (another endpoint's node) -- the
-        worker stage sets ``TRTLLM_DWDP_MASTER_ADDR`` from the role's rank-0
-        endpoint when it sees ``TRTLLM_DWDP_RANK``.
+        See the DWDP note at the top of this module. The master address is not
+        known here (another endpoint's node) -- the worker stage sets
+        ``TRTLLM_DWDP_MASTER_ADDR`` from the role's rank-0 endpoint when it sees
+        ``TRTLLM_DWDP_RANK``.
         """
         mode = process.endpoint_mode
+        run_dir_env = self._mooncake_run_dir_gpus_environment(process)
         if not self.dwdp_size(mode):
-            return {}
+            return run_dir_env
         role_env = self.get_environment_for_mode(mode)
         private = self.dwdp_private_dir(process)
         env = {
+            **run_dir_env,
             DWDP_RANK_ENV: str(process.endpoint_index),
             DWDP_MASTER_PORT_ENV: str(DWDP_MASTER_PORT),
             DWDP_RENDEZVOUS_TIMEOUT_ENV: str(DWDP_RENDEZVOUS_TIMEOUT_S),
@@ -471,6 +484,37 @@ class TRTLLMBackend(Backend):
             if key in role_env:
                 env.pop(key)
         return env
+
+    def _mooncake_run_dir_gpus_environment(self, process: "Process") -> dict[str, str]:
+        """``TRTLLM_PACKED_VISIBLE_DEVICES`` for a worker whose role's ``mooncake_store.run_dir`` names ``{gpus}``.
+
+        TRT-LLM expands ``{gpus}`` from this variable, so servers that share a node
+        each claim their own run_dir. One srun covers the endpoint, so every rank
+        gets the leader's GPU list: the server, which expands the run_dir, runs there.
+        """
+        run_dir = self.mooncake_store_run_dir(process.endpoint_mode)
+        if run_dir is None or TRTLLM_MOONCAKE_RUN_DIR_GPUS not in run_dir:
+            return {}
+        return {TRTLLM_PACKED_VISIBLE_DEVICES_ENV: process.cuda_visible_devices}
+
+    def mooncake_store_run_dir(self, mode: WorkerMode) -> str | None:
+        """``kv_connector_config.mooncake_store.run_dir`` of this mode's engine config; None when unset."""
+        connector = self.get_config_for_mode(mode).get("kv_connector_config")
+        block = connector.get("mooncake_store") if isinstance(connector, Mapping) else None
+        run_dir = block.get("run_dir") if isinstance(block, Mapping) else None
+        return str(run_dir) if run_dir else None
+
+    def mooncake_run_dir_per_server(self, mode: WorkerMode, *, whole_nodes: bool) -> bool:
+        """Whether this mode's ``mooncake_store.run_dir`` expands to a directory of its own for every server.
+
+        ``{host}`` does when every worker of the role holds whole nodes (``whole_nodes``):
+        no two of their servers then run on one node. With ``{gpus}`` it does on shared
+        nodes too (``get_process_environment`` passes each worker its GPU list).
+        """
+        run_dir = self.mooncake_store_run_dir(mode) or ""
+        if TRTLLM_MOONCAKE_RUN_DIR_HOST not in run_dir:
+            return False
+        return whole_nodes or TRTLLM_MOONCAKE_RUN_DIR_GPUS in run_dir
 
     def uses_mooncake_store(self, mode: WorkerMode) -> bool:
         """Whether this mode's engine config resolves to the Mooncake Store KV connector.

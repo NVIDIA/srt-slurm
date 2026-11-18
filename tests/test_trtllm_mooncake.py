@@ -15,7 +15,8 @@ import yaml
 from marshmallow import ValidationError
 
 from srtctl.backends import SGLangBackend, TRTLLMBackend
-from srtctl.core.schema import SrtConfig
+from srtctl.core.schema import RoleConfig, SrtConfig
+from srtctl.core.topology import Process
 from srtctl.mock import MockOptions, run_mock_sweep
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "trtllm"
@@ -40,7 +41,9 @@ def _load(recipe: dict[str, Any], tmp_path: Path) -> SrtConfig:
     return SrtConfig.from_yaml(path)
 
 
-def _sweep(recipe: dict[str, Any], tmp_path: Path) -> tuple[list[dict[str, Any]], Path]:
+def _sweep(
+    recipe: dict[str, Any], tmp_path: Path, nodelist: tuple[str, ...] = ("node-01",)
+) -> tuple[list[dict[str, Any]], Path]:
     path = tmp_path / "recipe.yaml"
     path.write_text(yaml.safe_dump(recipe))
     launches: list[dict[str, Any]] = []
@@ -48,7 +51,7 @@ def _sweep(recipe: dict[str, Any], tmp_path: Path) -> tuple[list[dict[str, Any]]
         config_path=path,
         output_dir=tmp_path / "outputs" / "4301",
         job_id="4301",
-        options=MockOptions(child_duration_s=0.05, phase_pause_s=0.01, nodelist=("node-01",), on_srun=launches.append),
+        options=MockOptions(child_duration_s=0.05, phase_pause_s=0.01, nodelist=nodelist, on_srun=launches.append),
     )
     assert exit_code == 0
     return launches, tmp_path / "outputs"
@@ -347,6 +350,79 @@ def test_run_dir_shared_by_several_servers_fails_at_load(tmp_path: Path) -> None
     recipe["roles"]["prefill"]["workers"] = 2
     with pytest.raises(ValidationError, match="would be shared by several servers"):
         _load(recipe, tmp_path)
+
+
+def _servers_on_one_run_dir(run_dir: str, *, workers: int, gpus: int) -> dict[str, Any]:
+    """The own-pool example with ``workers`` prefill servers of ``gpus`` GPUs each on one ``run_dir`` template."""
+    block = {**CONNECTOR, "mooncake_store": {**BLOCK, "run_dir": run_dir}}
+    recipe = _own_pool("trtllm_serve", {"args": {"kv_connector_config": block}})
+    recipe["roles"]["prefill"].update(workers=workers, gpus=gpus, nodes=-(-workers * gpus // 8))
+    recipe["roles"]["decode"]["nodes"] = 1
+    recipe["roles"]["decode"]["args"]["kv_connector_config"]["mooncake_store"]["run_dir"] = "/logs/mc/decode"
+    return recipe
+
+
+@pytest.mark.parametrize(
+    ("run_dir", "workers", "gpus", "ok"),
+    [
+        # {host} names a directory per server when no two servers run on one node.
+        ("/logs/mc/prefill_{host}", 2, 8, True),
+        ("/logs/mc/prefill_{host}", 2, 16, True),
+        # Servers that share a node need their GPUs in the name as well.
+        ("/logs/mc/prefill_{host}", 2, 4, False),
+        ("/logs/mc/prefill_{host}_g{gpus}", 2, 4, True),
+        ("/logs/mc/prefill_{host}_g{gpus}", 4, 2, True),
+        # The same GPUs on two nodes: {gpus} alone repeats.
+        ("/logs/mc/prefill_g{gpus}", 4, 4, False),
+        ("/logs/mc/prefill", 2, 8, False),
+    ],
+)
+def test_run_dir_placeholders_give_each_server_its_own_directory(
+    tmp_path: Path, run_dir: str, workers: int, gpus: int, ok: bool
+) -> None:
+    recipe = _servers_on_one_run_dir(run_dir, workers=workers, gpus=gpus)
+    if ok:
+        _load(recipe, tmp_path)
+    else:
+        with pytest.raises(ValidationError, match="would be shared by several servers"):
+            _load(recipe, tmp_path)
+
+
+def test_servers_sharing_a_node_get_their_gpus_for_the_run_dir(tmp_path: Path) -> None:
+    """Each server of a {gpus} run_dir is launched with its own GPU list; a role without one gets none."""
+    recipe = _servers_on_one_run_dir("/logs/mc/prefill_{host}_g{gpus}", workers=2, gpus=4)
+    launches, _ = _sweep(recipe, tmp_path, nodelist=("node-01", "node-02"))
+    workers = {
+        launch["step_name"]: launch["env_to_set"]
+        for launch in launches
+        if launch.get("step_name", "").startswith(("prefill_", "decode_"))
+    }
+    prefill = [env for name, env in workers.items() if name.startswith("prefill_")]
+    assert sorted(env["TRTLLM_PACKED_VISIBLE_DEVICES"] for env in prefill) == ["0,1,2,3", "4,5,6,7"]
+    (decode,) = [env for name, env in workers.items() if name.startswith("decode_")]
+    assert "TRTLLM_PACKED_VISIBLE_DEVICES" not in decode
+
+
+def test_gpus_run_dir_environment_joins_the_dwdp_environment() -> None:
+    def backend(run_dir: str, **args: Any) -> TRTLLMBackend:
+        block = {**CONNECTOR, "mooncake_store": {**BLOCK, "run_dir": run_dir}}
+        return TRTLLMBackend(roles={"prefill": RoleConfig(args={"kv_connector_config": block, **args})})
+
+    process = Process(
+        node="node-01",
+        gpu_indices=frozenset({2, 3}),
+        sys_port=8001,
+        http_port=9001,
+        endpoint_mode="prefill",
+        endpoint_index=1,
+    )
+    assert backend("/logs/mc/{host}_g{gpus}").get_process_environment(process) == {
+        "TRTLLM_PACKED_VISIBLE_DEVICES": "2,3"
+    }
+    assert backend("/logs/mc/{host}").get_process_environment(process) == {}
+    env = backend("/logs/mc/{host}_g{gpus}", dwdp_config={"dwdp_size": 2}).get_process_environment(process)
+    assert env["TRTLLM_PACKED_VISIBLE_DEVICES"] == "2,3"
+    assert env["TRTLLM_DWDP_RANK"] == "1"
 
 
 def test_services_only_trtllm_recipe_still_loads(tmp_path: Path) -> None:

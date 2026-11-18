@@ -3655,6 +3655,8 @@ class SrtConfig:
         exports never reaches it: ranks read the config trtllm-serve rendered back from
         ``mooncake_store.run_dir``, which one server claims for itself. ``dynamo.trtllm``
         renders none; a Dynamo sidecar engine is ``tensorrt_llm.commands.serve`` and does.
+        The workers of one role share a run_dir only when its ``{host}`` / ``{gpus}``
+        placeholders expand to a directory per server (``mooncake_run_dir_per_server``).
         """
         from srtctl.frontends import get_frontend
 
@@ -3667,8 +3669,7 @@ class SrtConfig:
         for mode in modes:
             if "MOONCAKE_CONFIG_PATH" in {**self.environment, **backend.get_environment_for_mode(mode)}:
                 continue
-            block = backend.get_config_for_mode(mode)["kv_connector_config"].get("mooncake_store")
-            run_dir = block.get("run_dir") if isinstance(block, Mapping) else None
+            run_dir = backend.mooncake_store_run_dir(mode)
             serve_renders = self.dynamo.sidecar or get_frontend(self.frontend.type).worker_launch == "direct"
             if not run_dir or not serve_renders:
                 raise ValidationError(
@@ -3678,11 +3679,15 @@ class SrtConfig:
                     f"one, set MOONCAKE_CONFIG_PATH in roles.{mode}.env, or, when trtllm-serve runs the engine, "
                     "a mooncake_store block with run_dir.)"
                 )
-            if workers[mode] > 1 or run_dir in run_dirs:
+            whole_nodes = self.topology.gpus_per_worker(mode) >= self.topology.gpus_per_node
+            per_server = backend.mooncake_run_dir_per_server(mode, whole_nodes=whole_nodes)
+            if (workers[mode] > 1 and not per_server) or run_dir in run_dirs:
                 raise ValidationError(
                     f"roles.{mode}.args.kv_connector_config.mooncake_store.run_dir {run_dir!r} would be shared by "
                     "several servers, and TRT-LLM lets one live server own a run_dir. Give each role its own "
-                    "run_dir and one worker, or declare a mooncake-master service."
+                    "run_dir and one worker, or declare a mooncake-master service. (The workers of one role can "
+                    "share a run_dir with {host} in it, plus {gpus} when workers share a node, on a TRT-LLM build "
+                    "that expands them.)"
                 )
             run_dirs[run_dir] = mode
 
