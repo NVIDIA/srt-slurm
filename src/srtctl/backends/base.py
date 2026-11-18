@@ -6,10 +6,10 @@ Base classes and shared behavior for backend configurations.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeAlias
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, Optional, TypeAlias
 
 from marshmallow import ValidationError, fields
 
@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 
 
 WorkerMode: TypeAlias = Literal["prefill", "decode", "agg"]
+# numa_memory_bind values that configs/numa_cpu_bind.sh applies (NUMA_WRAPPER_MEMORY_POLICIES).
+NumaMemoryPolicy: TypeAlias = Literal["local", "preferred"]
 
 
 class BackendType(str, Enum):
@@ -103,6 +105,12 @@ class RoleSettings(ABC):  # noqa: B024 - its members are declared for the type c
         @property
         def mooncake_store_config(self) -> Mapping[str, Any]: ...
 
+        @property
+        def numa_cpu_bind(self) -> bool | None: ...
+
+        @property
+        def numa_memory_bind(self) -> NumaMemoryPolicy | None: ...
+
 
 class BoundRolesField(fields.Field):
     """Marshmallow field for an engine's ``roles``: bound by SrtConfig, never read from a recipe, never dumped."""
@@ -146,6 +154,42 @@ def role_kv_events(roles: Mapping[str, RoleSettings], mode: str, defaults: Mappi
     if kv_events is True:
         return dict(defaults)
     return {**defaults, **kv_events}
+
+
+class NumaWrapperPolicy(NamedTuple):
+    """How configs/numa_cpu_bind.sh applies one numa_memory_bind value.
+
+    Attributes:
+        flag: Wrapper flag that selects the memory policy.
+        description: Policy description in dry-run output.
+    """
+
+    flag: str
+    description: str
+
+
+# numa_memory_bind values whose memory policy configs/numa_cpu_bind.sh applies.
+NUMA_WRAPPER_MEMORY_POLICIES: dict[NumaMemoryPolicy, NumaWrapperPolicy] = {
+    "local": NumaWrapperPolicy("--bind-memory", "strict GPU-local memory binding (numactl --membind=<node>)"),
+    "preferred": NumaWrapperPolicy("--prefer-memory", "preferred GPU-local memory (numactl --preferred=<node>)"),
+}
+
+# Container path of the wrapper (the repository's configs/ is mounted at /configs).
+NUMA_CPU_BIND_SCRIPT = "/configs/numa_cpu_bind.sh"
+
+
+def numa_cpu_bind_command(
+    cmd: Sequence[str], policy: NumaWrapperPolicy | None, gpus: Iterable[int] | None = None
+) -> list[str]:
+    """``cmd`` under configs/numa_cpu_bind.sh, which numactl-binds it to its GPUs' NUMA node(s) at launch.
+
+    ``gpus`` are the task's physical node-local GPUs; the wrapper binds to the union of
+    their NUMA nodes. Without them it resolves one GPU per task from
+    ``CUDA_VISIBLE_DEVICES`` and ``SLURM_LOCALID`` (an MPI launch with one rank per GPU).
+    """
+    gpu_args = ["--gpus", ",".join(str(gpu) for gpu in sorted(gpus))] if gpus is not None else []
+    memory_args = [policy.flag] if policy is not None else []
+    return ["bash", NUMA_CPU_BIND_SCRIPT, *gpu_args, *memory_args, *cmd]
 
 
 class Backend(ABC):

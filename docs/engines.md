@@ -80,7 +80,7 @@ Valid types are `atom`, `sglang`, `tilert`, `trtllm`, `vllm`, and `mocker`. Ever
 | Engine | Engine-wide knobs |
 | --- | --- |
 | `sglang-router` | none beyond `type` |
-| `vllm` | `connector` (default `nixl`), `dp_launch_mode`, `vllm_serve_binary`, `set_visible_devices`, `allow_prefill_decode_colocation`, `allow_prefill_decode_colocation_across_nodes` |
+| `vllm` | `connector` (default `nixl`), `dp_launch_mode`, `vllm_serve_binary`, `set_visible_devices`, `allow_prefill_decode_colocation`, `allow_prefill_decode_colocation_across_nodes`, `numa_cpu_bind`, `numa_memory_bind` |
 | `trtllm` | `served_model_name`, `publish_metrics`, `publish_events_and_metrics`, `sequential_node_start`, `numa_memory_bind`, `numa_cpu_bind` |
 | `mocker` | the simulation parameters: `engine_type`, `speedup_ratio`, `decode_speedup_ratio`, `num_gpu_blocks_override`, `max_num_seqs`, `max_num_batched_tokens`, `block_size`, `data_parallel_size`, ... |
 
@@ -157,6 +157,53 @@ only to the worker launched inside it.
 
 See the [local-binding example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/trtllm/trtllm-serve-agg-numa-local.yaml)
 and [preferred-memory example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/trtllm/trtllm-serve-agg-numa-preferred.yaml).
+
+### vLLM CPU and memory placement
+
+vLLM takes the same `numa_cpu_bind` and `numa_memory_bind` keys as TRT-LLM, on the
+engine or per role:
+
+```yaml
+engine:
+  type: vllm
+roles:
+  prefill:
+    workers: 4
+    gpus: 2                 # two workers per socket of an 8-GPU node
+    numa_cpu_bind: true
+    numa_memory_bind: local
+```
+
+With `numa_cpu_bind: true`, each worker starts under the same wrapper
+(`configs/numa_cpu_bind.sh`), which srtctl hands that worker's own physical GPUs
+(`--gpus 2,3`): the GPUs srtctl assigned it on its node, following
+[`gpu_indices`](topology.md#roles) when set, whether the engine gets them as a
+`CUDA_VISIBLE_DEVICES` mask or as `--device-ids`. On the node, the wrapper looks up
+the NUMA node of each of those GPUs and runs the worker under
+`numactl --cpunodebind=<nodes>`, so the whole process tree (API server, EngineCore,
+GPU workers and their threads) runs on CPUs local to its GPUs. Workers packed on one
+node each bind to their own socket from one role config. A worker whose GPUs on a
+node span sockets, such as a TP8 worker over two four-GPU nodes, binds to all of
+their NUMA nodes (`--cpunodebind=0,1`).
+
+`numa_memory_bind: local` adds `--membind=<nodes>`, and `preferred` adds
+`--preferred=<node>` for a worker whose GPUs share one NUMA node; when they span
+several, `preferred` adds no memory flag, since the kernel's default local
+allocation already prefers the node of the CPU a thread runs on. Without
+`numa_memory_bind` the memory policy is unchanged. The failure rules match TRT-LLM's:
+an unknown GPU NUMA node runs the worker unbound, or stops it when a memory policy is
+set. The container must provide `numactl` and `nvidia-smi`.
+
+`roles.<role>.numa_cpu_bind` and `roles.<role>.numa_memory_bind` override the engine
+for one role (they are vLLM only); unset, a role follows the engine. A bound role
+cannot also set vLLM's own `numa-bind`, `numa-bind-nodes` or `numa-bind-cpus`:
+vLLM indexes those lists by visible GPU and rebinds the EngineCore and GPU worker
+processes it spawns, and its automatic detection refuses a CPU mask that is already
+restricted, so `numa-bind: true` would fail at startup. Loading the recipe rejects
+the combination. A role that srtctl does not bind keeps vLLM's binding. In sidecar
+mode only the engine is bound, not the Dynamo sidecar.
+
+See the [vLLM example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/dynamo-disagg-numa.yaml).
 
 ### vLLM DP launch mode
 

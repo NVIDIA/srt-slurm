@@ -1,0 +1,75 @@
+# vLLM disaggregated prefill/decode behind the Dynamo frontend, with each prefill
+# worker bound to the NUMA node of its own GPUs.
+#
+# Four TP2 prefill workers pack one 8-GPU H100 node (GPUs 0-1, 2-3, 4-5, 6-7), two
+# per socket. `roles.prefill.numa_cpu_bind: true` starts each of them under
+# configs/numa_cpu_bind.sh with that worker's own GPUs: the wrapper looks up their
+# NUMA node on the node at launch and runs the worker under
+# `numactl --cpunodebind=<node>`, and `numa_memory_bind: local` adds
+# `--membind=<node>`. One shared role config so puts the first two workers on one
+# socket and the last two on the other. The decode worker sets nothing per role and
+# follows the engine, which leaves it unbound. Requires numactl and nvidia-smi in
+# the container. See docs/engines.md#vllm-cpu-and-memory-placement.
+#
+# Aliases (`qwen3-0.6b`, `vllm`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-vllm-dynamo-disagg-numa"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "vllm"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+dynamo:
+  source:
+    pypi: "1.4.2"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: "kv"
+
+engine:
+  type: vllm
+  connector: nixl
+roles:
+  prefill:
+    nodes: 1
+    workers: 4
+    gpus: 2
+    numa_cpu_bind: true
+    numa_memory_bind: local
+    env:
+      DYN_HEALTH_CHECK_ENABLED: "false"
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 2
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+  decode:
+    nodes: 1
+    workers: 1
+    gpus: 2
+    env:
+      DYN_HEALTH_CHECK_ENABLED: "false"
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 2
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

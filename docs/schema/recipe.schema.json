@@ -2640,6 +2640,33 @@
           "description": "TRT-LLM and vLLM: Mooncake store config keys for this role's workers (`global_segment_size`, `local_buffer_size`, TRT-LLM's `role`, ...), layered over the `mooncake-master` service's `options.store_config`, so prefill and decode can differ. Pool-wide keys stay there.",
           "default": {}
         },
+        "numa_cpu_bind": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "vLLM only: bind this role's workers to the NUMA node(s) of their own GPUs (`true`) or leave them unbound (`false`), overriding `engine.numa_cpu_bind`. Unset follows the engine.",
+          "default": null
+        },
+        "numa_memory_bind": {
+          "anyOf": [
+            {
+              "enum": [
+                "local",
+                "preferred"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "vLLM only: the memory policy for this role's bound workers (`local` or `preferred`), overriding `engine.numa_memory_bind`. Unset follows the engine.",
+          "default": null
+        },
         "sidecar": {
           "anyOf": [
             {
@@ -3769,6 +3796,26 @@
           "type": "string",
           "description": "Executable used by direct aggregate frontend.type=vllm jobs. This can be set to vllm-rs (or its absolute path) to use the Rust OpenAI frontend.",
           "default": "vllm"
+        },
+        "numa_cpu_bind": {
+          "type": "boolean",
+          "description": "Start each worker under `numactl --cpunodebind=<nodes>`, with the NUMA nodes of that worker's own GPUs on its node, so the whole process tree (API server, EngineCore, GPU workers and their threads) runs on CPUs local to its GPUs. configs/numa_cpu_bind.sh resolves the nodes on the node at launch from the physical GPUs srtctl assigned the worker (gpu_indices), so workers packed on one node each bind to their own socket; a worker whose GPUs span sockets binds to all of their nodes. Requires numactl and nvidia-smi in the container. roles.<role>.numa_cpu_bind overrides it for one role. A bound role cannot also set vLLM's numa-bind, numa-bind-nodes or numa-bind-cpus args.",
+          "default": false
+        },
+        "numa_memory_bind": {
+          "anyOf": [
+            {
+              "enum": [
+                "local",
+                "preferred"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Memory policy applied with numa_cpu_bind. \"local\" binds memory strictly to the worker's GPU NUMA node(s) (numactl --membind); \"preferred\" prefers the GPU's node (numactl --preferred=<node>) and falls back to other nodes when it is full. None leaves the memory policy unchanged. Requires numa_cpu_bind; roles.<role>.numa_memory_bind overrides it for one role.",
+          "default": null
         }
       },
       "description": "vLLM backend configuration and launch implementation."

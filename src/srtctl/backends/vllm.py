@@ -22,18 +22,24 @@ from typing import (
     Any,
     ClassVar,
     Literal,
+    cast,
 )
 
 from marshmallow import Schema, ValidationError
 from marshmallow_dataclass import dataclass
 
 from srtctl.backends.base import (
+    NUMA_WRAPPER_MEMORY_POLICIES,
     Backend,
     BoundRolesField,
+    NumaMemoryPolicy,
+    NumaWrapperPolicy,
     ProcessGroup,
     RoleSettings,
     WorkerMode,
+    numa_cpu_bind_command,
     role_args,
+    role_for_mode,
     role_kv_events,
     role_mooncake_store_config,
 )
@@ -87,6 +93,11 @@ _VLLM_ORCHESTRATION_FLAGS = frozenset(
 # ranks host engine workers only, and vLLM rejects a positive --api-server-count
 # there instead of ignoring it.
 _VLLM_API_SERVER_ONLY_FLAGS = frozenset({"api-server-count"})
+
+# vLLM's own NUMA binding. Its lists are indexed by visible GPU, and it rebinds the
+# EngineCore and GPU worker subprocesses it spawns, so a role that srtctl binds with
+# numa_cpu_bind cannot also set them (vllm/utils/numa_utils.py).
+_VLLM_NUMA_BIND_FLAGS = frozenset({"numa-bind", "numa-bind-nodes", "numa-bind-cpus"})
 
 
 def normalize_vllm_config_key(key: str) -> str:
@@ -416,6 +427,24 @@ class VLLMBackend(Backend):
     # set to vllm-rs (or its absolute path) to use the Rust OpenAI frontend.
     vllm_serve_binary: str = "vllm"
 
+    # Start each worker under `numactl --cpunodebind=<nodes>`, with the NUMA nodes of
+    # that worker's own GPUs on its node, so the whole process tree
+    # (API server, EngineCore, GPU workers and their threads) runs on CPUs local to
+    # its GPUs. configs/numa_cpu_bind.sh resolves the nodes on the node at launch from
+    # the physical GPUs srtctl assigned the worker (gpu_indices), so workers packed on
+    # one node each bind to their own socket; a worker whose GPUs span sockets binds
+    # to all of their nodes. Requires numactl and nvidia-smi in the container.
+    # roles.<role>.numa_cpu_bind overrides it for one role. A bound role cannot also
+    # set vLLM's numa-bind, numa-bind-nodes or numa-bind-cpus args.
+    numa_cpu_bind: bool = False
+
+    # Memory policy applied with numa_cpu_bind. "local" binds memory strictly to the
+    # worker's GPU NUMA node(s) (numactl --membind); "preferred" prefers the GPU's node
+    # (numactl --preferred=<node>) and falls back to other nodes when it is full.
+    # None leaves the memory policy unchanged. Requires numa_cpu_bind;
+    # roles.<role>.numa_memory_bind overrides it for one role.
+    numa_memory_bind: NumaMemoryPolicy | None = None
+
     Schema: ClassVar[builtins.type[Schema]] = Schema
     # record_function_or_nullcontext scopes ("schedule: *", "gpu_model_runner: *") live in
     # the EngineCore and Worker processes. vllm serve forks them by default and nsys does not
@@ -451,7 +480,8 @@ class VLLMBackend(Backend):
         return dp_mode_configs
 
     def __post_init__(self) -> None:
-        """Validate flags whose behavior is fixed by the per-node launch topology."""
+        """Validate the NUMA binding, and flags whose behavior is fixed by the per-node launch topology."""
+        self._validate_numa_binding()
         dp_mode_configs = self.find_dp_modes()
 
         # The per_gpu advisory lives in SrtConfig, which can tell whether the
@@ -482,6 +512,72 @@ class VLLMBackend(Backend):
                 "srtslurm derives --data-parallel-hybrid-lb from the topology and ignores the configured value",
                 fields,
             )
+
+    def _validate_numa_binding(self) -> None:
+        """A memory policy needs CPU binding, and a bound role leaves vLLM's own NUMA binding off.
+
+        vLLM's ``numa-bind`` lists are indexed by visible GPU and it rebinds the
+        subprocesses it spawns, overriding the wrapper; with an already restricted CPU
+        mask its automatic detection refuses to run and ``numa-bind: true`` fails at
+        startup. Both are caught here instead of on the cluster.
+        """
+        if self.numa_memory_bind is not None and not self.numa_cpu_bind:
+            raise ValidationError(f"engine.numa_memory_bind: {self.numa_memory_bind} requires numa_cpu_bind: true")
+        for role_name, role in self.roles.items():
+            mode = cast("WorkerMode", role_name)
+            bound = self.numa_cpu_bind_for_mode(mode)
+            if role.numa_memory_bind is not None and not bound:
+                raise ValidationError(
+                    f"roles.{role_name}.numa_memory_bind: {role.numa_memory_bind} requires numa_cpu_bind: true "
+                    "(on the role or the engine)"
+                )
+            if not bound:
+                continue
+            conflicting = sorted(
+                normalize_vllm_config_key(key)
+                for key, value in role.args.items()
+                if normalize_vllm_config_key(key) in _VLLM_NUMA_BIND_FLAGS and value is not None and value is not False
+            )
+            if conflicting:
+                fields = ", ".join(f"roles.{role_name}.args.{key}" for key in conflicting)
+                raise ValidationError(
+                    f"{fields}: srtctl already binds {role_name} workers to their GPUs' NUMA node(s) (numa_cpu_bind), "
+                    "and vLLM's own binding would rebind its subprocesses by visible GPU. Remove them, or set "
+                    f"roles.{role_name}.numa_cpu_bind: false to keep vLLM's binding"
+                )
+
+    def numa_cpu_bind_for_mode(self, mode: WorkerMode) -> bool:
+        """Whether a mode's workers start under configs/numa_cpu_bind.sh.
+
+        ``roles.<role>.numa_cpu_bind``, else ``engine.numa_cpu_bind``.
+        """
+        role = role_for_mode(self.roles, mode)
+        role_value = role.numa_cpu_bind if role is not None else None
+        return self.numa_cpu_bind if role_value is None else role_value
+
+    def numa_wrapper_policy_for_mode(self, mode: WorkerMode) -> NumaWrapperPolicy | None:
+        """The memory policy the wrapper applies to a bound mode's workers; None when it leaves memory alone.
+
+        ``roles.<role>.numa_memory_bind``, else ``engine.numa_memory_bind``.
+        """
+        if not self.numa_cpu_bind_for_mode(mode):
+            return None
+        role = role_for_mode(self.roles, mode)
+        role_value = role.numa_memory_bind if role is not None else None
+        policy = self.numa_memory_bind if role_value is None else role_value
+        return NUMA_WRAPPER_MEMORY_POLICIES[policy] if policy is not None else None
+
+    def _wrap_with_numa_cpu_bind(self, cmd: list[str], process: Process) -> list[str]:
+        """``cmd`` under configs/numa_cpu_bind.sh for the process's own GPUs, when its role is bound.
+
+        The wrapper gets the process's physical GPUs (``Process.gpu_indices``)
+        explicitly: a vLLM process owns all of them in one srun task, and they are
+        known whether srtctl exports a device mask or passes ``--device-ids``.
+        """
+        mode = process.endpoint_mode
+        if not self.numa_cpu_bind_for_mode(mode):
+            return cmd
+        return numa_cpu_bind_command(cmd, self.numa_wrapper_policy_for_mode(mode), gpus=process.gpu_indices)
 
     # =========================================================================
     # Backend Implementation
@@ -1482,7 +1578,7 @@ class VLLMBackend(Backend):
                 kv_events = {**kv_events, "endpoint": f"tcp://{host}:{publisher_port}", "topic": topic}
                 cmd.extend(["--kv-events-config", json.dumps(kv_events)])
             cmd.extend(_config_to_cli_args(config))
-            return cmd
+            return self._wrap_with_numa_cpu_bind(cmd, process)
 
         # Base command - use dynamo.vllm module
         cmd.extend(
@@ -1637,7 +1733,7 @@ class VLLMBackend(Backend):
         # Add all config flags from the role's args
         cmd.extend(_config_to_cli_args(config))
 
-        return cmd
+        return self._wrap_with_numa_cpu_bind(cmd, process)
 
     def _sidecar_multi_node_replica(self, process: Process, endpoint_processes: list[Process]) -> bool:
         """Whether this process belongs to one TP/PP replica spanning the endpoint's nodes."""
@@ -1859,6 +1955,8 @@ class VLLMBackend(Backend):
             command.extend(["--kv-events-config", json.dumps(kv_cfg)])
 
         command.extend(_config_to_cli_args(config))
+        # Only the engine is bound; the sidecar next to it keeps the launch policy.
+        command = self._wrap_with_numa_cpu_bind(command, process)
         if headless:
             return build_sidecar_launch_command(
                 engine=command,
