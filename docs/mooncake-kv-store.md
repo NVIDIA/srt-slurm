@@ -140,12 +140,14 @@ vLLM's `MooncakeStoreConnector` reads its configuration from a JSON file pointed
 engine: vllm
 roles:
   prefill:
+    sidecar: false
     env:                                  # in-process Mooncake C++ knobs, per role
       MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
       MC_STORE_CLIENT_METRIC: "1"
     args:
       kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_load_failure_policy":"fail","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"load_async":true}}]}}'
   decode:
+    sidecar: false
     env:
       MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
       MC_STORE_CLIENT_METRIC: "1"
@@ -312,6 +314,7 @@ services:
 engine: vllm
 roles:
   prefill:
+    sidecar: false
     env:                                 # optional, in-process Mooncake C++ knobs on the vLLM workers
       MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
       MC_STORE_CLIENT_METRIC: "1"        # default 1 (enabled)
@@ -319,6 +322,7 @@ roles:
     args:
       kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
   decode:
+    sidecar: false
     env:
       MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
     args:

@@ -3300,7 +3300,10 @@ class SrtConfig:
                 f"got {self.frontend.type!r}"
             )
         if self.dynamo.sidecar:
-            raise ValidationError("engine.failover cannot be combined with dynamo.sidecar: true")
+            raise ValidationError(
+                "engine.failover cannot run with a Dynamo sidecar, the default for vLLM behind the Dynamo frontend; "
+                "set roles.<role>.sidecar: false"
+            )
         dp_modes = self.backend.find_dp_modes()
         if dp_modes:
             names = ", ".join(mode for mode, _ in dp_modes)
@@ -3328,7 +3331,10 @@ class SrtConfig:
         if not isinstance(self.backend, SGLangBackend | VLLMBackend | TRTLLMBackend):
             raise ValidationError("dynamo.sidecar: true supports sglang, vllm, and trtllm backends only")
         if isinstance(self.backend, VLLMBackend) and self.backend.dp_launch_mode != "per_node":
-            raise ValidationError("vLLM sidecar mode requires engine.dp_launch_mode: per_node; per_gpu is unsupported")
+            raise ValidationError(
+                "vLLM sidecar mode requires engine.dp_launch_mode: per_node; per_gpu is unsupported "
+                "(set roles.<role>.sidecar: false to keep the Python worker)"
+            )
 
     def _warn_dp_launch_mode(self):
         """Warn when a vLLM DP recipe selects the deprecated per-GPU layout.
