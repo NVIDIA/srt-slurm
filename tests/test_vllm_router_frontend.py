@@ -432,6 +432,18 @@ def test_transfer_overrides_can_replace_mooncake_on_both_roles() -> None:
     assert backend.bootstrap_port_env("prefill") is None
 
 
+def test_an_unknown_connector_string_fails_validation_by_name() -> None:
+    """A misspelled shorthand is neither a table row nor JSON, so loading names it instead of a JSON parse error."""
+    with pytest.raises(ValidationError, match="'nixlx' is neither a known connector"):
+        SrtConfig(
+            name="typo",
+            model={"path": "model", "container": "image", "precision": "bf16"},
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
+            roles={mode: RoleConfig(nodes=1, workers=1, gpus=1) for mode in ("prefill", "decode")},
+            engine=VLLMBackend(connector="nixlx"),
+        )
+
+
 @pytest.mark.parametrize("frontend_type", ["dynamo", "smg", "llm-d"])
 def test_mooncake_requires_the_vllm_router(frontend_type: str) -> None:
     with pytest.raises(ValidationError, match="requires frontend.type: vllm-router"):

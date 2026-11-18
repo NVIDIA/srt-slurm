@@ -526,7 +526,13 @@ class VLLMBackend(Backend):
         connector = self._effective_connector_for_mode(mode)
         if not connector or connector.lower() in ("null", "none"):
             return ()
-        payload = json.loads(_connector_to_kv_transfer_config(connector, mode))
+        try:
+            payload = json.loads(_connector_to_kv_transfer_config(connector, mode))
+        except json.JSONDecodeError as e:
+            raise ValidationError(
+                f"{mode} KV connector {connector!r} is neither a known connector "
+                f"({', '.join(sorted(_CONNECTOR_MAP))}) nor a JSON kv-transfer-config"
+            ) from e
         wrapped = (payload.get("kv_connector_extra_config") or {}).get("connectors") or []
         return tuple(
             name for name in (payload.get("kv_connector"), *(inner.get("kv_connector") for inner in wrapped)) if name
