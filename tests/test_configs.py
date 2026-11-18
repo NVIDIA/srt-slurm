@@ -294,16 +294,18 @@ class TestDynamoConfig:
         cmd = config.get_install_commands()
 
         # Cache lookup + flock-protected cold build
-        assert "/configs/dynamo-wheels/abc123" in cmd
-        assert "/configs/dynamo-wheels/abc123/.complete" in cmd
+        assert "/configs/dynamo-wheels/abc123-nvtx" in cmd
+        assert "/configs/dynamo-wheels/abc123-nvtx/.complete" in cmd
         assert "flock -x 201" in cmd
-        assert "/configs/dynamo-wheels/.abc123.lock" in cmd
+        assert "/configs/dynamo-wheels/.abc123-nvtx.lock" in cmd
 
         # Cold-cache build still does git clone + checkout + maturin build
         assert "git clone" in cmd
         assert "git checkout abc123" in cmd
         assert "maturin build" in cmd
         assert "protobuf-compiler" in cmd
+        # Like Dynamo's release wheels, the frontend is built with NVTX ranges when the bindings offer them.
+        assert "maturin build --release $(grep -q '^nvtx *=' Cargo.toml && echo --features nvtx)" in cmd
 
         # maturin must be force-reinstalled — a plain install no-ops on images
         # shipping the module without a console script (see schema.py).
@@ -312,14 +314,14 @@ class TestDynamoConfig:
         # Cache populate: wheel + tarball + sentinel
         assert "ai_dynamo_runtime*.whl" in cmd
         assert "dynamo-src.tar.gz" in cmd
-        assert "touch /configs/dynamo-wheels/abc123/.complete" in cmd
+        assert "touch /configs/dynamo-wheels/abc123-nvtx/.complete" in cmd
 
         # Final install from cache
         assert (
-            "pip install --break-system-packages --force-reinstall /configs/dynamo-wheels/abc123/ai_dynamo_runtime-*.whl"
+            "pip install --break-system-packages --force-reinstall /configs/dynamo-wheels/abc123-nvtx/ai_dynamo_runtime-*.whl"
             in cmd
         )
-        assert "tar -xzf /configs/dynamo-wheels/abc123/dynamo-src.tar.gz" in cmd
+        assert "tar -xzf /configs/dynamo-wheels/abc123-nvtx/dynamo-src.tar.gz" in cmd
         assert "pip install --break-system-packages -e /tmp/dynamo-src/dynamo" in cmd
 
     def test_hash_with_cargo_patches(self):
@@ -341,8 +343,8 @@ class TestDynamoConfig:
         cmd = config.get_install_commands()
 
         # Cache is namespaced so overridden != plain build of the same hash.
-        assert "/configs/dynamo-wheels/abc123-patch-" in cmd
-        assert "/configs/dynamo-wheels/abc123/.complete" not in cmd
+        assert "/configs/dynamo-wheels/abc123-nvtx-patch-" in cmd
+        assert "/configs/dynamo-wheels/abc123-nvtx/.complete" not in cmd
 
         # The crate declaration is replaced tree-wide via sed after checkout, before build.
         assert "find . -name Cargo.toml -exec sed -i -E" in cmd
@@ -382,6 +384,7 @@ class TestDynamoConfig:
         sglang_branch, portable_branch = config._build_install_commands().split("else", 1)
         assert "--force-reinstall --quiet maturin" in sglang_branch
         assert "--force-reinstall --quiet maturin" in portable_branch
+        assert "echo --features nvtx" in sglang_branch and "echo --features nvtx" in portable_branch
 
     def test_hash_and_top_of_tree_not_allowed(self):
         """Cannot specify both hash and top_of_tree."""
