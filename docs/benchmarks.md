@@ -280,6 +280,26 @@ Dataset characteristics (conversation trace):
 - Avg input: 12,035 tokens, Avg output: 343 tokens
 - 36.64% cache efficiency potential
 
+### trace-replay
+
+Replays your own `mooncake_trace` JSONL with aiperf at each concurrency.
+
+```yaml
+benchmark:
+  type: "trace-replay"
+  trace_file: "/data/traces/my-trace.jsonl"  # container path (mount it via extra_mount)
+  concurrencies: "8x32"                       # or [8, 32]
+```
+
+Each concurrency replays the whole trace (`--request-count` set to the trace's line
+count); a `request-count`, `benchmark-duration`, `num-sessions` or `fixed-schedule` in
+`aiperf_args` replaces that default. Every aiperf-driven type installs a pinned aiperf
+(`AIPerfBenchmarkRunner.default_aiperf_package`) unless `aiperf_package` names another.
+A trace with `hash_ids` makes aiperf decode prompts in worker processes that load the
+tokenizer offline, which fails for a local model directory such as `/model`; a trace
+with literal `text_input` prompts avoids that path. Each concurrency writes its own
+`artifacts/<run>/profile_export.jsonl`; build DSight reports with `--each-client`.
+
 ### agentperf
 
 Trajectory-replay benchmark using the standalone [agentperf-client](https://github.com/ArtificialAnalysis-External/agentperf-client), a deterministic agentic load generator with a Rust streaming core. The client checkout is mounted into the container (pin the commit for comparable runs); the workload definition (trajectory dataset, user-assignments file, `settling_time_seconds`, `phase_timeout_seconds`, stop criteria) lives in the client's own config YAML. srtctl injects the endpoint, model and concurrency at run time via the client's `--base-url` / `--model` / `--concurrencies` flags. Note the client validates the workload YAML *before* merging CLI overrides, so the YAML must still carry syntactically valid placeholder `base_url`, `model` and `concurrencies` values, and `phase_timeout_seconds` must satisfy the client's ramp-up bound for the *injected* concurrency (`phase_timeout_seconds >= (concurrency - 1) / user_spawn_rate + settling_time_seconds + min_measurement_seconds`).

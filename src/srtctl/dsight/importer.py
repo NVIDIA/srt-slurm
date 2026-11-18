@@ -43,6 +43,22 @@ def metric_value(row: dict[str, Any], name: str) -> float | None:
     return row.get("metrics", {}).get(name, {}).get("value")
 
 
+CLIENT_EXPORT_PATTERNS = (
+    "profile_export.jsonl",
+    "requests.jsonl",
+    "agentperf/requests.jsonl",
+    "agentperf/*/requests.jsonl",
+    "agentic/*/profile_export.jsonl",
+    "agentic/*/aiperf_artifacts/profile_export.jsonl",
+    "artifacts/*/profile_export.jsonl",
+)
+
+
+def client_exports(logs: Path) -> list[Path]:
+    """Every AIPerf or AgentPerf client export DSight would consider under a log directory."""
+    return sorted({p.resolve() for pattern in CLIENT_EXPORT_PATTERNS for p in logs.glob(pattern)})
+
+
 class Importer:
     def __init__(
         self,
@@ -133,26 +149,16 @@ class Importer:
         self.time_basis = "available source timestamps; no client measurement window"
 
     def clients(self) -> None:
-        patterns = (
-            "profile_export.jsonl",
-            "requests.jsonl",
-            "agentperf/requests.jsonl",
-            "agentperf/*/requests.jsonl",
-            "agentic/*/profile_export.jsonl",
-            "agentic/*/aiperf_artifacts/profile_export.jsonl",
-            "artifacts/*/profile_export.jsonl",
-        )
-        files = (
-            [self.client_path]
-            if self.client_path
-            else sorted({p.resolve() for pat in patterns for p in self.logs.glob(pat)})
-        )
+        files = [self.client_path] if self.client_path else client_exports(self.logs)
         if not files:
             self.source_window()
             return
         if len(files) != 1:
+            root = self.logs.resolve()
+            listed = ", ".join(p.relative_to(root).as_posix() if p.is_relative_to(root) else str(p) for p in files)
             raise ValueError(
-                f"Expected one client export (AIPerf or AgentPerf), found {len(files)}; select it with --client"
+                f"Expected one client export (AIPerf or AgentPerf), found {len(files)} ({listed}); select one with "
+                "--client, or build one report per export with --each-client"
             )
         rows = []
         native_adapter = None
