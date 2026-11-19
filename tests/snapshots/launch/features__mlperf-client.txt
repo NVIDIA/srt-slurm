@@ -93,7 +93,73 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name deepseek-ai/deepseek-r1 --extra-engine-args /logs/trtllm_config_agg.yaml --request-plane nats --publish-metrics
+    bash -lc 'set -euo pipefail
+    ENGINE_PID=
+    SIDECAR_PID=
+    request_stop() {
+        local pid="${1:-}"
+        if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+            kill "${pid}" 2>/dev/null || true
+        fi
+    }
+    reap_with_timeout() {
+        local pid="${1:-}"
+        if [[ -z "${pid}" ]]; then return; fi
+        for _ in $(seq 1 10); do
+            if ! kill -0 "${pid}" 2>/dev/null; then break; fi
+            sleep 1
+        done
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill -KILL "${pid}" 2>/dev/null || true
+        fi
+        wait "${pid}" 2>/dev/null || true
+    }
+    cleanup() {
+        status=$?
+        trap - EXIT INT TERM
+        request_stop "${SIDECAR_PID}"
+        request_stop "${ENGINE_PID}"
+        reap_with_timeout "${SIDECAR_PID}"
+        reap_with_timeout "${ENGINE_PID}"
+        exit "${status}"
+    }
+    trap cleanup EXIT INT TERM
+    trtllm-llmapi-launch python3 -m tensorrt_llm.commands.serve /model --grpc --grpc-protocol openengine --host 127.0.0.1 --port 19000 --extra_llm_api_options /logs/trtllm_config_agg.yaml --served_model_name deepseek-ai/deepseek-r1 --tensor_parallel_size 4 --moe_expert_parallel_size 4 --pipeline_parallel_size 1 &
+    ENGINE_PID=$!
+    if [[ "${SLURM_PROCID:-0}" != "0" ]]; then
+        set +e
+        wait "${ENGINE_PID}"
+        status=$?
+        set -e
+        if [[ "${status}" == 0 ]]; then status=1; fi
+        exit "${status}"
+    fi
+    port_ready=0
+    for _ in $(seq 1 3600); do
+        if ! kill -0 "${ENGINE_PID}" 2>/dev/null; then
+            echo "TensorRT-LLM exited before native gRPC became ready" >&2
+            exit 1
+        fi
+        if grep -qE '"'"'^ *[0-9]+: [0-9A-F]+:4A38 [0-9A-F]+:0000 0A '"'"' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+            port_ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [[ "${port_ready}" != 1 ]]; then
+        echo "Timed out waiting for TensorRT-LLM native gRPC on port 19000" >&2
+        exit 1
+    fi
+    python3 -m dynamo.trtllm.sidecar --grpc-endpoint 127.0.0.1:19000 --model-path /model --context-length 24000 &
+    SIDECAR_PID=$!
+    set +e
+    wait -n "${ENGINE_PID}" "${SIDECAR_PID}"
+    status=$?
+    set -e
+    if [[ "${status}" == 0 ]]; then status=1; fi
+    exit "${status}"
+    
+    '
 
 ## frontend_0
 nodelist: node-01
@@ -261,7 +327,7 @@ env_to_set:
     MLPERF_MODE: both
     MODEL_DIR: /model
     SRTCTL_FRONTEND_TYPE: dynamo
-    SRT_AGG_ENDPOINTS: 127.0.0.1:7500
+    SRT_AGG_ENDPOINTS: 127.0.0.1:6100
     SRT_AGG_IPS: 127.0.0.1
     SRT_FRONTEND_HOST: 127.0.0.1
     SRT_FRONTEND_PORT: 8000

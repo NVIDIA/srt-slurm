@@ -6,6 +6,9 @@
 # memory and CPUs are local to its GPU. srtctl exports CUDA_VISIBLE_DEVICES=0,4 to
 # the worker and the role runs one worker per node.
 #
+# The setup script and the ai-dynamo pin let the sidecar run on Dynamo's 1.6.x TRT-LLM image;
+# see docs/sidecars.md.
+#
 # Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
 
 schema: 2
@@ -22,8 +25,12 @@ model:
 resources:
   gpu_type: "h100"
   gpus_per_node: 8
+
+setup_script: "install-trtllm-openengine.sh"
+
 dynamo:
-  install: false
+  source:
+    pypi: "1.7.0.dev20261116"
 
 frontend:
   type: dynamo
@@ -39,6 +46,7 @@ roles:
     nodes: 1
     workers: 1
     gpus: 2
+    sidecar: true
     gpu_indices: [0, 4]
     env:
       PYTHONUNBUFFERED: "1"

@@ -16,7 +16,9 @@ name: "gb300-fp4-mlperf-dsr1-agg"
 model:
   # REPLACE: DeepSeek-R1 NVFP4 checkpoint.
   path: "/path/to/models/deepseek-r1-nvfp4"
-  # REPLACE: serving image with Dynamo + TensorRT-LLM.
+  # REPLACE: serving image with Dynamo + TensorRT-LLM. The workers run sidecars, so it needs a Dynamo
+  # build with ai-dynamo/dynamo#17556 and, before TensorRT-LLM 1.4.0rc0, the OpenEngine bindings
+  # (`setup_script: "install-trtllm-openengine.sh"`, as in examples/trtllm/dynamo-agg.yaml).
   container: "/path/to/images/dynamo-trtllm.sqsh"
   precision: "fp4"
 
@@ -32,6 +34,7 @@ roles:
     nodes: 1
     workers: 1
     gpus: 4
+    sidecar: true
     env:
       TLLM_LOG_LEVEL: "INFO"
       TRTLLM_ENABLE_PDL: "1"
