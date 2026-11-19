@@ -221,8 +221,9 @@ class WorkerStageMixin:
         return {self.runtime.visible_devices_env: process.cuda_visible_devices}
 
     def _worker_environment_defaults(self, process: "Process") -> dict[str, str]:
-        env = {"HEAD_NODE_IP": self.runtime.head_node_ip}
-        if get_frontend(self.config.frontend.type).worker_launch == "dynamo":
+        frontend = get_frontend(self.config.frontend.type)
+        env = {"HEAD_NODE_IP": self.runtime.head_node_ip, **frontend.worker_environment(process, self.runtime)}
+        if frontend.worker_launch == "dynamo":
             env.update(discovery_env(self.config, self.runtime))
             env.update(lifecycle_otel_env(self.config.services, self.runtime.head_node_ip, process.endpoint_mode))
             env.update(

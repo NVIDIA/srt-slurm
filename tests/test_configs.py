@@ -73,6 +73,7 @@ class TestConfigLoading:
             "examples/vllm/vllm-router-agg.yaml",
             "examples/vllm/vllm-router-disagg.yaml",
             "examples/vllm/vllm-router-moriio-disagg.yaml",
+            "examples/vllm/vllm-router-mooncake-disagg.yaml",
             "examples/vllm/vllm-direct-agg.yaml",
             "examples/trtllm/dynamo-agg.yaml",
             "examples/trtllm/dynamo-disagg.yaml",

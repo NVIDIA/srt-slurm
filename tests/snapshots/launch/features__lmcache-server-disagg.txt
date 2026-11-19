@@ -42,7 +42,7 @@ use_bash_wrapper: True
 bash_preamble: |
     ulimit -l unlimited
 command: |
-    lmcache server --host 0.0.0.0 --port 8750 --http-host 0.0.0.0 --http-port 8751 --l1-size-gb 16 --chunk-size 256 --max-workers 1
+    lmcache server --host 0.0.0.0 --port 8750 --http-host 0.0.0.0 --http-port 8751 --l1-size-gb 16 --chunk-size 256 --max-workers 1 --eviction-policy LRU
 
 ## prefill_0_node-01
 nodelist: node-01
@@ -54,6 +54,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
+    CUDA_VISIBLE_DEVICES: 0
     DYN_HEALTH_CHECK_ENABLED: false
     DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
@@ -70,16 +71,75 @@ env_to_set:
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
     VLLM_NIXL_SIDE_CHANNEL_PORT: 5400
+    VLLM_PLUGINS:
     VLLM_PORT: 20000
 srun_export_env:
     ENROOT_REMAP_ROOT: yes
 bash_preamble: |
-    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing dynamo 1.4.2...' && pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime==1.4.2 ai-dynamo==1.4.2 && echo 'Dynamo 1.4.2 installed' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock" && ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing dynamo 1.6.2...' && pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime==1.6.2 ai-dynamo==1.6.2 && echo 'Dynamo 1.6.2 installed' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock" && ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python3 -m dynamo.vllm --model /model --served-model-name Qwen/Qwen3-0.6B --disaggregation-mode prefill --kv-transfer-config '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both"},{"kv_connector":"LMCacheMPConnector","kv_connector_module_path":"lmcache.integration.vllm.lmcache_mp_connector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":8750}}]}}' --device-ids 0 --request-plane tcp --dump-config-to /logs/node-01_config.json --gpu-memory-utilization 0.5 --max-model-len 4096 --served-model-name Qwen/Qwen3-0.6B --tensor-parallel-size 1
+    bash -lc 'set -euo pipefail
+    ENGINE_PID=
+    SIDECAR_PID=
+    request_stop() {
+        local pid="${1:-}"
+        if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+            kill "${pid}" 2>/dev/null || true
+        fi
+    }
+    reap_with_timeout() {
+        local pid="${1:-}"
+        if [[ -z "${pid}" ]]; then return; fi
+        for _ in $(seq 1 10); do
+            if ! kill -0 "${pid}" 2>/dev/null; then break; fi
+            sleep 1
+        done
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill -KILL "${pid}" 2>/dev/null || true
+        fi
+        wait "${pid}" 2>/dev/null || true
+    }
+    cleanup() {
+        status=$?
+        trap - EXIT INT TERM
+        request_stop "${SIDECAR_PID}"
+        request_stop "${ENGINE_PID}"
+        reap_with_timeout "${SIDECAR_PID}"
+        reap_with_timeout "${ENGINE_PID}"
+        exit "${status}"
+    }
+    trap cleanup EXIT INT TERM
+    vllm-rs serve /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --grpc-port 19000 --max-model-len 4096 --kv-transfer-config '"'"'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both"},{"kv_connector":"LMCacheMPConnector","kv_connector_module_path":"lmcache.integration.vllm.lmcache_mp_connector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":8750}}]}}'"'"' --gpu-memory-utilization 0.5 --tensor-parallel-size 1 &
+    ENGINE_PID=$!
+    port_ready=0
+    for _ in $(seq 1 3600); do
+        if ! kill -0 "${ENGINE_PID}" 2>/dev/null; then
+            echo "vLLM exited before native gRPC became ready" >&2
+            exit 1
+        fi
+        if grep -qE '"'"'^ *[0-9]+: [0-9A-F]+:4A38 [0-9A-F]+:0000 0A '"'"' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+            port_ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [[ "${port_ready}" != 1 ]]; then
+        echo "Timed out waiting for vLLM native gRPC on port 19000" >&2
+        exit 1
+    fi
+    python3 -m dynamo.vllm.sidecar --grpc-endpoint 127.0.0.1:19000 --disaggregation-mode prefill --component prefill &
+    SIDECAR_PID=$!
+    set +e
+    wait -n "${ENGINE_PID}" "${SIDECAR_PID}"
+    status=$?
+    set -e
+    if [[ "${status}" == 0 ]]; then status=1; fi
+    exit "${status}"
+    
+    '
 
 ## decode_0_node-02
 nodelist: node-02
@@ -91,6 +151,7 @@ container_mounts:
     <model>: /model
     <output>/logs: /logs
 env_to_set:
+    CUDA_VISIBLE_DEVICES: 0
     DYN_HEALTH_CHECK_ENABLED: false
     DYN_LIFECYCLE_TRACE_ENABLED: 1
     DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
@@ -107,16 +168,75 @@ env_to_set:
     PYTHONUNBUFFERED: 1
     VLLM_NIXL_SIDE_CHANNEL_HOST: 127.0.0.1
     VLLM_NIXL_SIDE_CHANNEL_PORT: 5401
+    VLLM_PLUGINS:
     VLLM_PORT: 20050
 srun_export_env:
     ENROOT_REMAP_ROOT: yes
 bash_preamble: |
-    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing dynamo 1.4.2...' && pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime==1.4.2 ai-dynamo==1.4.2 && echo 'Dynamo 1.4.2 installed' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock" && ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing dynamo 1.6.2...' && pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime==1.6.2 ai-dynamo==1.6.2 && echo 'Dynamo 1.6.2 installed' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock" && ( python3 <(cat <<'__FINGERPRINT_EOF__'
     <fingerprint script>
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python3 -m dynamo.vllm --model /model --served-model-name Qwen/Qwen3-0.6B --disaggregation-mode decode --kv-transfer-config '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}' --device-ids 0 --request-plane tcp --dump-config-to /logs/node-02_config.json --gpu-memory-utilization 0.5 --max-model-len 4096 --served-model-name Qwen/Qwen3-0.6B --tensor-parallel-size 1
+    bash -lc 'set -euo pipefail
+    ENGINE_PID=
+    SIDECAR_PID=
+    request_stop() {
+        local pid="${1:-}"
+        if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+            kill "${pid}" 2>/dev/null || true
+        fi
+    }
+    reap_with_timeout() {
+        local pid="${1:-}"
+        if [[ -z "${pid}" ]]; then return; fi
+        for _ in $(seq 1 10); do
+            if ! kill -0 "${pid}" 2>/dev/null; then break; fi
+            sleep 1
+        done
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill -KILL "${pid}" 2>/dev/null || true
+        fi
+        wait "${pid}" 2>/dev/null || true
+    }
+    cleanup() {
+        status=$?
+        trap - EXIT INT TERM
+        request_stop "${SIDECAR_PID}"
+        request_stop "${ENGINE_PID}"
+        reap_with_timeout "${SIDECAR_PID}"
+        reap_with_timeout "${ENGINE_PID}"
+        exit "${status}"
+    }
+    trap cleanup EXIT INT TERM
+    vllm-rs serve /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --grpc-port 19001 --max-model-len 4096 --kv-transfer-config '"'"'{"kv_connector": "NixlConnector", "kv_role": "kv_both"}'"'"' --gpu-memory-utilization 0.5 --tensor-parallel-size 1 &
+    ENGINE_PID=$!
+    port_ready=0
+    for _ in $(seq 1 3600); do
+        if ! kill -0 "${ENGINE_PID}" 2>/dev/null; then
+            echo "vLLM exited before native gRPC became ready" >&2
+            exit 1
+        fi
+        if grep -qE '"'"'^ *[0-9]+: [0-9A-F]+:4A39 [0-9A-F]+:0000 0A '"'"' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+            port_ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [[ "${port_ready}" != 1 ]]; then
+        echo "Timed out waiting for vLLM native gRPC on port 19001" >&2
+        exit 1
+    fi
+    python3 -m dynamo.vllm.sidecar --grpc-endpoint 127.0.0.1:19001 --disaggregation-mode decode &
+    SIDECAR_PID=$!
+    set +e
+    wait -n "${ENGINE_PID}" "${SIDECAR_PID}"
+    status=$?
+    set -e
+    if [[ "${status}" == 0 ]]; then status=1; fi
+    exit "${status}"
+    
+    '
 
 ## frontend_0
 nodelist: node-01
@@ -140,7 +260,7 @@ srun_export_env:
     ENROOT_REMAP_ROOT: yes
 mpi: pmix
 bash_preamble: |
-    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing dynamo 1.4.2...' && pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime==1.4.2 ai-dynamo==1.4.2 && echo 'Dynamo 1.4.2 installed' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock"
+    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing dynamo 1.6.2...' && pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime==1.6.2 ai-dynamo==1.6.2 && echo 'Dynamo 1.6.2 installed' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock"
 command: |
     python3 -m dynamo.frontend --http-port=8000 --router-mode kv
 

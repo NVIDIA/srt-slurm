@@ -2640,7 +2640,8 @@ class FrontendConfig:
     """Frontend/router configuration.
 
     Attributes:
-        type: Frontend type - "dynamo" (default); "sglang-router" (SGLang Model
+        type: Frontend type - "dynamo" (default) and "infera" (Infera router,
+            SGLang workers register in etcd); "sglang-router" (SGLang Model
             Gateway), "vllm-router", "smg" (Shepherd Model Gateway, any backend), "llm-d"
             (llm-d Endpoint Picker behind Envoy, vLLM), "atomesh", and
             "tilert-router" (static routers); "sglang", "vllm", and
@@ -2914,15 +2915,16 @@ class SrtConfig:
         self._validate_mooncake_kv_store()
         self._validate_het_jobs()
         self._validate_colocated_decode()
+        self._validate_vllm_router_connector()
         self._validate_frontend()
         self._validate_dynamo_sidecar()
         self._validate_vllm_failover()
-        self._validate_vllm_discovery_connector()
         self._validate_host_setup()
         self._validate_benchmark_type()
         self._validate_services_only()
         self._validate_services()
         self._warn_dp_launch_mode()
+        self._warn_python_worker()
 
     @cached_property
     def topology(self) -> Topology:
@@ -3261,21 +3263,25 @@ class SrtConfig:
                 "if something outside this recipe set the node state"
             )
 
-    def _validate_vllm_discovery_connector(self) -> None:
-        """A discovery connector (vLLM MoRI-IO) needs the router that runs its registration endpoint.
-
-        Workers learn each other's transfer addresses from the vLLM Router's ZMQ
-        discovery listener, which no other frontend runs. The Router's own rules
-        (both roles on the connector, one router on the head node, a P/D
-        topology) live in ``VLLMRouterFrontend.validate``.
-        """
-        if not isinstance(self.backend, VLLMBackend) or not self.backend.discovers_workers():
+    def _validate_vllm_router_connector(self) -> None:
+        """Discovery and bootstrap connectors need the vLLM Router's transfer metadata."""
+        if not isinstance(self.backend, VLLMBackend):
+            return
+        discovery = self.backend.discovers_workers()
+        bootstrap = any(
+            self.backend.bootstrap_connector(mode) is not None
+            for mode in ("prefill", "decode", "agg")
+            if mode in self.roles
+        )
+        if not discovery and not bootstrap:
             return
         if self.frontend.type != "vllm-router":
-            raise ValidationError(
-                "a discovery connector (engine.connector: moriio) registers workers with the vLLM Router; "
-                f"it requires frontend.type: vllm-router (got {self.frontend.type!r})"
+            reason = (
+                "a discovery connector (engine.connector: moriio) registers workers with the vLLM Router"
+                if discovery
+                else "the Mooncake connector needs the vLLM Router's bootstrap transfer metadata"
             )
+            raise ValidationError(f"{reason}; it requires frontend.type: vllm-router (got {self.frontend.type!r})")
 
     def _validate_vllm_failover(self) -> None:
         """Rules for ``backend.failover`` (vLLM shadow engine recovery).
@@ -3325,6 +3331,21 @@ class SrtConfig:
             raise ValidationError("dynamo.sidecar: true supports sglang, vllm, and trtllm backends only")
         if isinstance(self.backend, VLLMBackend) and self.backend.dp_launch_mode != "per_node":
             raise ValidationError("vLLM sidecar mode requires engine.dp_launch_mode: per_node; per_gpu is unsupported")
+
+    def _warn_python_worker(self) -> None:
+        """Steer vLLM jobs behind the Dynamo frontend to native sidecars.
+
+        Skipped for engine.failover, which needs the Python worker (see _validate_vllm_failover).
+        """
+        if self.dynamo.sidecar or self.frontend.type != "dynamo" or self.backend.failover is not None:
+            return
+        if not isinstance(self.backend, VLLMBackend):
+            return
+        logger.warning(
+            "vLLM workers run the Python dynamo.vllm worker. Sidecar mode is recommended: set `sidecar: true` on "
+            "every role to run the native engine beside a Dynamo sidecar (docs/sidecars.md). Sidecar mode will "
+            "become the default soon. Reach out to Julien Darve with any sidecar issues."
+        )
 
     def _warn_dp_launch_mode(self):
         """Warn when a vLLM DP recipe selects the deprecated per-GPU layout.

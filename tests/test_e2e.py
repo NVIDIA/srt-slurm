@@ -827,12 +827,12 @@ roles:
     nodes: 1
     workers: 1
     args:
-      kv-transfer-config: '{"kv_connector":"MooncakeConnector","kv_role":"kv_both"}'
+      kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
   decode:
     nodes: 1
     workers: 1
     args:
-      kv-transfer-config: '{"kv_connector":"MooncakeConnector","kv_role":"kv_both"}'
+      kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
 """)
         config = SrtConfig.Schema().load(raw)
         assert config.backend.mooncake_kv_store is not None
@@ -927,7 +927,7 @@ roles:
         assert "MooncakeStoreConnector" in config.backend.get_config_for_mode("prefill")["kv-transfer-config"]
 
     def test_vllm_mooncake_disagg_with_kv_transfer_config_passes(self):
-        """vLLM disagg + mooncake_kv_store with MooncakeConnector kv-transfer-config validates clean."""
+        """vLLM disagg + mooncake_kv_store with MooncakeStoreConnector kv-transfer-config validates clean."""
         import yaml
 
         from srtctl.core.schema import SrtConfig
@@ -950,12 +950,12 @@ roles:
     nodes: 1
     workers: 1
     args:
-      kv-transfer-config: '{"kv_connector":"MooncakeConnector","kv_role":"kv_both"}'
+      kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
   decode:
     nodes: 1
     workers: 1
     args:
-      kv-transfer-config: '{"kv_connector":"MooncakeConnector","kv_role":"kv_both"}'
+      kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
 """)
         config = SrtConfig.Schema().load(raw)
         assert config.backend.get_config_for_mode("prefill")["kv-transfer-config"]

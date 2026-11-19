@@ -364,6 +364,23 @@ def test_per_role_kv_events_and_sidecar() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("engine", "frontend", "sidecar", "warns"),
+    [
+        ("vllm", "dynamo", None, True),
+        ("trtllm", "dynamo", None, False),
+        ("vllm", "dynamo", True, False),
+        ("vllm", "vllm", None, False),
+    ],
+)
+def test_python_worker_warns_to_use_a_sidecar(caplog, engine, frontend, sidecar, warns) -> None:
+    role = {"nodes": 1, "workers": 1} if sidecar is None else {"nodes": 1, "workers": 1, "sidecar": sidecar}
+    frontend_config = {"type": frontend, "enable_multiple_frontends": False}
+    with caplog.at_level("WARNING", logger="srtctl.core.schema"):
+        SrtConfig.Schema().load(_minimal(engine=engine, roles={"agg": role}, frontend=frontend_config))
+    assert ("Sidecar mode will become the default soon" in caplog.text) is warns
+
+
 def test_per_role_critical_feeds_the_worker_flag() -> None:
     recipe = _roles_sglang_disagg()
     recipe["roles"]["prefill"]["critical"] = False

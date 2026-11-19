@@ -11,7 +11,8 @@ vLLM remains responsible for the DP/TP/PP engine topology inside each worker.
   cross-node TP/PP rendezvous, device IDs, and headless followers.
 - The frontend adapter starts Router, supplies aggregate or P/D worker URLs,
   adds NIXL bootstrap ports for P/D, and derives Router's node-local DP
-  expansion factor.
+  expansion factor. With the Mooncake connector it starts Router only after
+  every worker is healthy.
 - Readiness first validates Router's `/workers` counts, then requires HTTP 200
   from every exact base `/health` URL advertised to Router. This prevents
   benchmark and eval traffic from racing a partially started DP pool.
@@ -144,6 +145,35 @@ when every logical endpoint has one advertised base URL. Multi-node hybrid-LB
 endpoints remain unexpanded node-local pools because each later pool starts at
 a nonzero global DP rank. Do not set the option manually unless it exactly
 matches the allocated topology.
+
+### Mooncake
+
+`engine.connector: mooncake` runs the P/D pair over vLLM's `MooncakeConnector`. Its prefill returns no `kv_transfer_params`; the Router supplies them instead. It reads each prefill's engine IDs from that prefill's Mooncake bootstrap server and adds the bootstrap address and engine ID to every decode request.
+
+```yaml
+frontend:
+  type: vllm-router
+  enable_multiple_frontends: false
+  args:
+    policy: consistent_hash
+
+engine:
+  type: vllm
+  connector: mooncake
+```
+
+| Piece | srtctl sets | Why |
+| --- | --- | --- |
+| Router command | `--kv-connector mooncake`, and `--prefill URL PORT` for each prefill | Mooncake mode in vllm-project/router (`CliArgs.kv_connector` in `src/main.rs`); without a PORT the Router queries 8998 |
+| `kv_connector` / `kv_role` | `MooncakeConnector`; `kv_producer` on prefill, `kv_consumer` on decode | The connector's role follows the worker's mode |
+| `VLLM_MOONCAKE_BOOTSTRAP_PORT` | a separate allocator-owned bootstrap port, shared by every node of a prefill engine and advertised to the Router | vLLM's TP0/PP0 rank opens the server; follower ranks register at the same leader address and port. Colocated prefill engines get distinct ports. Decode receives the address in request metadata and needs no bootstrap environment variable |
+| Router start | after every advertised worker answers `/health` | The Router queries each bootstrap server once, while it starts, and keeps the answer. It exits after about 4.5 minutes of retries, and an answer from before the prefill's workers registered (in `register_kv_caches`) has no engine IDs, so decode then recomputes every prompt |
+
+Both `prefill` and `decode` must run the connector, and `frontend.args.kv-connector` is either unset or exactly `mooncake` (case-sensitive). A role's own `kv-transfer-config` replaces the preset. The effective config selects the Router mode and bootstrap port, including a raw `MooncakeConnector` config without the shorthand or a `MultiConnector` wrapping Mooncake with `SimpleCPUOffloadConnector`. Replacing Mooncake on only one role is rejected; replacing it on both removes Mooncake routing. The connector's per-worker ZMQ side channel binds a port the kernel picks.
+
+Mooncake requires `frontend.type: vllm-router`, a prefill/decode topology, and enabled health checks (`health_check: null` is rejected). Prefill must use `data-parallel-size: 1`; multiple independent prefill workers and cross-node TP/PP are supported, but prefill DP pools are not yet supported. Prefill restart must be `never`: the Router caches engine IDs at startup and cannot refresh them after a worker relaunch. These rules fail at config load, before a job is submitted.
+
+Upstream behavior: vllm-project/router db02f358 (v0.1.16) `src/routers/http/vllm_pd_router.rs`, vllm-project/vllm 96710245 `vllm/distributed/kv_transfer/kv_connector/v1/mooncake/mooncake_connector.py`. `examples/vllm/vllm-router-mooncake-disagg.yaml` is the reference recipe.
 
 ### MoRI-IO discovery
 

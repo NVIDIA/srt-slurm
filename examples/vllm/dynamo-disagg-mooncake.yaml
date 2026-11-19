@@ -28,7 +28,7 @@ resources:
   gpus_per_node: 8
 dynamo:
   source:
-    pypi: "1.4.2"
+    pypi: "1.6.2"
 
 frontend:
   type: dynamo
@@ -43,6 +43,7 @@ roles:
     nodes: 1
     workers: 1
     gpus: 1
+    sidecar: true
     env:
       DYN_HEALTH_CHECK_ENABLED: "false"
       PYTHONUNBUFFERED: "1"
@@ -56,6 +57,7 @@ roles:
     nodes: colocate
     workers: 1
     gpus: 1
+    sidecar: true
     env:
       DYN_HEALTH_CHECK_ENABLED: "false"
       PYTHONUNBUFFERED: "1"
