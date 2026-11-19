@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 from marshmallow import ValidationError
 
-from srtctl.backends import VLLMBackend
+from srtctl.backends import AtomBackend, VLLMBackend
 from srtctl.core.schema import FrontendConfig, ResourceConfig, RestartPolicy, RoleConfig, SrtConfig
 from srtctl.core.topology import Process
 from srtctl.frontends import AtomeshFrontend
@@ -63,6 +63,15 @@ def test_rejects_unsafe_worker_topology(role: str, settings: dict, message: str)
     roles[role] = replace(roles[role], **settings)
     with pytest.raises(ValidationError, match=message):
         _config(roles=roles)
+
+
+def test_rejects_mixed_atom_and_vllm_roles() -> None:
+    roles = {
+        "prefill": RoleConfig(nodes=1, workers=1, gpus=1, engine=VLLMBackend()),
+        "decode": RoleConfig(nodes=1, workers=1, gpus=1, engine=AtomBackend()),
+    }
+    with pytest.raises(ValidationError, match="same backend type"):
+        _config(engine=None, roles=roles)
 
 
 def test_vllm_bootstrap_health_and_metrics_follow_allocated_workers() -> None:

@@ -33,6 +33,8 @@ class AtomeshFrontend(StaticRouterFrontend):
     def validate(self, config: Any) -> None:
         backend = config.backend
         if isinstance(backend, AtomBackend):
+            if any(not isinstance(role_backend, AtomBackend) for _, role_backend in config.active_role_backends()):
+                raise ValueError("ATOMesh requires the same backend type on every worker role")
             return
         if not isinstance(backend, VLLMBackend):
             raise ValueError("frontend.type: atomesh requires backend.type: atom or vllm")  # noqa: TRY004 - recipe validation
