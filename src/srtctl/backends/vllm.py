@@ -363,7 +363,7 @@ class VLLMBackend(Backend):
 
     # Default KV connector: "nixl", "lmcache", "lmcache-mp", "kvbm", "moriio", "mooncake", or a raw JSON string for
     # --kv-transfer-config. Can be overridden per role by setting "connector" in roles.<role>.args; connector_for_mode
-    # resolves it. "moriio" (ROCm MoRI-IO) registers workers with the vLLM Router and needs frontend.type: vllm-router.
+    # resolves it. "moriio" (ROCm MoRI-IO) uses vLLM Router discovery or ATOMesh static READ routing.
     # "mooncake" (vLLM MooncakeConnector) runs the vLLM Router in --kv-connector mooncake mode.
     # dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).
     connector: str | None = "nixl"
@@ -539,11 +539,10 @@ class VLLMBackend(Backend):
         )
 
     def discovers_workers(self) -> bool:
-        """Whether the prefill/decode workers register with the router over its discovery endpoint.
+        """Whether either role uses a connector with allocated peer metadata listeners.
 
-        True when either role runs a discovery connector (MoRI-IO); the router then learns
-        its workers by registration instead of from URLs on its command line, and the
-        vLLM Router's ``validate`` requires both roles to agree.
+        MoRI-IO uses vLLM Router registration or ATOMesh static READ URLs. The
+        frontend selects that behavior and requires both roles to agree.
         """
         return any(row is not None and row.discovery for row in map(self.kv_connector_for_mode, ("prefill", "decode")))
 
@@ -591,7 +590,7 @@ class VLLMBackend(Backend):
             return _connector_to_kv_transfer_config(connector, mode)
         if process is None or runtime is None:
             raise ValueError(
-                f"connector {connector!r} registers workers with the vLLM Router and needs the worker topology; "
+                f"connector {connector!r} needs the worker topology for peer metadata; "
                 "it is only available with frontend.type: vllm-router or atomesh"
             )
         payload, extra = self._discovery_template(mode, connector, row)
