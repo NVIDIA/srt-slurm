@@ -453,10 +453,40 @@ benchmark readiness and native vLLM `/metrics` are collected.
 
 This mode requires Mooncake on both roles, equal TP, DP=1, a shared engine config,
 one router, enabled health checks, and `prefill.restart: never`: ATOMesh caches
-engine IDs at startup. MoRI-IO and NIXL are not supported by this integration.
+engine IDs at startup. NIXL is not supported by this integration.
 Native ATOM routing retains its own transfer discovery and has no worker metrics.
 
 For session affinity use `frontend.args.policy: dp_sticky` and send `X-Session-ID`.
 AgentX can derive it from correlation IDs with
 `AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID=true`; preserve the correlation
 header too. Sticky routing is a distinct policy from consistent hashing.
+
+### ATOMesh with native vLLM MoRI-IO READ workers
+
+Use `engine.connector: moriio` with `frontend.type: atomesh` and
+`frontend.enable_multiple_frontends: false`. The router image must contain
+ATOMesh's `--vllm-kv-connector moriio-read` option. This is a static HTTP P/D
+mode: all worker URLs are advertised without Mooncake bootstrap ports.
+Every worker must pass `/health` before the router starts.
+
+srtctl sets each MoRI-IO connector's `read_mode: true`, allocated handshake and
+notify ports, routable `host_ip`, and empty `proxy_ip`. Workers therefore do not
+register with a ZMQ proxy. An explicit `read_mode: false` is rejected, as are
+conflicting topology fields. The same binding applies to a unique MoRI-IO child
+inside nested `MultiConnector` configurations and preserves sibling offload
+settings. vLLM Router retains its ZMQ discovery mode.
+
+Both roles must use MoRI-IO, equal TP and DP=1 with one shared engine config,
+one router, health checks and no worker restart. The vLLM worker must return
+explicit peer metadata from `request_finished`: grouped block IDs, engine ID,
+host, handshake/notify ports, TP, global/local DP size, actual DP rank and override,
+and the shared transfer ID. This contract is present at
+[vLLM 4fab5a0](https://github.com/vllm-project/vllm/blob/4fab5a07475822c6eaa971dceb2e2220d0446808/vllm/distributed/kv_transfer/kv_connector/v1/moriio/moriio_connector.py);
+verify it in the deployed image. The router sends decode only after prefill
+succeeds and validates that metadata, which it forwards without flattening.
+
+The router sends no RDMA completion acknowledgement on cancellation or failure.
+vLLM owns consumer abort notification and producer deferred release. Its producer
+`defer_timeout` must cover decode admission and transfer under the deployed load;
+the default 60 seconds is not an arbitrary queue budget. GPU transfer, offload
+and speculative-decoding support must be validated for the chosen worker image.

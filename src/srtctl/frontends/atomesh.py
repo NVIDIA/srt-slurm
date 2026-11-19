@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from srtctl.backends.atom import AtomBackend
 from srtctl.backends.vllm import VLLMBackend
@@ -21,9 +21,10 @@ if TYPE_CHECKING:
 
 @register_frontend("atomesh")
 class AtomeshFrontend(StaticRouterFrontend):
-    """Route ATOM traffic or vLLM Mooncake prefill/decode traffic."""
+    """Route ATOM traffic or vLLM Mooncake / MoRI-IO READ prefill/decode traffic."""
 
     type: ClassVar[str] = "atomesh"
+    moriio_routing: ClassVar[Literal["discovery", "static-read"] | None] = "static-read"
     supports_mooncake_bootstrap: ClassVar[bool] = True
     executable: ClassVar[tuple[str, ...]] = ("atomesh", "launch")
     pd_flag: ClassVar[str] = "--pd-disaggregation"
@@ -40,9 +41,12 @@ class AtomeshFrontend(StaticRouterFrontend):
             raise ValueError("frontend.type: atomesh requires backend.type: atom or vllm")  # noqa: TRY004 - recipe validation
         if config.role_backends:
             raise ValueError("ATOMesh vLLM requires one shared engine configuration")
-        if any(backend.bootstrap_connector(mode) is None for mode in ("prefill", "decode")):
-            raise ValueError("ATOMesh vLLM requires Mooncake on both prefill and decode")
-        validate_mooncake_workers(config)
+        if backend.discovers_workers():
+            self._validate_moriio_workers(config)
+        else:
+            if any(backend.bootstrap_connector(mode) is None for mode in ("prefill", "decode")):
+                raise ValueError("ATOMesh vLLM requires Mooncake on both prefill and decode")
+            validate_mooncake_workers(config)
         if config.frontend.enable_multiple_frontends:
             raise ValueError("ATOMesh vLLM requires frontend.enable_multiple_frontends: false")
         for mode in ("prefill", "decode"):
@@ -52,8 +56,27 @@ class AtomeshFrontend(StaticRouterFrontend):
             "decode", "tensor-parallel-size"
         ):
             raise ValueError("ATOMesh vLLM requires the same tensor-parallel-size on prefill and decode")
-        if "backend" in {str(key).replace("_", "-") for key in (config.frontend.args or {})}:
-            raise ValueError("frontend.args.backend is managed by srtctl for atomesh")
+        if {"backend", "vllm-kv-connector"} & {str(key).replace("_", "-") for key in (config.frontend.args or {})}:
+            raise ValueError("frontend.args.backend and vllm-kv-connector are managed by srtctl for atomesh")
+
+    def _validate_moriio_workers(self, config: Any) -> None:
+        backend = config.backend
+        for mode in ("prefill", "decode"):
+            row = backend.kv_connector_for_mode(mode)
+            if row is None or not row.discovery:
+                raise ValueError("ATOMesh MoRI-IO READ requires MoRI-IO on both prefill and decode")
+            try:
+                read_mode = backend.discovery_read_mode(mode)
+            except TypeError as exc:
+                raise ValueError(str(exc)) from exc
+            if not read_mode:
+                raise ValueError("ATOMesh MoRI-IO requires read_mode: true on both roles")
+            if config.topology.worker_restart(mode).enabled:
+                raise ValueError("ATOMesh MoRI-IO READ requires worker restart: never")
+        if config.topology.num_agg:
+            raise ValueError("ATOMesh MoRI-IO requires a prefill/decode topology")
+        if config.health_check is None:
+            raise ValueError("ATOMesh MoRI-IO requires health_check for every static worker")
 
     def worker_metrics_path(self, backend: Any, mode: WorkerMode) -> str | None:
         """ATOM has no worker metrics endpoint; vLLM serves its native metrics."""
@@ -63,7 +86,11 @@ class AtomeshFrontend(StaticRouterFrontend):
 
     def worker_bootstrap_port(self, backend: Any, process: Process) -> int | None:
         """ATOM exposes transfer topology through ``/kv_transfer_info``."""
-        if isinstance(backend, VLLMBackend) and process.endpoint_mode == "prefill":
+        if (
+            isinstance(backend, VLLMBackend)
+            and process.endpoint_mode == "prefill"
+            and backend.bootstrap_connector("prefill") is not None
+        ):
             if process.bootstrap_port is None:
                 raise ValueError("ATOMesh vLLM prefill is missing its allocated Mooncake bootstrap port")
             return process.bootstrap_port
@@ -87,6 +114,9 @@ class AtomeshFrontend(StaticRouterFrontend):
         runtime: RuntimeContext | None = None,
     ) -> list[str]:
         normalized = {str(key).replace("_", "-") for key in (config.frontend.args or {})}
-        if "backend" in normalized:
-            raise ValueError("frontend.args.backend is managed by srtctl for atomesh")
-        return ["--backend", backend.type]
+        if {"backend", "vllm-kv-connector"} & normalized:
+            raise ValueError("frontend.args.backend and vllm-kv-connector are managed by srtctl for atomesh")
+        args = ["--backend", backend.type]
+        if isinstance(backend, VLLMBackend) and backend.discovers_workers():
+            args.extend(["--vllm-kv-connector", "moriio-read"])
+        return args

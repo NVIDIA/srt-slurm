@@ -3274,10 +3274,11 @@ class SrtConfig:
         )
         if not discovery and not bootstrap:
             return
-        if discovery and self.frontend.type != "vllm-router":
+        from srtctl.frontends import get_frontend
+
+        if discovery and get_frontend(self.frontend.type).moriio_routing is None:
             raise ValidationError(
-                "a discovery connector (engine.connector: moriio) registers workers with the vLLM Router; "
-                f"it requires frontend.type: vllm-router (got {self.frontend.type!r})"
+                f"MoRI-IO requires frontend.type: vllm-router or atomesh (got {self.frontend.type!r})"
             )
         if bootstrap:
             from srtctl.frontends import get_frontend

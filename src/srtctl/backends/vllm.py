@@ -567,6 +567,7 @@ class VLLMBackend(Backend):
         runtime: RuntimeContext | None = None,
         *,
         use_default: bool = True,
+        register_with_router: bool = True,
     ) -> str | None:
         """``--kv-transfer-config`` JSON for a worker mode, or None when the mode has no connector.
 
@@ -591,10 +592,12 @@ class VLLMBackend(Backend):
         if process is None or runtime is None:
             raise ValueError(
                 f"connector {connector!r} registers workers with the vLLM Router and needs the worker topology; "
-                "it is only available with frontend.type: vllm-router"
+                "it is only available with frontend.type: vllm-router or atomesh"
             )
         payload, extra = self._discovery_template(mode, connector, row)
-        for key, value in self._discovery_extra_config(process, runtime).items():
+        for key, value in self._discovery_extra_config(
+            process, runtime, register_with_router=register_with_router
+        ).items():
             configured = extra.get(key, value)
             if key.endswith("_port") and type(configured) is int:
                 configured = str(configured)
@@ -651,7 +654,9 @@ class VLLMBackend(Backend):
             raise TypeError("discovery read_mode must be a JSON boolean")
         return payload, extra
 
-    def _discovery_extra_config(self, process: Process, runtime: RuntimeContext) -> dict[str, Any]:
+    def _discovery_extra_config(
+        self, process: Process, runtime: RuntimeContext, *, register_with_router: bool = True
+    ) -> dict[str, Any]:
         """MoRI-IO's ``kv_connector_extra_config`` (the keys ``moriio_common.py`` reads, vllm-project/vllm 9679173788)."""
         from srtctl.core.slurm import get_hostname_ip
 
@@ -661,7 +666,7 @@ class VLLMBackend(Backend):
                 "the topology was built without a discovery connector"
             )
         return {
-            "proxy_ip": runtime.head_node_ip,
+            "proxy_ip": runtime.head_node_ip if register_with_router else "",
             "proxy_ping_port": str(VLLM_DISCOVERY_PORT),
             "http_port": str(process.http_port),
             # Upstream falls back to its own interface guess, which is the wrong NIC on multi-homed nodes.
@@ -1381,7 +1386,13 @@ class VLLMBackend(Backend):
 
             # A prefill/decode worker gets its KV connector. An aggregate worker gets
             # only the one its role names (e.g. lmcache-mp offload), not the P/D default.
-            kv_transfer_config = self.kv_transfer_config(mode, process, runtime, use_default=mode != "agg")
+            kv_transfer_config = self.kv_transfer_config(
+                mode,
+                process,
+                runtime,
+                use_default=mode != "agg",
+                register_with_router=frontend.moriio_routing != "static-read",
+            )
             for key in ("connector", "kv-transfer-config", "kv_transfer_config"):
                 config.pop(key, None)
             if kv_transfer_config is not None:

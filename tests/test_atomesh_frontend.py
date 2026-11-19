@@ -30,7 +30,6 @@ def _config(**overrides) -> SrtConfig:
     ("overrides", "message"),
     [
         ({"engine": VLLMBackend(connector="nixl")}, "Mooncake on both"),
-        ({"engine": VLLMBackend(connector="moriio")}, "Mooncake on both|requires frontend.type: vllm-router"),
         ({"health_check": None}, "requires health_check"),
         ({"roles": {"agg": RoleConfig(nodes=1, workers=1, gpus=1)}}, "prefill/decode topology"),
         (
