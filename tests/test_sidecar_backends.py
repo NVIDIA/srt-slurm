@@ -187,11 +187,14 @@ def test_sglang_sidecar_kv_events_config_true_covers_aggregated_mode() -> None:
         {"tensor_parallel_size": 8, "attention_data_parallel_size": 2},
     ],
 )
-def test_sglang_multinode_dp_sidecar_relays_follower_kv_events(mode: str, args: dict) -> None:
+def test_sglang_multinode_dp_runs_one_sidecar_per_node(mode: str, args: dict) -> None:
     backend = SGLangBackend(roles={mode: RoleConfig(args=args, kv_events={"topic": "cache events"})})
     processes = backend.endpoints_to_processes([_sglang_endpoint(mode, 2, 4)], dynamo_sidecar=True)
 
-    with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+    def node_ip(node: str, _interface: str | None = None) -> str:
+        return f"10.0.0.{int(node.removeprefix('node')) + 1}"
+
+    with patch("srtctl.core.slurm.get_hostname_ip", side_effect=node_ip):
         commands = [backend.build_worker_command(process, processes, _runtime()) for process in processes]
 
     for node_rank, command in enumerate(commands):
@@ -207,8 +210,11 @@ def test_sglang_multinode_dp_sidecar_relays_follower_kv_events(mode: str, args: 
         kv_config = json.loads(engine[engine.index("--kv-events-config") + 1])
         assert kv_config["endpoint"] == f"tcp://*:{processes[node_rank].kv_events_port}"
         assert kv_config["topic"] == "cache events"
-        assert "--telemetry-only" not in sidecar
-        assert ("--bootstrap-host" in sidecar) is (mode == "prefill" and node_rank == 0)
+        # Each prefill node advertises its own address: decode fetches KV from the node that holds it.
+        assert ("--bootstrap-host" in sidecar) is (mode == "prefill")
+        if mode == "prefill":
+            assert sidecar[sidecar.index("--bootstrap-host") + 1] == f"10.0.0.{node_rank + 1}"
+        assert "--disaggregation-bootstrap-port" not in engine
         if mode != "agg":
             assert engine[engine.index("--disaggregation-mode") + 1] == mode
         assert 'wait -n "${ENGINE_PID}" "${SIDECAR_PID}"' in command[2]
@@ -262,7 +268,6 @@ def test_sglang_disagg_dp_example_launches_two_disjoint_worker_groups(tmp_path: 
         args = launch.kwargs
         engine, sidecar = _sglang_launch_commands(args["command"])
         prefill = process.endpoint_mode == "prefill"
-        leader = process.node_rank == 0
         group_leader = nodes[0] if prefill else nodes[2]
         assert process.gpu_indices == frozenset({0})
         assert args["nodelist"] == [process.node]
@@ -270,6 +275,7 @@ def test_sglang_disagg_dp_example_launches_two_disjoint_worker_groups(tmp_path: 
         assert args["env_to_set"]["DYN_REQUEST_PLANE"] == "nats"
         assert args["env_to_set"]["DYN_EVENT_PLANE"] == "nats"
         assert args["env_to_set"]["SGLANG_RUST_BUILD_MODE"] == "never"
+        assert args["env_to_set"]["SGLANG_RUST_SERVER"] == "1"
         assert engine[engine.index("--model-path") + 1] == "Qwen/Qwen3-0.6B"
         assert engine[engine.index("--disaggregation-mode") + 1] == process.endpoint_mode
         assert engine[engine.index("--disaggregation-transfer-backend") + 1] == "nixl"
@@ -282,38 +288,37 @@ def test_sglang_disagg_dp_example_launches_two_disjoint_worker_groups(tmp_path: 
         assert "--skip-server-warmup" in engine
         assert "--incremental-streaming-output" in engine
 
-        assert ("--disaggregation-bootstrap-port" in engine) is prefill
+        # The Rust server serves the prefill KV bootstrap registry on --port.
+        assert "--disaggregation-bootstrap-port" not in engine
+        assert process.bootstrap_port is None
         assert ("--kv-events-config" in engine) is prefill
         if prefill:
-            assert engine[engine.index("--disaggregation-bootstrap-port") + 1] == str(process.bootstrap_port)
             kv_config = json.loads(engine[engine.index("--kv-events-config") + 1])
             assert kv_config["endpoint"] == f"tcp://*:{process.kv_events_port}"
             assert kv_config["publisher"] == "zmq"
 
-        assert (sidecar is not None) is (prefill or leader)
-        assert ("--grpc-port" in engine) is (prefill or leader)
-        if sidecar is not None:
-            grpc_port = engine[engine.index("--grpc-port") + 1]
-            assert sidecar[sidecar.index("--grpc-endpoint") + 1] == f"127.0.0.1:{grpc_port}"
-            assert "--telemetry-only" not in sidecar
-            assert ("--bootstrap-host" in sidecar) is (prefill and leader)
-            if prefill and leader:
-                assert sidecar[sidecar.index("--bootstrap-host") + 1] == node_ips[group_leader]
+        # Attention DP2 over two nodes puts one Rust listener, and so one sidecar, on every node.
+        assert sidecar is not None
+        grpc_port = engine[engine.index("--grpc-port") + 1]
+        assert sidecar[sidecar.index("--grpc-endpoint") + 1] == f"127.0.0.1:{grpc_port}"
+        assert ("--bootstrap-host" in sidecar) is prefill
+        if prefill:
+            assert sidecar[sidecar.index("--bootstrap-host") + 1] == node_ips[process.node]
 
 
 @pytest.mark.parametrize(
-    ("args", "node_count", "gpus_per_node", "publisher_nodes"),
+    ("args", "node_count", "gpus_per_node", "listeners"),
     [
-        ({"tp-size": 8, "dp-size": 4, "enable-dp-attention": True}, 2, 4, {0, 1}),
-        # Each attention-DP group spans two nodes; only its first node publishes.
-        ({"tp-size": 8, "dp-size": 2, "enable-dp-attention": True}, 4, 2, {0, 2}),
-        ({"tp-size": 8, "attn-dp-size": 2}, 4, 2, {0, 2}),
+        ({"tp-size": 8, "dp-size": 4, "enable-dp-attention": True}, 2, 4, [2, 2]),
+        # Each attention-DP group spans two nodes; only its first node listens.
+        ({"tp-size": 8, "dp-size": 2, "enable-dp-attention": True}, 4, 2, [1, 0, 1, 0]),
+        ({"tp-size": 8, "attn-dp-size": 2}, 4, 2, [1, 0, 1, 0]),
         # The deprecated spelling with one DP rank leaves attention DP off.
-        ({"tp-size": 8, "dp-size": 1, "enable-dp-attention": True}, 2, 4, {0}),
-        # CP rank zero is the publisher even when all attention TP ranks are zero.
-        ({"tp-size": 8, "dp-size": 2, "attn-cp-size": 4, "enable-dp-attention": True}, 4, 2, {0, 2}),
-        # Later pipeline stages cannot publish the rank's KV events.
-        ({"tp-size": 8, "dp-size": 2, "pp-size": 2, "enable-dp-attention": True}, 4, 4, {0, 1}),
+        ({"tp-size": 8, "dp-size": 1, "enable-dp-attention": True}, 2, 4, [1, 0]),
+        # CP rank zero listens even when all attention TP ranks are zero.
+        ({"tp-size": 8, "dp-size": 2, "attn-cp-size": 4, "enable-dp-attention": True}, 4, 2, [1, 0, 1, 0]),
+        # Later pipeline stages host no listener.
+        ({"tp-size": 8, "dp-size": 2, "pp-size": 2, "enable-dp-attention": True}, 4, 4, [1, 1, 0, 0]),
         (
             {
                 "tensor_parallel_size": 8,
@@ -323,16 +328,16 @@ def test_sglang_disagg_dp_example_launches_two_disjoint_worker_groups(tmp_path: 
             },
             4,
             4,
-            {0, 1},
+            [1, 1, 0, 0],
         ),
-        ({"tp-size": 8}, 2, 4, {0}),
-        ({"tp-size": 4, "pp-size": 2}, 2, 4, {0}),
+        ({"tp-size": 8}, 2, 4, [1, 0]),
+        ({"tp-size": 4, "pp-size": 2}, 2, 4, [1, 0]),
     ],
 )
-def test_sglang_sidecar_only_runs_on_nodes_with_publishers(
-    args: dict, node_count: int, gpus_per_node: int, publisher_nodes: set[int]
+def test_sglang_sidecar_runs_on_each_node_with_rust_listeners(
+    args: dict, node_count: int, gpus_per_node: int, listeners: list[int]
 ) -> None:
-    backend = SGLangBackend(roles={"agg": RoleConfig(args=args, kv_events=True)})
+    backend = SGLangBackend(roles={"agg": RoleConfig(args=args)})
     processes = backend.endpoints_to_processes(
         [_sglang_endpoint("agg", node_count, gpus_per_node)], dynamo_sidecar=True
     )
@@ -340,16 +345,23 @@ def test_sglang_sidecar_only_runs_on_nodes_with_publishers(
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
         commands = [backend.build_worker_command(process, processes, _runtime()) for process in processes]
 
-    for node_rank, command in enumerate(commands):
+    grpc_blocks: list[set[int]] = []
+    for process, command, count in zip(processes, commands, listeners, strict=True):
         engine, sidecar = _sglang_launch_commands(command)
-        assert (sidecar is not None) is (node_rank in publisher_nodes)
-        assert ("--grpc-port" in engine) is (node_rank in publisher_nodes)
-        if sidecar is not None:
-            assert "--telemetry-only" not in sidecar
+        assert (sidecar is not None) is (count > 0)
+        assert ("--grpc-port" in engine) is (count > 0)
+        assert (process.sidecar_grpc_port is not None) is (count > 0)
+        if process.sidecar_grpc_port is not None:
+            # Listener k binds --grpc-port + k, so each node reserves one port per listener.
+            grpc_blocks.append(set(range(process.sidecar_grpc_port, process.sidecar_grpc_port + count)))
+    assert sum(len(block) for block in grpc_blocks) == len(set().union(*grpc_blocks))
 
 
-@pytest.mark.parametrize("kv_events_config", [None, False])
-def test_sglang_multinode_dp_without_kv_events_has_no_follower_sidecar(kv_events_config: bool | None) -> None:
+@pytest.mark.parametrize("kv_events_config", [None, False, {"publisher": "null"}])
+def test_sglang_multinode_dp_follower_sidecar_does_not_depend_on_kv_events(
+    kv_events_config: bool | dict | None,
+) -> None:
+    """The follower's sidecar serves its node's DP ranks, so it runs with or without KV events."""
     backend = SGLangBackend(
         roles={
             "agg": RoleConfig(
@@ -359,42 +371,19 @@ def test_sglang_multinode_dp_without_kv_events_has_no_follower_sidecar(kv_events
     )
     processes = backend.endpoints_to_processes([_sglang_endpoint("agg", 2, 4)], dynamo_sidecar=True)
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
-        leader = backend.build_worker_command(processes[0], processes, _runtime())
-        follower = backend.build_worker_command(processes[1], processes, _runtime())
-
-    leader_engine, leader_sidecar = _sglang_launch_commands(leader)
-    follower_engine, follower_sidecar = _sglang_launch_commands(follower)
-    assert leader_sidecar is not None
-    assert "--telemetry-only" not in leader_sidecar
-    assert "--grpc-port" in leader_engine
-    assert follower_sidecar is None
-    assert "--grpc-port" not in follower_engine
-    assert "--kv-events-config" not in leader_engine
-    assert "--kv-events-config" not in follower_engine
-
-
-def test_sglang_null_publisher_has_no_follower_sidecar() -> None:
-    backend = SGLangBackend(
-        roles={
-            "agg": RoleConfig(
-                args={"tp-size": 8, "dp-size": 2, "enable-dp-attention": True}, kv_events={"publisher": "null"}
-            )
-        }
-    )
-    processes = backend.endpoints_to_processes([_sglang_endpoint("agg", 2, 4)], dynamo_sidecar=True)
-    with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
         commands = [backend.build_worker_command(process, processes, _runtime()) for process in processes]
 
-    leader_engine, leader_sidecar = _sglang_launch_commands(commands[0])
-    follower_engine, follower_sidecar = _sglang_launch_commands(commands[1])
-    assert leader_sidecar is not None
-    assert "--telemetry-only" not in leader_sidecar
-    assert follower_sidecar is None
-    assert "--grpc-port" not in follower_engine
-    assert json.loads(leader_engine[leader_engine.index("--kv-events-config") + 1])["publisher"] == "null"
+    for command in commands:
+        engine, sidecar = _sglang_launch_commands(command)
+        assert sidecar is not None
+        assert "--grpc-port" in engine
+        if isinstance(kv_events_config, dict):
+            assert json.loads(engine[engine.index("--kv-events-config") + 1])["publisher"] == "null"
+        else:
+            assert "--kv-events-config" not in engine
 
 
-def test_sglang_colocated_dp_workers_reserve_nonoverlapping_publisher_ports() -> None:
+def test_sglang_colocated_dp_workers_reserve_nonoverlapping_listener_ports() -> None:
     backend = SGLangBackend(
         roles={"agg": RoleConfig(args={"tp-size": 4, "dp-size": 4, "enable-dp-attention": True}, kv_events=True)}
     )
@@ -404,21 +393,24 @@ def test_sglang_colocated_dp_workers_reserve_nonoverlapping_publisher_ports() ->
     ]
     processes = backend.endpoints_to_processes(endpoints, dynamo_sidecar=True)
     publisher_ports = []
-    grpc_ports = []
+    listener_ports = []
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
         for process in processes:
             command = backend.build_worker_command(process, [process], _runtime())
             engine, sidecar = _sglang_launch_commands(command)
             assert sidecar is not None
-            assert "--telemetry-only" not in sidecar
             kv_config = json.loads(engine[engine.index("--kv-events-config") + 1])
             base_port = int(kv_config["endpoint"].rsplit(":", 1)[1])
             # SGLang offsets the configured port by the global DP rank.
             publisher_ports.append(set(range(base_port, base_port + 4)))
-            grpc_ports.append(engine[engine.index("--grpc-port") + 1])
+            # Each of the four Rust listeners binds --port + k and --grpc-port + k.
+            http_port = int(engine[engine.index("--port") + 1])
+            grpc_port = int(engine[engine.index("--grpc-port") + 1])
+            assert sidecar[sidecar.index("--grpc-endpoint") + 1] == f"127.0.0.1:{grpc_port}"
+            listener_ports.append({*range(http_port, http_port + 4), *range(grpc_port, grpc_port + 4)})
 
     assert publisher_ports[0].isdisjoint(publisher_ports[1])
-    assert grpc_ports[0] != grpc_ports[1]
+    assert listener_ports[0].isdisjoint(listener_ports[1])
 
 
 def test_sglang_follower_global_dp_port_offsets_do_not_collide_with_next_worker() -> None:
@@ -447,8 +439,12 @@ def test_sglang_follower_global_dp_port_offsets_do_not_collide_with_next_worker(
 
     follower_engine, follower_sidecar = _sglang_launch_commands(follower_command)
     local_engine, local_sidecar = _sglang_launch_commands(local_command)
-    assert follower_sidecar is not None and "--telemetry-only" not in follower_sidecar
-    assert local_sidecar is not None and "--telemetry-only" not in local_sidecar
+    assert follower_sidecar is not None
+    assert local_sidecar is not None
+    # Both workers host two listeners on node1; their --grpc-port + k blocks stay apart.
+    follower_grpc = int(follower_engine[follower_engine.index("--grpc-port") + 1])
+    local_grpc = int(local_engine[local_engine.index("--grpc-port") + 1])
+    assert {follower_grpc, follower_grpc + 1}.isdisjoint({local_grpc, local_grpc + 1})
     follower_config = json.loads(follower_engine[follower_engine.index("--kv-events-config") + 1])
     local_config = json.loads(local_engine[local_engine.index("--kv-events-config") + 1])
     follower_base = int(follower_config["endpoint"].rsplit(":", 1)[1])
