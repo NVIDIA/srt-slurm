@@ -3338,8 +3338,9 @@ class SrtConfig:
         if not isinstance(self.backend, VLLMBackend):
             return
         logger.warning(
-            "vLLM workers run the Python dynamo.vllm worker; set `sidecar: true` on every role to run the native "
-            "engine beside a Dynamo sidecar (docs/sidecars.md). Sidecar mode will become the default soon."
+            "vLLM workers run the Python dynamo.vllm worker. Sidecar mode is recommended: set `sidecar: true` on "
+            "every role to run the native engine beside a Dynamo sidecar (docs/sidecars.md). Sidecar mode will "
+            "become the default soon."
         )
 
     def _warn_dp_launch_mode(self):
