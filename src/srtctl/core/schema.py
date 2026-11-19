@@ -3274,13 +3274,19 @@ class SrtConfig:
         )
         if not discovery and not bootstrap:
             return
-        if self.frontend.type != "vllm-router":
-            reason = (
-                "a discovery connector (engine.connector: moriio) registers workers with the vLLM Router"
-                if discovery
-                else "the Mooncake connector needs the vLLM Router's bootstrap transfer metadata"
+        if discovery and self.frontend.type != "vllm-router":
+            raise ValidationError(
+                "a discovery connector (engine.connector: moriio) registers workers with the vLLM Router; "
+                f"it requires frontend.type: vllm-router (got {self.frontend.type!r})"
             )
-            raise ValidationError(f"{reason}; it requires frontend.type: vllm-router (got {self.frontend.type!r})")
+        if bootstrap:
+            from srtctl.frontends import get_frontend
+
+            if not get_frontend(self.frontend.type).supports_mooncake_bootstrap:
+                raise ValidationError(
+                    "the Mooncake connector requires frontend.type: vllm-router or atomesh "
+                    f"for bootstrap transfer metadata (got {self.frontend.type!r})"
+                )
 
     def _validate_vllm_failover(self) -> None:
         """Rules for ``backend.failover`` (vLLM shadow engine recovery).

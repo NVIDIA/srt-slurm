@@ -433,3 +433,30 @@ setup_script: "my-setup.sh"    # Optional: custom setup script
 ```
 
 The v1 spelling of this layout (`backend:`, `resources.prefill_nodes` and friends, `infra:`, `dynamo.version`) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
+
+### ATOMesh with native vLLM Mooncake workers
+
+Use `engine.type: vllm`, `engine.connector: mooncake`, and `frontend.type: atomesh`
+for HTTP P/D routing. See the [colocated example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/atomesh-mooncake-disagg.yaml).
+The worker image must include vLLM's `MooncakeConnector` and the matching transfer
+engine package (`mooncake-transfer-engine-rocm` on ROCm). Set
+`frontend.container_image` to an ATOM image containing the `atomesh` executable;
+only the router runs there. Pin both images to tested digests for reproducible runs.
+
+srtctl runs `atomesh launch --backend vllm --pd-disaggregation`, advertises the
+allocated prefill bootstrap port, and sets the worker's
+`VLLM_MOONCAKE_BOOTSTRAP_PORT` to that same port. A prefill `MultiConnector` can
+combine Mooncake with `SimpleCPUOffloadConnector`; its configuration is preserved.
+All workers must answer `/health` before router startup. ATOMesh then queries
+Mooncake `/query` and rejects an empty engine-ID map; the worker registry gates
+benchmark readiness and native vLLM `/metrics` are collected.
+
+This mode requires Mooncake on both roles, equal TP, DP=1, a shared engine config,
+one router, enabled health checks, and `prefill.restart: never`: ATOMesh caches
+engine IDs at startup. MoRI-IO and NIXL are not supported by this integration.
+Native ATOM routing retains its own transfer discovery and has no worker metrics.
+
+For session affinity use `frontend.args.policy: dp_sticky` and send `X-Session-ID`.
+AgentX can derive it from correlation IDs with
+`AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID=true`; preserve the correlation
+header too. Sticky routing is a distinct policy from consistent hashing.

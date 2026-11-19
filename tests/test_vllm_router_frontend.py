@@ -267,12 +267,18 @@ def test_an_explicit_mooncake_transfer_config_keeps_the_router_mode() -> None:
     assert VLLMRouterFrontend().queries_prefill_bootstrap(backend) is True
 
 
-def test_mooncake_cpu_offload_runs_one_tp4_prefill_and_two_tp4_decodes(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("frontend_type", ["vllm-router", "atomesh"])
+def test_mooncake_cpu_offload_runs_one_tp4_prefill_and_two_tp4_decodes(
+    tmp_path: Path, monkeypatch, frontend_type: str
+) -> None:
     """InferenceX #5090's connector/topology contract goes through the real orchestrator without a patch."""
     from srtctl.mock import MockOptions, run_mock_sweep
 
     monkeypatch.setenv("SRTSLURM_CONFIG", str(tmp_path / "absent-srtslurm.yaml"))
     recipe = yaml.safe_load(Path("examples/vllm/vllm-router-mooncake-disagg.yaml").read_text())
+    frontend = get_frontend(frontend_type)
+    router_step = f"{frontend.process_name}_0"
+    recipe["frontend"] = {"type": frontend_type, "enable_multiple_frontends": False, "container_image": "router-image"}
     recipe["model"] = {"path": "hf:fake/mock-model", "container": "nvcr.io/fake:latest", "precision": "fp4"}
     recipe["observability"] = {"enabled": False, "tachometer": {"enabled": False}}
     prefill_transfer = {
@@ -328,7 +334,7 @@ def test_mooncake_cpu_offload_runs_one_tp4_prefill_and_two_tp4_decodes(tmp_path:
         StaticRouterFrontend.wait_for_workers(self, workers, config, stop_event)
         events.append("workers-healthy")
 
-    with patch.object(VLLMRouterFrontend, "wait_for_workers", new=wait):
+    with patch.object(type(frontend), "wait_for_workers", new=wait):
         assert (
             run_mock_sweep(
                 config_path=path,
@@ -346,9 +352,9 @@ def test_mooncake_cpu_offload_runs_one_tp4_prefill_and_two_tp4_decodes(tmp_path:
 
     prefills = [call for call in calls if str(call.get("step_name", "")).startswith("prefill_")]
     decodes = [call for call in calls if str(call.get("step_name", "")).startswith("decode_")]
-    router = next(call for call in calls if call.get("step_name") == "vllm_router_0")
+    router = next(call for call in calls if call.get("step_name") == router_step)
     assert len(prefills) == 1 and len(decodes) == 2
-    assert events.index("workers-healthy") < events.index("vllm_router_0") < events.index("benchmark")
+    assert events.index("workers-healthy") < events.index(router_step) < events.index("benchmark")
     for call, payload in [(prefills[0], prefill_transfer), *((call, decode_transfer) for call in decodes)]:
         assert events.index(call["step_name"]) < events.index("workers-healthy")
         command = call["command"]
@@ -357,7 +363,11 @@ def test_mooncake_cpu_offload_runs_one_tp4_prefill_and_two_tp4_decodes(tmp_path:
     assert all("VLLM_MOONCAKE_BOOTSTRAP_PORT" not in call["env_to_set"] for call in decodes)
     command = router["command"]
     assert command[command.index("--prefill") + 2] == prefills[0]["env_to_set"]["VLLM_MOONCAKE_BOOTSTRAP_PORT"]
-    assert command[command.index("--kv-connector") + 1] == "mooncake"
+    assert router["container_image"] == "router-image"
+    if frontend_type == "atomesh":
+        assert command[command.index("--backend") + 1] == "vllm"
+    else:
+        assert command[command.index("--kv-connector") + 1] == "mooncake"
 
 
 @pytest.mark.parametrize("decode_dp", [1, 2])
