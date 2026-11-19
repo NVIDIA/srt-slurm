@@ -2924,6 +2924,7 @@ class SrtConfig:
         self._validate_services_only()
         self._validate_services()
         self._warn_dp_launch_mode()
+        self._warn_python_worker()
 
     @cached_property
     def topology(self) -> Topology:
@@ -3330,6 +3331,21 @@ class SrtConfig:
             raise ValidationError("dynamo.sidecar: true supports sglang, vllm, and trtllm backends only")
         if isinstance(self.backend, VLLMBackend) and self.backend.dp_launch_mode != "per_node":
             raise ValidationError("vLLM sidecar mode requires engine.dp_launch_mode: per_node; per_gpu is unsupported")
+
+    def _warn_python_worker(self) -> None:
+        """Steer vLLM jobs behind the Dynamo frontend to native sidecars.
+
+        Skipped for engine.failover, which needs the Python worker (see _validate_vllm_failover).
+        """
+        if self.dynamo.sidecar or self.frontend.type != "dynamo" or self.backend.failover is not None:
+            return
+        if not isinstance(self.backend, VLLMBackend):
+            return
+        logger.warning(
+            "vLLM workers run the Python dynamo.vllm worker. Sidecar mode is recommended: set `sidecar: true` on "
+            "every role to run the native engine beside a Dynamo sidecar (docs/sidecars.md). Sidecar mode will "
+            "become the default soon. Reach out to Julien Darve with any sidecar issues."
+        )
 
     def _warn_dp_launch_mode(self):
         """Warn when a vLLM DP recipe selects the deprecated per-GPU layout.

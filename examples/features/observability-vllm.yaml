@@ -26,7 +26,7 @@ resources:
   gpus_per_node: 8
 dynamo:
   source:
-    pypi: "1.4.2"
+    pypi: "1.6.2"
 
 observability:
   enabled: true
@@ -41,6 +41,7 @@ roles:
     nodes: 1
     workers: 1
     gpus: 2
+    sidecar: true
     env:
       PYTHONUNBUFFERED: "1"
     args:

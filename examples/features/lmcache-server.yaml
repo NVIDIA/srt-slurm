@@ -27,7 +27,7 @@ resources:
   gpus_per_node: 8
 dynamo:
   source:
-    pypi: "1.4.2"
+    pypi: "1.6.2"
 
 environment:
   PYTHONHASHSEED: "0"        # chunk hashes must agree across the server and every rank; services need it too
@@ -46,6 +46,7 @@ roles:
     nodes: 1
     workers: 2
     gpus: 1
+    sidecar: true
     env:
       DYN_HEALTH_CHECK_ENABLED: "false"
       PYTHONUNBUFFERED: "1"
