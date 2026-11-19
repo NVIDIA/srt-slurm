@@ -592,6 +592,7 @@ Every record about a submission carries `submission_index` (1-based) and its ide
 | `cause` | The underlying failure, with the observed subset of `producer`, `code`, `return_code` and `message`. |
 | `issues` | List of `{code, field, message}` for `preflight_failed`: the structured form of the issues `error` lists. |
 | `slurm_job_id`, `output_dir` | Present when Slurm had already accepted the job. |
+| `schema_version`, `submission_index`, and `recipe_path`, `parameters` or `variant` | The record format version, and the submission the record belongs to (see above). |
 
 In failure records, values that were not observed are omitted, never `null`.
 
@@ -622,7 +623,7 @@ In failure records, values that were not observed are omitted, never `null`.
 
 ### Compatibility
 
-`schema_version` on a record means the srtctl that printed it emits records; `srtctl --version` also ends with `records v1`. Within a schema version, codes, statuses and fields are only added; renaming or removing one, or changing its meaning, increments `schema_version`. A client should ignore fields it does not know, pass through codes it does not know, and leave unknown statuses uninterpreted. `subcode` values are open-ended, for example any Slurm error name. The `error` and `cause.message` texts are for people and may change in any release.
+`schema_version` on a record means the srtctl that printed it emits records; `srtctl --version` also ends with `records v1`. Within a schema version, codes, statuses and fields are only added; renaming or removing one, or changing its meaning, increments `schema_version`. A record may carry fields this page does not list; a client should ignore fields it does not know, pass through codes it does not know, and leave unknown statuses uninterpreted. `subcode` values are open-ended, for example any Slurm error name. The `error` and `cause.message` texts are for people and may change in any release.
 
 ### Reading the output as a client
 
