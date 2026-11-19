@@ -22,7 +22,7 @@ identity:
     image: /data/home/rihuo/nvidia+tensorrt-llm+release+1.4.0rc3.dev202611020007+pr21997-088a393a5.sqsh
   frameworks:
     tensorrt_llm: '1.4.0rc4 (PR #21997 @ 088a393a53)'
-    dynamo: 1.6.0.dev20261010
+    dynamo: 1.8.0.dev20261119
 slurm:
   time_limit: 04:00:00
 sbatch_directives:

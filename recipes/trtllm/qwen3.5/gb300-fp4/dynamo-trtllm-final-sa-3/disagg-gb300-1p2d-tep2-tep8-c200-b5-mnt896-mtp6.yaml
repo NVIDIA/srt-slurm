@@ -5,9 +5,12 @@
 # RoCE-only), Lustre FlashInfer cubin dir and /tmp compile caches dropped, remote KV rendezvous under the job logs dir (/logs/rt_rdv).
 # Dropped trtllm-serve-only settings: frontend process pools, per-conversation frontend affinity,
 # tokenization cache, the ctx/gen routers (incl. gen_router max_requests_per_server/max_queue_wait_s),
-# server_config_extra (incl. output_length_prediction) and engine perf-metrics output.
-# Frontend uses the Dynamo KV router with 14400 s session affinity; decode workers advertise least-loaded
-# (DYN_ROUTER_MODE).
+# server_config_extra and engine perf-metrics output.
+# Frontend uses the Dynamo KV router with 14400 s session affinity. trtllm-serve's
+# output_length_prediction (ridge_gbm) maps to Dynamo's output_length_prediction request classifier
+# (ai-dynamo/dynamo#18940), which runs only on KV-routed worker sets: decode workers advertise the KV router
+# with /configs/dynamo-router-policy-output-length.yaml, and the predicted reply length reaches the decode
+# engine's waiting_queue_policy: priority through ai-dynamo/dynamo#18772.
 # Not yet measured under Dynamo.
 schema: 2
 name: disagg-gb300-1p2d-tep2-tep8-c200-b5-mnt896-mtp6-dynamo
@@ -22,7 +25,7 @@ identity:
     image: /data/home/rihuo/nvidia+tensorrt-llm+release+1.4.0rc3.dev202611020007+pr21997-088a393a5.sqsh
   frameworks:
     tensorrt_llm: '1.4.0rc4 (PR #21997 @ 088a393a53)'
-    dynamo: 1.6.0.dev20261010
+    dynamo: 1.8.0.dev20261119
 slurm:
   time_limit: 04:00:00
 sbatch_directives:
@@ -204,7 +207,8 @@ roles:
       UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
       UCX_RC_VERBS_TIMEOUT: 4s
       UCX_KEEPALIVE_INTERVAL: 60s
-      DYN_ROUTER_MODE: least-loaded
+      DYN_ROUTER_MODE: kv
+      DYN_ROUTER_POLICY_CONFIG: /configs/dynamo-router-policy-output-length.yaml
     args:
       cache_transceiver_config:
         backend: NIXL
