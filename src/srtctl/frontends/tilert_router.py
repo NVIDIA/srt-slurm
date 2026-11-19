@@ -20,6 +20,13 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Process
 
 ROUTER_MANAGED_ARGS = frozenset({"vllm-url", "decode", "host", "port"})
+# ``frontend.args.rust-front: true`` runs the router under the release's Rust front supervisor instead of passing a flag:
+# the supervisor serves the client port with the packaged front and moves the router to 127.0.0.1 on the next port.
+RUST_FRONT_ARG = "rust-front"
+RUST_FRONT_SUPERVISOR = ("python", "-m", "tilert.pd_vllm.rs_front_sup")
+# TileRT 0.2.0's router sends each prefill straight to one of the prefill workers listed in this variable (in this order);
+# earlier releases do not read it.
+PREFILL_URLS_ENV = "TILERT_ROUTER_P_URLS"
 ROUTER_WORKERS_REQUIRED = "TileRT router requires at least one prefill worker and at least one decode worker"
 
 
@@ -35,6 +42,8 @@ class TileRTRouterFrontend(StaticRouterFrontend):
     process_name: ClassVar[str] = "tilert_router"
     # The router connects to its workers at startup.
     wait_for_workers_before_start: ClassVar[bool] = True
+    # Set from frontend.args.rust-front when the frontends start.
+    rust_front: bool = False
 
     @property
     def health_endpoint(self) -> str:
@@ -44,6 +53,9 @@ class TileRTRouterFrontend(StaticRouterFrontend):
         if config.frontend.enable_multiple_frontends:
             raise ValueError("frontend.type: tilert-router requires frontend.enable_multiple_frontends: false")
         _reject_router_args(config.frontend.args)
+        rust_front = (config.frontend.args or {}).get(RUST_FRONT_ARG, False)
+        if rust_front is not True and rust_front is not False:
+            raise ValueError(f"frontend.args.{RUST_FRONT_ARG} must be true or false")
         if config.backend_for_role("decode").type != "tilert":
             raise ValueError("tilert-router requires a TileRT decode engine")
         resources = config.topology
@@ -101,6 +113,22 @@ class TileRTRouterFrontend(StaticRouterFrontend):
             f"{worker.url}/health" for worker in self.collect_workers(backend, backend_processes, network_interface)
         ]
 
+    def start_frontends(
+        self,
+        topology: Any,
+        runtime: RuntimeContext,
+        config: Any,
+        backend: Any,
+        backend_processes: list[Process],
+        stop_event: Any = None,
+    ) -> list[Any]:
+        self.rust_front = (config.frontend.args or {}).get(RUST_FRONT_ARG) is True
+        return super().start_frontends(topology, runtime, config, backend, backend_processes, stop_event)
+
+    def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
+        """The router's flags; ``rust-front`` selects the launcher (`build_router_command`) and is not one."""
+        return super().get_frontend_args_list({k: v for k, v in (args or {}).items() if k != RUST_FRONT_ARG})
+
     def build_router_command(self, workers: list[RouterWorker], host: str, port: int, backend: Any) -> list[str]:
         prefills = [worker for worker in workers if worker.mode == "prefill"]
         decodes = [worker for worker in workers if worker.mode == "decode"]
@@ -115,11 +143,15 @@ class TileRTRouterFrontend(StaticRouterFrontend):
             decode_specs.append(f"{parsed.hostname}:{worker.bootstrap_port}:{parsed.port}")
         # --decode is a single nargs="+" option; repeating the flag would keep only the last worker.
         # --vllm-url takes every prefill worker as one comma-separated value (TileRT 0.1.8 pd_router splits it on
-        # commas; 0.1.6 accepts one URL); one worker renders its URL alone.
+        # commas; 0.1.6 accepts one URL); one worker renders its URL alone. PREFILL_URLS_ENV carries the same list.
+        prefill_urls = ",".join(worker.url for worker in prefills)
         return [
+            "env",
+            f"{PREFILL_URLS_ENV}={prefill_urls}",
+            *(RUST_FRONT_SUPERVISOR if self.rust_front else ()),
             *self.executable,
             "--vllm-url",
-            ",".join(worker.url for worker in prefills),
+            prefill_urls,
             "--decode",
             *decode_specs,
             "--host",

@@ -1,0 +1,86 @@
+# Six vLLM prefill workers (DP2 + expert parallel, two per tray) and one TileRT DEP32 decode across eight GB300 NVL72
+# trays, KV over NVLink, with the router on a tray of its own serving the client port through TileRT's Rust front.
+# Configure these image aliases with prepared TileRT/vLLM images in srtslurm.yaml; see docs/tilert.md.
+# Every image needs TileRT 0.2.0 (PyPI tilert==0.2.0, sha256 53a7c151...e725): its router requires
+# TILERT_ROUTER_P_URLS, which srtctl sets, and frontend.args.rust-front starts its Rust front supervisor.
+schema: 2
+name: dsv41flash-tilert-gb300-dep32-decode
+model:
+  path: hf:deepseek-ai/DeepSeek-V4.1-Flash
+  container: tilert-decode
+  precision: fp4
+resources:
+  gpu_type: gb300
+  gpus_per_node: 4
+roles:
+  prefill:
+    engine:
+      type: vllm
+      set_visible_devices: true
+    container: tilert-prefill
+    nodes: 3
+    workers: 6
+    gpus: 2
+    env:
+      NCCL_MNNVL_ENABLE: "1"
+    args:
+      served-model-name: deepseek-ai/DeepSeek-V4.1-Flash
+      tokenizer-mode: deepseek_v41
+      language-model-only: true
+      max-model-len: 1048576
+      tensor-parallel-size: 1
+      data-parallel-size: 2
+      enable-expert-parallel: true
+      gpu-memory-utilization: 0.95
+      kv-cache-dtype: fp8
+      attention-config: '{"indexer_kv_dtype":"mxfp4"}'
+      speculative-config: '{"method":"dspark","num_speculative_tokens":5}'
+      # TileRT 0.2.0's connector hands each prompt's KV to the decode over NVLink.
+      kv-transfer-config: >-
+        {"kv_connector":"TileRTOfficialConnector","kv_connector_module_path":"tilert.pd_vllm.official_connector",
+         "kv_role":"kv_producer","kv_connector_extra_config":{
+           "tilert_model":"dsv41","tilert_max_seq_len":1048576,"tilert_transport":"nvlink"}}
+  decode:
+    engine:
+      type: tilert
+      # Each node runs one decode_server, which starts that node's 4 ranks; see docs/tilert.md#multi-node-decode.
+      multi_node_launch: node-env
+    container: tilert-decode
+    nodes: 8
+    workers: 1
+    gpus: 32
+    env:
+      # Sequences per decode GPU, and the extra decode graph sizes (sequences per GPU) captured for lighter load.
+      TILERT_EP_BATCH: "8"
+      TILERT_WEP_GRAPH_LANES: "1,2,4"
+    args:
+      model: dsv41
+      # TileRT reads the Hugging Face checkpoint directly.
+      model-weights-dir: /model
+      max-seq-len: 1048576
+      transport: nvlink
+      with-mtp: true
+      num-mtp: 5
+frontend:
+  type: tilert-router
+  container_image: tilert-router
+  enable_multiple_frontends: false
+  placement:
+    node: dedicated
+  args:
+    # Serve the client port with TileRT's Rust front; the router moves to 127.0.0.1 on the next port.
+    rust-front: true
+    model: dsv41
+    parser: deepseek_v41
+    model-path: /model
+    queue-timeout: 1800
+    # Requests the decode admits at once: 32 GPUs x 8 sequences per GPU.
+    decode-capacity: 256
+health_check:
+  max_attempts: 2160
+  interval_seconds: 10
+benchmark:
+  type: manual
+# With RUN_EVAL or EVAL_ONLY, run the eval in the vLLM prefill image instead of model.container.
+post_eval:
+  container_image: tilert-prefill
