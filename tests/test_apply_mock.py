@@ -80,9 +80,8 @@ def test_apply_mock_emits_submission_json_and_spawns_worker(monkeypatch, tmp_pat
     ):
         submit_cli.main()
 
-    stdout = capsys.readouterr().out.strip()
-    assert "\n" not in stdout
-    record = json.loads(stdout)
+    accepted, record = (json.loads(line) for line in capsys.readouterr().out.strip().splitlines())
+    assert accepted["status"] == "accepted"
     assert record["status"] == "submitted"
     slurm_job_id = record["slurm_job_id"]
     assert slurm_job_id and slurm_job_id.isdigit()
@@ -197,8 +196,8 @@ def test_apply_records_the_job_when_the_output_directory_refuses_mode_changes(
     ):
         submit_cli.main()
 
-    record = json.loads(capsys.readouterr().out.strip())
-    assert record["status"] == "submitted"
+    accepted, record = (json.loads(line) for line in capsys.readouterr().out.strip().splitlines())
+    assert (accepted["status"], record["status"]) == ("accepted", "submitted")
     output_dir = Path(record["output_dir"])
     assert yaml.safe_load((output_dir / "config.yaml").read_text())["name"] == "apply-mock-smoke"
     assert (output_dir / "sbatch_script.sh").read_text().startswith("#!")

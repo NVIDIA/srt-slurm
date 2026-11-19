@@ -35,7 +35,13 @@ def test_version_info_pairs_the_tool_with_its_protocols() -> None:
     assert text.startswith(f"srtctl {info.version}")
     assert "recipe schema 2" in text
     assert f"lockfile v{LOCKFILE_VERSION}" in text
-    assert set(info.as_dict()) == {"version", "commit", "recipe_schema_versions", "lockfile_version"}
+    assert set(info.as_dict()) == {
+        "version",
+        "commit",
+        "recipe_schema_versions",
+        "lockfile_version",
+        "record_schema_version",
+    }
 
 
 def test_cli_version_flag(monkeypatch, capsys) -> None:

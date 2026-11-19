@@ -124,7 +124,11 @@ def submit_job(
     serve_only: bool = False,
     output_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Submit a recipe with `srtctl apply -y --json`; returns slurm_job_id and output_dir per submission."""
+    """Submit a recipe with `srtctl apply -y --json`; returns slurm_job_id and output_dir per submission.
+
+    On failure, `errors` holds the failure records and `accepted` the IDs of jobs Slurm accepted anyway;
+    check them before retrying.
+    """
     return job_tools.submit_job(
         config_path,
         set_overrides=set_overrides,

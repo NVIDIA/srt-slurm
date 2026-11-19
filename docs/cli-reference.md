@@ -90,7 +90,8 @@ Submit job(s) to SLURM
 | `--setup-script SETUP_SCRIPT` |  | Custom setup script in configs/ |
 | `--tags TAGS` |  | Comma-separated tags |
 | `--serve-only` |  | Deploy the inference endpoint without running a benchmark; keep serving until the job is cancelled. |
-| `--json` |  | Emit one JSON line per submission on stdout; prose output goes to stderr. |
+| `--json` |  | Write newline-delimited JSON records to stdout (accepted, submitted and failure records); prose goes to stderr. |
+| `--failures-file FAILURES_FILE` |  | Append every failure record of this run, as JSON lines, to this file. |
 | `--mock` |  | Stub sbatch and spawn a detached mock worker that runs the full SweepOrchestrator locally. For testing external harnesses without cluster access. |
 | `--mock-tick-s MOCK_TICK_S` | `0.2` | Per-phase wall time used by the detached mock worker. |
 | `--no-preflight` |  | Skip the pre-submit model.path / model.container / telemetry filesystem checks. Useful when those paths only exist on compute nodes (e.g. node-local NVMe like /scratch/models/...) and not on the node invoking srtctl. The framework itself will still fail loudly at runtime if a path is genuinely missing on the compute node. |

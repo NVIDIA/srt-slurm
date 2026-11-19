@@ -74,7 +74,7 @@ def submit_job(
     serve_only: bool = False,
     output_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Submit a recipe with ``srtctl apply -y --json`` and return the submission record.
+    """Submit a recipe with ``srtctl apply -y --json`` and return the submitted records.
 
     ``set_overrides`` are ``KEY=VALUE`` entries (the CLI's ``--set``), ``unset``
     the keys to drop (``--unset``). The record carries ``slurm_job_id``,
@@ -115,11 +115,17 @@ def submit_job(
             "ok": False,
             "error": "srtctl apply failed" if result.returncode != 0 else "srtctl apply printed no submission record",
             "exit_code": result.returncode,
+            "errors": [r for r in records if r.get("status") == "error"],
+            "accepted": [r["slurm_job_id"] for r in records if r.get("status") == "accepted"],
             "stdout": result.stdout[-4000:],
             "stderr": result.stderr[-4000:],
             "command": command,
         }
-    return {"ok": True, "submissions": records, "command": command}
+    return {
+        "ok": True,
+        "submissions": [r for r in records if r.get("status") == "submitted"],
+        "command": command,
+    }
 
 
 def dry_run(

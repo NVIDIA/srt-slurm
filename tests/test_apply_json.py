@@ -42,7 +42,7 @@ def _write_config(tmp_path: Path) -> Path:
     return cfg
 
 
-def test_apply_json_emits_single_line_on_stdout(monkeypatch, tmp_path: Path, capsys: Any) -> None:
+def test_apply_json_emits_accepted_then_submitted_on_stdout(monkeypatch, tmp_path: Path, capsys: Any) -> None:
     cfg = _write_config(tmp_path)
     mock_sbatch = MagicMock()
     mock_sbatch.stdout = "Submitted batch job 42042"
@@ -66,11 +66,12 @@ def test_apply_json_emits_single_line_on_stdout(monkeypatch, tmp_path: Path, cap
         submit_cli.main()
 
     captured = capsys.readouterr()
-    stdout = captured.out.strip()
+    lines = captured.out.strip().splitlines()
 
-    # Exactly one line on stdout, valid JSON.
-    assert "\n" not in stdout
-    record = json.loads(stdout)
+    # Two JSON lines on stdout: the accepted record, then the submitted record.
+    assert len(lines) == 2
+    assert json.loads(lines[0])["status"] == "accepted"
+    record = json.loads(lines[1])
     assert record["status"] == "submitted"
     assert record["slurm_job_id"] == "42042"
     assert record["job_name"] == "test-job"
