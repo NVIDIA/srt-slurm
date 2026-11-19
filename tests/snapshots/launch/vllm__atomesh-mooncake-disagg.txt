@@ -52,7 +52,7 @@ command: |
 ## atomesh_0
 nodelist: node-01
 output: <output>/logs/node-01_atomesh_0.out
-container_image: rocm/atom-dev:latest
+container_image: rocm/atom-dev:nightly_202611110332@sha256:19712185deac1eca8db5f21bc25ff2f9a3f44758bfd7cec8cc1c7889fbea097d
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
