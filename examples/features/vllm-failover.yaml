@@ -48,7 +48,6 @@ roles:
     nodes: 1
     workers: 2
     gpus: 1
-    sidecar: false
     # restart:                      # relaunch an exited engine in place as the new shadow
     #   policy: always              # (roles.<role>.restart; without it an exited engine's
     #   backoff_seconds: 5          #  step ends and `critical` decides the run's fate)

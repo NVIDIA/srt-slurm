@@ -43,6 +43,7 @@ roles:
     nodes: 1
     workers: 1
     gpus: 1
+    sidecar: true
     env:
       DYN_HEALTH_CHECK_ENABLED: "false"
       PYTHONUNBUFFERED: "1"
@@ -56,6 +57,7 @@ roles:
     nodes: colocate
     workers: 1
     gpus: 1
+    sidecar: true
     env:
       DYN_HEALTH_CHECK_ENABLED: "false"
       PYTHONUNBUFFERED: "1"

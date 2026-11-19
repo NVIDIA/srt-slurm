@@ -890,7 +890,6 @@ class RoleConfig(RoleSettings):
     # `options.store_config`, so prefill and decode can differ. Pool-wide keys stay there.
     mooncake_store_config: dict[str, Any] = field(default_factory=dict)
     # Run the native engine with a Dynamo sidecar (turns on `dynamo.sidecar`); every role must agree.
-    # Default: on for vLLM with the Dynamo frontend; set false to keep the Python worker.
     sidecar: bool | None = field(
         default=None,
         metadata={"marshmallow_field": fields.Boolean(truthy={True}, falsy={False}, allow_none=True)},
@@ -2925,6 +2924,7 @@ class SrtConfig:
         self._validate_services_only()
         self._validate_services()
         self._warn_dp_launch_mode()
+        self._warn_python_worker()
 
     @cached_property
     def topology(self) -> Topology:
@@ -3104,8 +3104,6 @@ class SrtConfig:
             if wanted and not self.dynamo.sidecar:
                 # The sidecar mode is job-wide: a role asking for it turns it on for the job.
                 object.__setattr__(self, "dynamo", dataclasses.replace(self.dynamo, sidecar=True))
-        elif self.frontend.type == "dynamo" and isinstance(self.engine, VLLMBackend):
-            object.__setattr__(self, "dynamo", dataclasses.replace(self.dynamo, sidecar=True))
 
     def _validate_role_backends(self) -> None:
         """Reject job-wide orchestration that is not yet role-aware."""
@@ -3300,10 +3298,7 @@ class SrtConfig:
                 f"got {self.frontend.type!r}"
             )
         if self.dynamo.sidecar:
-            raise ValidationError(
-                "engine.failover cannot run with a Dynamo sidecar, the default for vLLM behind the Dynamo frontend; "
-                "set roles.<role>.sidecar: false"
-            )
+            raise ValidationError("engine.failover cannot be combined with dynamo.sidecar: true")
         dp_modes = self.backend.find_dp_modes()
         if dp_modes:
             names = ", ".join(mode for mode, _ in dp_modes)
@@ -3331,10 +3326,21 @@ class SrtConfig:
         if not isinstance(self.backend, SGLangBackend | VLLMBackend | TRTLLMBackend):
             raise ValidationError("dynamo.sidecar: true supports sglang, vllm, and trtllm backends only")
         if isinstance(self.backend, VLLMBackend) and self.backend.dp_launch_mode != "per_node":
-            raise ValidationError(
-                "vLLM sidecar mode requires engine.dp_launch_mode: per_node; per_gpu is unsupported "
-                "(set roles.<role>.sidecar: false to keep the Python worker)"
-            )
+            raise ValidationError("vLLM sidecar mode requires engine.dp_launch_mode: per_node; per_gpu is unsupported")
+
+    def _warn_python_worker(self) -> None:
+        """Steer vLLM jobs behind the Dynamo frontend to native sidecars.
+
+        Skipped for engine.failover, which needs the Python worker (see _validate_vllm_failover).
+        """
+        if self.dynamo.sidecar or self.frontend.type != "dynamo" or self.backend.failover is not None:
+            return
+        if not isinstance(self.backend, VLLMBackend):
+            return
+        logger.warning(
+            "vLLM workers run the Python dynamo.vllm worker; set `sidecar: true` on every role to run the native "
+            "engine beside a Dynamo sidecar (docs/sidecars.md). Sidecar mode will become the default soon."
+        )
 
     def _warn_dp_launch_mode(self):
         """Warn when a vLLM DP recipe selects the deprecated per-GPU layout.

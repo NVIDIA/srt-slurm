@@ -41,6 +41,7 @@ roles:
     nodes: 1
     workers: 1
     gpus: 2
+    sidecar: true
     env:
       PYTHONUNBUFFERED: "1"
     args:

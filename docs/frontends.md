@@ -161,7 +161,7 @@ roles:
 
 The default remains `vllm`, so existing recipes continue to use the Python frontend. This setting only changes direct `frontend.type: vllm` jobs; Dynamo, sidecar, and `vllm-router` launch paths are unchanged.
 
-Compare with `frontend.type: dynamo` + `engine: vllm`, which keeps Dynamo as the request router and runs each worker as a native vLLM engine beside a Dynamo sidecar by default ([Native sidecars](sidecars.md)).
+Compare with `frontend.type: dynamo` + `engine: vllm`, which keeps Dynamo as the request router and uses `python3 -m dynamo.vllm` workers discovered through etcd.
 
 ### vllm-router frontend
 

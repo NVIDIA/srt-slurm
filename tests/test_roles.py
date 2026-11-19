@@ -365,19 +365,20 @@ def test_per_role_kv_events_and_sidecar() -> None:
 
 
 @pytest.mark.parametrize(
-    ("engine", "frontend", "role_sidecar", "expected"),
+    ("engine", "frontend", "sidecar", "warns"),
     [
         ("vllm", "dynamo", None, True),
-        ("vllm", "dynamo", False, False),
+        ("trtllm", "dynamo", None, False),
+        ("vllm", "dynamo", True, False),
         ("vllm", "vllm", None, False),
-        ("sglang", "dynamo", None, False),
     ],
 )
-def test_vllm_behind_dynamo_defaults_to_sidecar(engine, frontend, role_sidecar, expected) -> None:
-    role = {"nodes": 1, "workers": 1} if role_sidecar is None else {"nodes": 1, "workers": 1, "sidecar": role_sidecar}
+def test_python_worker_warns_to_use_a_sidecar(caplog, engine, frontend, sidecar, warns) -> None:
+    role = {"nodes": 1, "workers": 1} if sidecar is None else {"nodes": 1, "workers": 1, "sidecar": sidecar}
     frontend_config = {"type": frontend, "enable_multiple_frontends": False}
-    cfg = SrtConfig.Schema().load(_minimal(engine=engine, roles={"agg": role}, frontend=frontend_config))
-    assert cfg.dynamo.sidecar is expected
+    with caplog.at_level("WARNING", logger="srtctl.core.schema"):
+        SrtConfig.Schema().load(_minimal(engine=engine, roles={"agg": role}, frontend=frontend_config))
+    assert ("Sidecar mode will become the default soon" in caplog.text) is warns
 
 
 def test_per_role_critical_feeds_the_worker_flag() -> None:

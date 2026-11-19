@@ -5030,7 +5030,7 @@ class TestDirectVllmMultiNode:
                 name="t",
                 model=ModelConfig(path="/m", container="/c.sqsh", precision="fp4"),
                 resources=ResourceConfig(gpu_type="b200", gpus_per_node=8),
-                roles={"agg": RoleConfig(nodes=2, workers=1, sidecar=False, args={"data-parallel-size": 16})},
+                roles={"agg": RoleConfig(nodes=2, workers=1, args={"data-parallel-size": 16})},
                 frontend=FrontendConfig(type="dynamo"),
                 engine=VLLMBackend(dp_launch_mode="per_gpu"),
             )

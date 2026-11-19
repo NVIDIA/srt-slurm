@@ -178,7 +178,7 @@ roles:
 | `per_node` | One process per node (default); supports node-local or distributed TP/PP      |
 | `per_gpu`  | One process per DP rank (TP x PP GPUs each; deprecated compatibility mode)    |
 
-Set `engine.dp_launch_mode: per_gpu` only when temporarily preserving the legacy process layout. Behind the Dynamo frontend, vLLM runs sidecars by default, which reject `per_gpu`; set `roles.<role>.sidecar: false` to keep it, and srtslurm emits a configuration-time deprecation warning. `per_gpu` will be removed in a future release.
+Set `engine.dp_launch_mode: per_gpu` only when temporarily preserving the legacy process layout. srtslurm emits a configuration-time deprecation warning for Dynamo-backed DP configurations that select it. `per_gpu` will be removed in a future release.
 
 When `TP x PP` fits on one node, srtslurm derives `--data-parallel-size-local` and `--data-parallel-start-rank`, then enables `--data-parallel-hybrid-lb` so every node-local process registers with the Dynamo frontend. When `TP x PP` is larger than the node-local GPU allocation, srtslurm instead derives the multi-node rendezvous arguments and makes every process except the global leader headless. For example, both DP4 x TP4 and DP2 x TP8 are selected automatically on four-GPU nodes.
 

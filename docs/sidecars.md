@@ -4,9 +4,9 @@ Native sidecar mode runs a framework's native engine beside a Dynamo sidecar tha
 
 ## Configuration
 
-vLLM jobs behind the Dynamo frontend (`engine: vllm`, `frontend.type: dynamo`) run with a sidecar by default. To keep the Python `dynamo.vllm` worker, set `sidecar: false` on every role; a job-level `dynamo.sidecar: false` cannot be told apart from the default and does not opt out. Other engines and frontends keep the Python worker unless the recipe asks for a sidecar.
-
 Set `sidecar: true` on every role to run the framework's native engine process beside a CPU-only Dynamo sidecar instead of launching `python3 -m dynamo.<framework>`. The mode is job-wide, so every role must agree; the sidecar knobs (`sidecar_port`, `sidecar_args`, ...) stay under `dynamo`. `dynamo.sidecar: true` is the equivalent job-wide spelling. The engine and sidecar share one Slurm step and have a coupled lifecycle: if either exits, srtctl terminates the other and marks the worker failed.
+
+vLLM jobs behind the Dynamo frontend that do not set `sidecar: true` still run the Python `dynamo.vllm` worker, and srtctl logs a warning when it loads them; sidecar mode will become the default for vLLM. The vLLM Dynamo examples set `sidecar: true` on every role, except `features/vllm-failover.yaml`: shadow engine recovery runs in the Python worker, so srtctl does not warn for `engine.failover`.
 
 For SGLang, srtctl also adds `--incremental-streaming-output` to the engine (the sidecar consumes deltas) and sets `SGLANG_RUST_BUILD_MODE=never` in the worker environment so the native gRPC extension is loaded from the image instead of being rebuilt with cargo, which images that run SGLang from a source checkout cannot do. Set either one in the role's `args` or `env` to override.
 

@@ -1,10 +1,10 @@
 # vLLM aggregated behind the Dynamo frontend with KV-aware routing.
 #
 # Two TP1 workers on one node, each a native `vllm-rs serve` engine beside a Dynamo
-# sidecar (the default for vLLM behind the Dynamo frontend; docs/sidecars.md). The
-# Dynamo frontend routes with `--router-mode kv`. Dynamo is pip-installed into the
-# engine container at job start (`dynamo.source`); set `dynamo.install: false` when
-# the container already ships it. The image must ship `vllm-rs` (vLLM 0.31 or later).
+# sidecar (`sidecar: true`; docs/sidecars.md). The Dynamo frontend routes with
+# `--router-mode kv`. Dynamo is pip-installed into the engine container at job start
+# (`dynamo.source`); set `dynamo.install: false` when the container already ships it.
+# The image must ship `vllm-rs` (vLLM 0.31 or later).
 #
 # Aliases (`qwen3-0.6b`, `vllm`) resolve through srtslurm.yaml; see examples/README.md.
 
@@ -38,6 +38,7 @@ roles:
     nodes: 1
     workers: 2
     gpus: 1
+    sidecar: true
     env:
       DYN_HEALTH_CHECK_ENABLED: "false"
       PYTHONUNBUFFERED: "1"

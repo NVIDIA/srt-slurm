@@ -53,7 +53,6 @@ TOY = {
             "nodes": 1,
             "workers": 2,
             "gpus": 1,
-            "sidecar": False,
             "args": {"tensor-parallel-size": 1, "gpu-memory-utilization": 0.4, "max-model-len": 4096},
         }
     },
@@ -328,7 +327,7 @@ def test_worker_command_loads_through_gms_and_drops_device_ids(tmp_path: Path) -
 
 def test_multi_node_engines_stagger_master_port(tmp_path: Path) -> None:
     data = _data()
-    data["roles"]["agg"] = {"nodes": 2, "workers": 1, "gpus": 8, "sidecar": False, "args": {"tensor-parallel-size": 16}}
+    data["roles"]["agg"] = {"nodes": 2, "workers": 1, "gpus": 8, "args": {"tensor-parallel-size": 16}}
     config = _load_data(data)
     leader0 = Process("node1", frozenset(range(8)), 7500, 6100, "agg", 0, 0, engine_id=0)
     leader1 = Process("node1", frozenset(range(8)), 7501, 6132, "agg", 0, 0, engine_id=1)
@@ -443,7 +442,7 @@ def test_worker_stage_launches_only_engines(tmp_path: Path) -> None:
 
 def test_full_node_worker_pins_nothing(tmp_path: Path) -> None:
     data = _data(services=[{"name": "otel-collector", "type": "otel-collector", "enabled": False}])
-    data["roles"]["agg"] = {"nodes": 1, "workers": 1, "gpus": 8, "sidecar": False, "args": {"tensor-parallel-size": 8}}
+    data["roles"]["agg"] = {"nodes": 1, "workers": 1, "gpus": 8, "args": {"tensor-parallel-size": 8}}
     orchestrator = _orchestrator(_load_data(data), tmp_path)
     with (
         patch(SRUN_SERVICE, return_value=_proc()) as srun_service,

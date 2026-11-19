@@ -775,10 +775,9 @@ def test_vllm_hybrid_dp_recipe_host_or_port_cannot_move_the_scraped_listener(ove
 
 
 def _is_sidecar_recipe(recipe: Path) -> bool:
-    from srtctl.core.config import load_config
-
-    with _isolated_cluster(Path("/nonexistent-model"), Path("/nonexistent.sqsh")):
-        return load_config(recipe).dynamo.sidecar
+    data = yaml.safe_load(recipe.read_text())
+    roles = (data.get("roles") or {}).values()
+    return bool((data.get("dynamo") or {}).get("sidecar")) or any((role or {}).get("sidecar") for role in roles)
 
 
 NON_SIDECAR_EXAMPLES = [recipe for recipe in example_recipes() if not _is_sidecar_recipe(recipe)]
