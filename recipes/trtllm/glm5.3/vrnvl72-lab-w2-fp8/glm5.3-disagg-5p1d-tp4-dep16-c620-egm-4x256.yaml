@@ -20,7 +20,7 @@
 schema: 2
 name: glm5.3-disagg-5p1d-tp4-dep16-c620-egm-4x256-fp8kv
 model:
-  path: /home/rihuo/GLM-5.3-NVFP4
+  path: /raid/common-models/glm-5.3-nvfp4
   container: /home/rihuo/tensorrt-llm-arm64-feat_rubin-glm5-mega-30454-mooncake-egm-optimization.sqsh
   precision: nvfp4
 resources:
