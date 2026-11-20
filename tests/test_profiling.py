@@ -16,6 +16,7 @@ from srtctl.benchmarks.base import SCRIPTS_DIR
     [
         ("dynamo", "/engine/control/start_profile", "/engine/control/stop_profile"),
         ("sglang", "/start_profile", "/stop_profile"),
+        ("vllm", "/start_profile", "/stop_profile"),
     ],
 )
 def test_profiling_shell_uses_frontend_control_routes(frontend_type, start_path, stop_path):
