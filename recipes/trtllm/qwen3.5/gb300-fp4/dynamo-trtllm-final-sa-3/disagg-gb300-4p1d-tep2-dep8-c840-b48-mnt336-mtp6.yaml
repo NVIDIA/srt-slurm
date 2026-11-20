@@ -125,7 +125,9 @@ roles:
         use_kv_cache_manager_v2: true
         remote_cache_config:
           directory: /logs/rt_rdv
-          transport: {kind: fabric, compact_host_memory: true}
+          # NIXL (RDMA over IB) instead of fabric: on this cluster host-memory fabric handles exported from
+          # a job's 4th node cannot be imported (CUDA_ERROR_INVALID_HANDLE), which strands the donors there.
+          transport: {kind: nixl}
           level:
             size: 171798691840
             expected:
@@ -260,7 +262,8 @@ roles:
         use_kv_cache_manager_v2: true
         remote_cache_config:
           directory: /logs/rt_rdv
-          transport: {kind: fabric, compact_host_memory: true}
+          # Must match the prefill side: every rank sharing the rendezvous directory uses one transport.
+          transport: {kind: nixl}
           donor:
             size: 188978561024
       max_batch_size: 48
