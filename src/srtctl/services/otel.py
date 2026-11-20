@@ -70,6 +70,11 @@ class OtelCollectorService(ServiceKind):
     def host_native(self, service: ServiceConfig) -> bool:
         return True
 
+    def checkout_files(self, service: ServiceConfig) -> tuple[str, ...]:
+        # An absolute options.binary is the user's own install, not something make setup provides.
+        binary = str(service.options.get("binary", DEFAULT_OTEL_BINARY))
+        return () if binary.startswith("/") else (binary,)
+
     def prepare(self, service: ServiceConfig, runtime: RuntimeContext, config: SrtConfig) -> None:
         binary = str(service.options.get("binary", DEFAULT_OTEL_BINARY))
         if resolve_host_binary(binary) is None:

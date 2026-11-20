@@ -182,6 +182,10 @@ class ServiceKind:
         """True to run the command straight on the node, with no container (a static host binary)."""
         return False
 
+    def checkout_files(self, service: ServiceConfig) -> tuple[str, ...]:
+        """Files in the srt-slurm checkout (``make setup`` installs them) that launching this service runs."""
+        return ()
+
     def prepare(self, service: ServiceConfig, runtime: RuntimeContext, config: SrtConfig) -> None:
         """Write anything the command needs into the run's log dir; called once per service, before launch."""
 
