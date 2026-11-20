@@ -3,6 +3,7 @@
 
 """Tests for dry-run config details display (mounts, env vars)."""
 
+import io
 import os
 import re
 import tempfile
@@ -13,9 +14,25 @@ import pytest
 import yaml
 from rich.console import Console
 
-from srtctl.cli import submit
+from srtctl.cli import remote, submit
 from srtctl.cli.submit import show_config_details
 from srtctl.core.schema import SrtConfig
+
+
+def test_ssh_dry_run_is_offline_and_defers_remote_filesystem_checks(tmp_path, monkeypatch):
+    cluster = tmp_path / "cluster.yaml"
+    cluster.write_text("launcher: host\nssh:\n  host: gpu-box\n  workdir: /remote/repo\n  venv: ~/engine-env\n")
+    monkeypatch.setenv("SRTSLURM_CONFIG", str(cluster))
+    recipe = tmp_path / "recipe.yaml"
+    recipe.write_text("model: {path: /only/on/remote, container: /only/on/remote/image.sqsh}\n")
+    args = submit.build_parser().parse_args(["dry-run", "-f", str(recipe)])
+    stream = io.StringIO()
+    with patch.object(remote.subprocess, "run", side_effect=AssertionError("dry-run connected")):
+        assert remote.submit_over_ssh(args, recipe, None, Console(file=stream)) == 0
+    assert "gpu-box" in stream.getvalue() and "/remote/repo" in stream.getvalue()
+    assert "no connection" in stream.getvalue()
+    assert not (tmp_path / "outputs").exists()
+
 
 # Minimal valid config (2.0 layout) that all tests build on
 BASE_CONFIG = {

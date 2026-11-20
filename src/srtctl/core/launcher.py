@@ -86,6 +86,7 @@ class Launcher(ABC):
     """How and where the orchestrator's processes run."""
 
     name: ClassVar[str]
+    supports_ssh: ClassVar[bool] = False
 
     def build_task_command(self, spec: LaunchSpec) -> list[str]:
         """The command the task runs: the bash wrapper around ``spec.command``, or the command itself.

@@ -175,6 +175,7 @@ class HostLauncher(LocalLauncher):
     """
 
     name = "host"
+    supports_ssh = True
 
     def __init__(self) -> None:
         super().__init__()

@@ -334,6 +334,18 @@
       "description": "Where processes run: `slurm` (srun steps inside an sbatch allocation), `docker` (one job on this machine, containers under `docker run`) or `host` (one job on this machine, every process on the host without containers). See docs/cluster-config.md#launcher.",
       "default": "slurm"
     },
+    "ssh": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SSHConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "With launcher: host, submit the entire job over SSH; see docs/cluster-config.md#host-jobs-over-ssh.",
+      "default": null
+    },
     "docker_args": {
       "anyOf": [
         {
@@ -778,6 +790,47 @@
       "description": "S3 upload configuration for log artifacts.",
       "required": [
         "bucket"
+      ]
+    },
+    "SSHConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "SSH destination, such as an alias in ~/.ssh/config or user@hostname."
+        },
+        "workdir": {
+          "type": "string",
+          "description": "Existing remote srt-slurm checkout, with launcher: host support; absolute or ~/relative."
+        },
+        "python": {
+          "type": "string",
+          "description": "Remote Python 3.10+ used for the dependency-free job supervisor.",
+          "default": "python3"
+        },
+        "uv": {
+          "type": "string",
+          "description": "Remote uv executable used to run srtctl from workdir.",
+          "default": "uv"
+        },
+        "venv": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Engine virtualenv on the remote machine; prepended to PATH and set as VIRTUAL_ENV.",
+          "default": null
+        }
+      },
+      "description": "Run a complete host-mode job on one passwordless SSH target.",
+      "required": [
+        "host",
+        "workdir"
       ]
     },
     "TelemetryExporterConfig": {
