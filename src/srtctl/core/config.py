@@ -22,6 +22,8 @@ from typing import Any
 import yaml
 from ruamel.yaml.comments import CommentedMap
 
+from srtctl.contract.failures import UnsupportedRecipeSchemaError
+
 from .lockfile import verify_lock_integrity
 from .roles import ROLE_NAMES
 from .schema import ClusterConfig, SrtConfig
@@ -176,18 +178,18 @@ def require_current_schema(config: Mapping[str, Any]) -> None:
 
     version = config.get("schema")
     if version is None:
-        raise ValueError(
+        raise UnsupportedRecipeSchemaError(
             "recipe has no `schema:` key, which marks the pre-2.0 layout; schema 1 recipes no longer load. "
             f"Declare `schema: {CURRENT_SCHEMA_VERSION}` or {MIGRATE_HINT}"
         )
     if isinstance(version, bool) or not isinstance(version, int) or version not in SUPPORTED_SCHEMA_VERSIONS:
-        raise ValueError(
+        raise UnsupportedRecipeSchemaError(
             f"schema {version!r} is not supported; this srtctl loads schema {CURRENT_SCHEMA_VERSION} only. "
             f"For an older recipe, {MIGRATE_HINT}"
         )
     legacy = legacy_keys_present(config)
     if legacy:
-        raise ValueError(
+        raise UnsupportedRecipeSchemaError(
             f"recipe uses the pre-2.0 (v1) layout: {', '.join(legacy)}. These keys no longer load; {MIGRATE_HINT}"
         )
 

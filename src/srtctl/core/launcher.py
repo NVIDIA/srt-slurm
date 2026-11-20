@@ -18,6 +18,7 @@ The launcher is picked by the ``launcher`` key of ``srtslurm.yaml``
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 import shutil
 import subprocess
@@ -28,6 +29,7 @@ from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
+from srtctl.contract.failures import Cause, FailureCode, SrtFailure
 from srtctl.core import slurm as _slurm
 
 if TYPE_CHECKING:
@@ -155,7 +157,7 @@ class Launcher(ABC):
 
     @abstractmethod
     def submit(self, script_path: Path) -> str:
-        """Hand the rendered job script over and return the new job id."""
+        """Hand the rendered job script over and return the new job id; raise ``SrtFailure`` if submission fails."""
 
     def start(self, job_id: str, job_output_dir: Path) -> int | None:
         """Run a submitted job once its output directory is staged; None when the scheduler runs it."""
@@ -391,8 +393,16 @@ class SlurmLauncher(Launcher):
         return _slurm.get_slurm_job_id()
 
     def submit(self, script_path: Path) -> str:
-        result = subprocess.run(["sbatch", str(script_path)], capture_output=True, text=True, check=True)
-        return result.stdout.strip().split()[-1]
+        try:
+            result = subprocess.run(["sbatch", str(script_path)], capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as exc:
+            raise sbatch_failure(exc.returncode, exc.stdout or "", exc.stderr or "") from exc
+        except OSError as exc:
+            raise sbatch_failure(None, "", str(exc)) from exc
+        match = _SBATCH_JOB_ID.search(result.stdout)
+        if match is None:
+            raise sbatch_failure(0, result.stdout, result.stderr)
+        return match.group(1)
 
     def shell_command(
         self, runtime: RuntimeContext, node: str, *, image: str | None = None, container_name: str | None = None
@@ -430,3 +440,43 @@ def get_launcher() -> Launcher:
     if name not in launchers():
         raise ValueError(f"srtslurm.yaml launcher: {name!r} is not one of {', '.join(sorted(launchers()))}")
     return _launcher(name)
+
+
+# sbatch.c prints `Submitted batch job <id>[ on cluster <name>]`, or `<id>[;<name>]` with --parsable.
+_SBATCH_JOB_ID = re.compile(r"^(?:Submitted batch job )?(\d+)(?: on cluster \S+|;\S+)?$", re.MULTILINE)
+_SBATCH_REFUSAL_PREFIX = "sbatch: error: Batch job submission failed: "
+# Slurm error constant -> message; slurm_errno.c, Slurm 23.02 through master.
+SBATCH_REFUSALS: dict[str, str] = {
+    "ESLURM_INVALID_TIME_LIMIT": "Requested time limit is invalid (missing or exceeds some limit)",
+    "ESLURM_INVALID_ACCOUNT": "Invalid account or account/partition combination specified",
+    "ESLURM_INVALID_PARTITION_NAME": "Invalid partition name specified",
+    "ESLURM_REQUESTED_NODE_CONFIG_UNAVAILABLE": "Requested node configuration is not available",
+    "ESLURM_INVALID_QOS": "Invalid qos specification",
+    "ESLURM_ACCOUNTING_POLICY": "Job violates accounting/QOS policy (job submit limit, user's size and/or time limits)",
+    "ESLURM_INVALID_GRES": "Invalid generic resource (gres) specification",
+    "ESLURM_INVALID_NODE_COUNT": "Node count specification invalid",
+    "ESLURM_INVALID_FEATURE": "Invalid feature specification",
+    "ESLURM_PARTITION_NOT_AVAIL": "Required partition not available (inactive or drain)",
+    "ESLURM_INVALID_LICENSES": "Invalid license specification",
+}
+
+
+def sbatch_failure(returncode: int | None, stdout: str, stderr: str) -> SrtFailure:
+    """Classify a failed sbatch call: a listed controller refusal is ``sbatch_rejected``, anything else is not."""
+    stderr = stderr.strip()
+    cause = Cause(producer="sbatch", return_code=returncode, message=stderr or stdout.strip() or None)
+    refused = {
+        line.removeprefix(_SBATCH_REFUSAL_PREFIX)
+        for line in stderr.splitlines()
+        if line.startswith(_SBATCH_REFUSAL_PREFIX)
+    }
+    for subcode, text in SBATCH_REFUSALS.items():
+        if text in refused:
+            return SrtFailure(FailureCode.SBATCH_REJECTED, "Slurm rejected the job", subcode=subcode, cause=cause)
+    if returncode is None:
+        message = "Could not run sbatch"
+    elif returncode == 0:
+        message = "sbatch did not report a job id"
+    else:
+        message = "sbatch failed"
+    return SrtFailure(FailureCode.SUBMISSION_FAILED, message, cause=cause)

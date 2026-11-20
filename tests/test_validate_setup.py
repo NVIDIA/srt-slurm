@@ -13,6 +13,7 @@ import pytest
 
 from srtctl.cli import submit
 from srtctl.cli.submit import validate_setup
+from srtctl.contract.failures import FailureCode, SrtFailure
 from srtctl.core.schema import (
     BenchmarkConfig,
     CpuPowerExporterConfig,
@@ -57,8 +58,9 @@ class TestValidateSetup:
         (tmp_path / "bin" / "uv").touch()
         (tmp_path / "bin" / "tachometer-scraper").touch()
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(SrtFailure) as excinfo:
             validate_setup(tmp_path)
+        assert excinfo.value.code is FailureCode.SETUP_INCOMPLETE
 
     def test_fails_when_etcd_missing(self, tmp_path: Path):
         """validate_setup fails when etcd is missing."""
@@ -68,8 +70,9 @@ class TestValidateSetup:
         (tmp_path / "bin" / "uv").touch()
         (tmp_path / "bin" / "tachometer-scraper").touch()
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(SrtFailure) as excinfo:
             validate_setup(tmp_path)
+        assert excinfo.value.code is FailureCode.SETUP_INCOMPLETE
 
     def test_fails_when_uv_missing(self, tmp_path: Path):
         """validate_setup fails when bin/uv is missing."""
@@ -79,8 +82,9 @@ class TestValidateSetup:
         (tmp_path / "bin").mkdir()
         (tmp_path / "bin" / "tachometer-scraper").touch()
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(SrtFailure) as excinfo:
             validate_setup(tmp_path)
+        assert excinfo.value.code is FailureCode.SETUP_INCOMPLETE
 
     def test_fails_when_tachometer_scraper_missing(self, tmp_path: Path):
         """validate_setup fails when the compute-architecture scraper is missing."""
@@ -90,13 +94,15 @@ class TestValidateSetup:
         (tmp_path / "bin").mkdir()
         (tmp_path / "bin" / "uv").touch()
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(SrtFailure) as excinfo:
             validate_setup(tmp_path)
+        assert excinfo.value.code is FailureCode.SETUP_INCOMPLETE
 
     def test_fails_when_all_missing(self, tmp_path: Path):
         """validate_setup fails when nothing has been set up."""
-        with pytest.raises(SystemExit):
+        with pytest.raises(SrtFailure) as excinfo:
             validate_setup(tmp_path)
+        assert excinfo.value.code is FailureCode.SETUP_INCOMPLETE
 
     @staticmethod
     def _setup_tree(tmp_path: Path) -> None:
@@ -130,8 +136,9 @@ class TestValidateSetup:
         """A recipe that enables CPU power cannot run without the exporter."""
         self._setup_tree(tmp_path)
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(SrtFailure) as excinfo:
             validate_setup(tmp_path, self._config(cpu_power_enabled=True))
+        assert excinfo.value.code is FailureCode.SETUP_INCOMPLETE
 
     def test_cpu_power_exporter_is_not_required_when_telemetry_disabled(self, tmp_path: Path):
         """cpu_power_exporter only matters if telemetry.enabled -- start_cpu_power_telemetry
@@ -176,8 +183,9 @@ class TestValidateSetup:
         exporter.write_bytes(ELF_X86_64)
         exporter.chmod(0o644)
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(SrtFailure) as excinfo:
             validate_setup(tmp_path, self._config(cpu_power_enabled=True))
+        assert excinfo.value.code is FailureCode.SETUP_INCOMPLETE
 
     def test_an_exporter_built_for_another_architecture_is_rejected(self, tmp_path: Path):
         """A checkout carried between clusters keeps a binary that cannot run."""
@@ -189,8 +197,9 @@ class TestValidateSetup:
         _install(tmp_path / "bin" / "uv", compute_image)
         _install(tmp_path / "bin" / "cpu-power-exporter", other)
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(SrtFailure) as excinfo:
             validate_setup(tmp_path, self._config(cpu_power_enabled=True))
+        assert excinfo.value.code is FailureCode.SETUP_INCOMPLETE
 
     @pytest.mark.parametrize("binary_state", ["missing", "non_executable", "wrong_arch"])
     def test_submission_rejects_invalid_cpu_exporter(
@@ -222,8 +231,9 @@ class TestValidateSetup:
             return run(command, **kwargs)
 
         monkeypatch.setattr(submit.subprocess, "run", record_submission)
-        with pytest.raises(SystemExit):
+        with pytest.raises(SrtFailure) as excinfo:
             submit.submit_with_orchestrator(tmp_path / "recipe.yaml", config=self._config(cpu_power_enabled=True))
+        assert excinfo.value.code is FailureCode.SETUP_INCOMPLETE
         assert submissions == []
 
 

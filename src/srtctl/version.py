@@ -55,6 +55,7 @@ class VersionInfo:
     commit: str | None
     recipe_schema_versions: tuple[int, ...]
     lockfile_version: int
+    record_schema_version: int
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -62,10 +63,14 @@ class VersionInfo:
     def __str__(self) -> str:
         commit = f" ({self.commit})" if self.commit else ""
         schemas = ", ".join(str(v) for v in self.recipe_schema_versions)
-        return f"srtctl {self.version}{commit}; recipe schema {schemas}; lockfile v{self.lockfile_version}"
+        return (
+            f"srtctl {self.version}{commit}; recipe schema {schemas}; lockfile v{self.lockfile_version}; "
+            f"records v{self.record_schema_version}"
+        )
 
 
 def version_info() -> VersionInfo:
+    from srtctl.contract.failures import RECORD_SCHEMA_VERSION
     from srtctl.core.lockfile import LOCKFILE_VERSION
     from srtctl.core.schema import SUPPORTED_SCHEMA_VERSIONS
 
@@ -74,4 +79,5 @@ def version_info() -> VersionInfo:
         commit=source_commit(),
         recipe_schema_versions=tuple(SUPPORTED_SCHEMA_VERSIONS),
         lockfile_version=LOCKFILE_VERSION,
+        record_schema_version=RECORD_SCHEMA_VERSION,
     )
