@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from srtctl.core.health import WorkerHealthResult, probe_http_ok
 from srtctl.frontends.base import logical_health_expectations, register_frontend
 from srtctl.frontends.static_router import RouterWorker, StaticRouterFrontend, setup_script_preamble
+from srtctl.frontends.vllm_common import validate_mooncake_workers
 from srtctl.ports import VLLM_DISCOVERY_PORT
 
 if TYPE_CHECKING:
@@ -68,6 +69,8 @@ class VLLMRouterFrontend(StaticRouterFrontend):
 
     type: ClassVar[str] = "vllm-router"
     required_backend: ClassVar[str | None] = "vllm"
+    moriio_routing: ClassVar[Literal["discovery", "static-read"] | None] = "discovery"
+    supports_mooncake_bootstrap: ClassVar[bool] = True
     # Router expands each node-local hybrid-LB pool into its DP ranks itself.
     expands_node_local_dp: ClassVar[bool] = True
     executable: ClassVar[tuple[str, ...]] = ("vllm-router",)
@@ -169,28 +172,11 @@ class VLLMRouterFrontend(StaticRouterFrontend):
         The Router hands each decode request the prefill's engine ID, so both roles
         run the connector, and it runs one ``--kv-connector`` for every pair.
         """
+        validate_mooncake_workers(config)
         backend = config.backend
-        if config.topology.num_agg:
-            raise ValueError(
-                "the Mooncake connector requires a prefill/decode topology; aggregate workers transfer no KV"
-            )
-        connectors = {mode: backend.bootstrap_connector(mode) for mode in ("prefill", "decode")}
-        if connectors["prefill"] != connectors["decode"]:
-            names = ", ".join(f"{mode}={backend.kv_connector_classes(mode)}" for mode in connectors)
-            raise ValueError(f"the Mooncake connector must be set on both prefill and decode; got {names}")
-        if config.health_check is None:
-            raise ValueError(
-                "the Mooncake connector requires health_check so prefill registers before the Router starts"
-            )
-        if config.topology.worker_restart("prefill").enabled:
-            raise ValueError(
-                "the Mooncake connector requires prefill restart: never; the Router caches engine IDs at startup"
-            )
-        if (backend._get_dp_size("prefill") or 1) > 1:
-            raise ValueError("the Mooncake connector currently requires prefill data-parallel-size: 1")
         frontend_args = {str(key).replace("_", "-"): value for key, value in (config.frontend.args or {}).items()}
         configured = frontend_args.get("kv-connector")
-        derived = connectors["prefill"]
+        derived = backend.bootstrap_connector("prefill")
         if configured is not None and str(configured) != derived:
             raise ValueError(
                 f"frontend.args.kv-connector conflicts with the workers' connector: configured {configured}, "

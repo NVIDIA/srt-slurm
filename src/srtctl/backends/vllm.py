@@ -363,7 +363,7 @@ class VLLMBackend(Backend):
 
     # Default KV connector: "nixl", "lmcache", "lmcache-mp", "kvbm", "moriio", "mooncake", or a raw JSON string for
     # --kv-transfer-config. Can be overridden per role by setting "connector" in roles.<role>.args; connector_for_mode
-    # resolves it. "moriio" (ROCm MoRI-IO) registers workers with the vLLM Router and needs frontend.type: vllm-router.
+    # resolves it. "moriio" (ROCm MoRI-IO) uses vLLM Router discovery or ATOMesh static READ routing.
     # "mooncake" (vLLM MooncakeConnector) runs the vLLM Router in --kv-connector mooncake mode.
     # dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).
     connector: str | None = "nixl"
@@ -539,11 +539,10 @@ class VLLMBackend(Backend):
         )
 
     def discovers_workers(self) -> bool:
-        """Whether the prefill/decode workers register with the router over its discovery endpoint.
+        """Whether either role uses a connector with allocated peer metadata listeners.
 
-        True when either role runs a discovery connector (MoRI-IO); the router then learns
-        its workers by registration instead of from URLs on its command line, and the
-        vLLM Router's ``validate`` requires both roles to agree.
+        MoRI-IO uses vLLM Router registration or ATOMesh static READ URLs. The
+        frontend selects that behavior and requires both roles to agree.
         """
         return any(row is not None and row.discovery for row in map(self.kv_connector_for_mode, ("prefill", "decode")))
 
@@ -567,6 +566,7 @@ class VLLMBackend(Backend):
         runtime: RuntimeContext | None = None,
         *,
         use_default: bool = True,
+        register_with_router: bool = True,
     ) -> str | None:
         """``--kv-transfer-config`` JSON for a worker mode, or None when the mode has no connector.
 
@@ -590,11 +590,13 @@ class VLLMBackend(Backend):
             return _connector_to_kv_transfer_config(connector, mode)
         if process is None or runtime is None:
             raise ValueError(
-                f"connector {connector!r} registers workers with the vLLM Router and needs the worker topology; "
-                "it is only available with frontend.type: vllm-router"
+                f"connector {connector!r} needs the worker topology for peer metadata; "
+                "it is only available with frontend.type: vllm-router or atomesh"
             )
         payload, extra = self._discovery_template(mode, connector, row)
-        for key, value in self._discovery_extra_config(process, runtime).items():
+        for key, value in self._discovery_extra_config(
+            process, runtime, register_with_router=register_with_router
+        ).items():
             configured = extra.get(key, value)
             if key.endswith("_port") and type(configured) is int:
                 configured = str(configured)
@@ -651,7 +653,9 @@ class VLLMBackend(Backend):
             raise TypeError("discovery read_mode must be a JSON boolean")
         return payload, extra
 
-    def _discovery_extra_config(self, process: Process, runtime: RuntimeContext) -> dict[str, Any]:
+    def _discovery_extra_config(
+        self, process: Process, runtime: RuntimeContext, *, register_with_router: bool = True
+    ) -> dict[str, Any]:
         """MoRI-IO's ``kv_connector_extra_config`` (the keys ``moriio_common.py`` reads, vllm-project/vllm 9679173788)."""
         from srtctl.core.slurm import get_hostname_ip
 
@@ -661,7 +665,7 @@ class VLLMBackend(Backend):
                 "the topology was built without a discovery connector"
             )
         return {
-            "proxy_ip": runtime.head_node_ip,
+            "proxy_ip": runtime.head_node_ip if register_with_router else "",
             "proxy_ping_port": str(VLLM_DISCOVERY_PORT),
             "http_port": str(process.http_port),
             # Upstream falls back to its own interface guess, which is the wrong NIC on multi-homed nodes.
@@ -1381,7 +1385,13 @@ class VLLMBackend(Backend):
 
             # A prefill/decode worker gets its KV connector. An aggregate worker gets
             # only the one its role names (e.g. lmcache-mp offload), not the P/D default.
-            kv_transfer_config = self.kv_transfer_config(mode, process, runtime, use_default=mode != "agg")
+            kv_transfer_config = self.kv_transfer_config(
+                mode,
+                process,
+                runtime,
+                use_default=mode != "agg",
+                register_with_router=frontend.moriio_routing != "static-read",
+            )
             for key in ("connector", "kv-transfer-config", "kv_transfer_config"):
                 config.pop(key, None)
             if kv_transfer_config is not None:

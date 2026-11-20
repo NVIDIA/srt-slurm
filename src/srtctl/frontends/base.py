@@ -58,6 +58,12 @@ class Frontend(ABC):
     #: ``SrtConfig._validate_frontend`` enforces it at config load.
     required_backend: ClassVar[str | None] = None
 
+    #: How native vLLM MoRI-IO peers are routed; None means unsupported.
+    moriio_routing: ClassVar[Literal["discovery", "static-read"] | None] = None
+
+    #: Router supplies vLLM's Mooncake bootstrap metadata to decode requests.
+    supports_mooncake_bootstrap: ClassVar[bool] = False
+
     #: Whether ``frontend.epp_config`` configures this frontend; ``_validate_frontend`` rejects it otherwise.
     accepts_epp_config: ClassVar[bool] = False
 
