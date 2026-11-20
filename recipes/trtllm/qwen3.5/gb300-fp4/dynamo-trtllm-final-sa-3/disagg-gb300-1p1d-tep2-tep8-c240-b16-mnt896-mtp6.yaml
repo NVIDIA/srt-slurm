@@ -16,13 +16,13 @@ schema: 2
 name: disagg-gb300-1p1d-tep2-tep8-c240-b16-mnt896-mtp6-dynamo
 model:
   path: /data/home/rihuo/Qwen3.5-397B-A17B-NVFP4-V2
-  container: /data/home/rihuo/nvidia+tensorrt-llm+release+1.4.0rc3.dev202611020007+pr21997-088a393a5.sqsh
+  container: /data/home/rihuo/tensorrt-llm-release-1.4.0rc4-dev202611170009.sqsh
   precision: nvfp4
 identity:
   model:
     repo: nvidia/Qwen3.5-397B-A17B-NVFP4-V2
   container:
-    image: /data/home/rihuo/nvidia+tensorrt-llm+release+1.4.0rc3.dev202611020007+pr21997-088a393a5.sqsh
+    image: /data/home/rihuo/tensorrt-llm-release-1.4.0rc4-dev202611170009.sqsh
   frameworks:
     tensorrt_llm: '1.4.0rc4 (PR #21997 @ 088a393a53)'
     dynamo: 1.8.0.dev20261119
@@ -77,6 +77,10 @@ roles:
       UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
       UCX_RC_VERBS_TIMEOUT: 4s
       UCX_KEEPALIVE_INTERVAL: 60s
+      # The driver rejects PCIe-mapped GPU dma-bufs here (GPU and NIC in different IOMMU groups).
+      # Turn off UCX direct NIC and register GPU memory through nvidia_peermem instead of dma-buf.
+      UCX_IB_DIRECT_NIC: 'n'
+      UCX_CUDA_COPY_DMABUF: 'no'
       TRTLLM_DISAGG_ROLE: context
       DYN_ENGINE_CONV_AFFINITY: '1'
       DYN_ROUTER_MODE: kv
@@ -207,6 +211,10 @@ roles:
       UCX_TLS: rc,cuda_ipc,cuda_copy,sm,self,tcp
       UCX_RC_VERBS_TIMEOUT: 4s
       UCX_KEEPALIVE_INTERVAL: 60s
+      # The driver rejects PCIe-mapped GPU dma-bufs here (GPU and NIC in different IOMMU groups).
+      # Turn off UCX direct NIC and register GPU memory through nvidia_peermem instead of dma-buf.
+      UCX_IB_DIRECT_NIC: 'n'
+      UCX_CUDA_COPY_DMABUF: 'no'
       DYN_ROUTER_MODE: kv
       DYN_ROUTER_POLICY_CONFIG: /configs/dynamo-router-policy-output-length.yaml
     args:
