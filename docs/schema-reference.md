@@ -818,6 +818,7 @@ Top-level keys of `srtslurm.yaml`. Recipes inherit these defaults and resolve al
 | `default_health_check` | dict[str, int] \| None | `None` | `health_check` block (`max_attempts`, `interval_seconds`) used when a recipe has none. |
 | `default_reuse_container` | bool | `False` | Default for recipe `reuse_container`; explicit true or false in the recipe wins. |
 | `srtctl_root` | str \| None | `None` | srtctl checkout on the shared filesystem that compute nodes mount at /srtctl-src. Default: this checkout. |
+| `compute_venv` | str \| None | `None` | Path of the batch job's compute-architecture venv (default: `.venv-compute` in the srtctl checkout), e.g. node-local disk when the checkout sits on small or distant shared storage. Must exist on every node when `telemetry.cpu_power` is on. Environment variables expand on the submitting host. |
 | `output_dir` | str \| None | `None` | Custom output directory for job logs |
 | `model_paths` | dict[str, str] \| None | `None` | Alias -> path map; a recipe's `model.path` may name an alias instead of a path. |
 | `containers` | dict[str, str] \| None | `None` | Alias -> image map, resolved for every container key in a recipe (`model.container`, `roles.<role>.container`, ...). |
