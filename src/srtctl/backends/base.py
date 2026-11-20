@@ -39,6 +39,7 @@ class BackendType(str, Enum):
     ATOM = "atom"
     TILERT = "tilert"
     TOKENSPEED = "tokenspeed"
+    LLAMACPP = "llamacpp"
 
 
 @dataclass
@@ -158,6 +159,9 @@ class Backend(ABC):
     3. Building commands to start those processes
     """
 
+    #: A required frontend for engines that implement only one serving topology; None allows any frontend.
+    required_frontend: ClassVar[str | None] = None
+
     #: Path where the engine's own HTTP server serves Prometheus text. Frontends
     #: whose workers are the engine's own server (``direct``) scrape it; see
     #: ``Frontend.worker_metrics_path``.
@@ -212,6 +216,10 @@ class Backend(ABC):
         Returns SrunConfig with MPI settings and launch strategy.
         """
         return SrunConfig()
+
+    def launch_settings(self) -> dict[str, str]:
+        """Engine-specific launch inputs displayed by dry-run, beyond role args and environment."""
+        return {}
 
     def fatal_log_patterns(self, mode: WorkerMode) -> tuple[str, ...]:
         """Regular expressions that, printed in a worker's log, mean the engine is gone.
@@ -357,6 +365,10 @@ class Backend(ABC):
     def get_served_model_name(self, default: str) -> str:
         """Get served model name from backend config, or return default."""
         return default
+
+    def get_metrics_path(self, mode: WorkerMode) -> str | None:
+        """Effective native worker metrics path for a mode; None when it publishes no metrics."""
+        return self.grpc_metrics_path if self.is_grpc_mode(mode) else self.prometheus_metrics_path
 
     def is_grpc_mode(self, mode: WorkerMode) -> bool:
         """Whether the mode's workers serve gRPC instead of HTTP.

@@ -9,6 +9,7 @@ importing it from here is what makes ``frontend.type: <type>`` resolvable.
 ``list_frontend_types()`` is the registry, ``none`` included.
 
 Supported frontend types:
+- llamacpp: Direct llama-server for one aggregate GGUF worker
 - dynamo: Dynamo frontend with NATS/etcd communication
 - infera: Infera router discovering self-registering SGLang workers through etcd
 - llm-d: llm-d Endpoint Picker behind Envoy, with the P/D sidecar on decode workers
@@ -32,6 +33,7 @@ from srtctl.frontends.base import (
 from srtctl.frontends.dynamic_frontend import DynamicFrontend
 from srtctl.frontends.dynamo import DynamoFrontend
 from srtctl.frontends.infera import InferaFrontend
+from srtctl.frontends.llamacpp import LlamaCppFrontend
 from srtctl.frontends.llm_d import LLMDFrontend
 from srtctl.frontends.sglang import SGLangRouterFrontend
 from srtctl.frontends.sglang_direct import SGLangFrontend
@@ -49,6 +51,7 @@ __all__ = [
     "Frontend",
     "InferaFrontend",
     "LLMDFrontend",
+    "LlamaCppFrontend",
     "SGLangFrontend",
     "SGLangRouterFrontend",
     "SMGFrontend",

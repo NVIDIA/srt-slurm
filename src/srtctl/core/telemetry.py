@@ -262,7 +262,7 @@ def generate_tachometer_config(
     # SGLang or aggregate trtllm-serve) has no separate process either: the endpoint
     # is the aggregate leader's node, which may differ from the configured frontend node.
     frontend_nodes: list[str] = []
-    if frontend is not None:
+    if frontend is not None and metrics_path is not None:
         frontend_nodes = frontend.direct_endpoint_nodes(processes) or list(frontend_topology.frontend_nodes)
 
     for frontend_index, node in enumerate(frontend_nodes):
