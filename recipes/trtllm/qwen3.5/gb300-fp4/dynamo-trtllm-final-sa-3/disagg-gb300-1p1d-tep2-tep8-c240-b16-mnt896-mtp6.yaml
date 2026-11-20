@@ -307,6 +307,9 @@ frontend:
   args:
     router-mode: kv
     router-session-affinity-ttl-secs: '14400'
+    # The frontend builds its router plugins from its own policy at startup; a decode worker set
+    # that advertises this classifier fails to register unless the frontend has built it too.
+    router-policy-config: /configs/dynamo-router-policy-output-length.yaml
   placement:
     node: first_decode
 benchmark:
