@@ -1,8 +1,11 @@
 # TRT-LLM aggregated behind the Dynamo frontend with KV-aware routing.
 #
-# Two TP1 `dynamo.trtllm` workers on one node register with etcd/NATS; the Dynamo
-# frontend routes with `--router-mode kv`. Dynamo TRT-LLM runtime images already
-# ship `ai-dynamo`, so the install step is skipped.
+# Two TP1 workers on one node, each a TRT-LLM OpenEngine gRPC engine beside a Dynamo
+# sidecar (`sidecar: true`; docs/sidecars.md), register with etcd/NATS; the Dynamo
+# frontend routes with `--router-mode kv`.
+#
+# The setup script and the ai-dynamo pin let the sidecar run on Dynamo's 1.6.x TRT-LLM image;
+# see docs/sidecars.md.
 #
 # Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
 
@@ -20,8 +23,12 @@ model:
 resources:
   gpu_type: "h100"
   gpus_per_node: 8
+
+setup_script: "install-trtllm-openengine.sh"
+
 dynamo:
-  install: false
+  source:
+    pypi: "1.7.0.dev20261116"
 
 frontend:
   type: dynamo
@@ -37,6 +44,7 @@ roles:
     nodes: 1
     workers: 2
     gpus: 1
+    sidecar: true
     env:
       PYTHONUNBUFFERED: "1"
       TLLM_LOG_LEVEL: "INFO"

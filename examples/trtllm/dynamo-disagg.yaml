@@ -1,9 +1,12 @@
 # TRT-LLM disaggregated prefill/decode behind the Dynamo frontend.
 #
-# One TP1 prefill and one TP1 decode `dynamo.trtllm` worker sharing a node
-# (`nodes: colocate` places decode on the prefill node's spare GPUs). KV moves
-# through the UCX cache transceiver; the Dynamo frontend routes with
-# `--router-mode kv`. Dynamo TRT-LLM runtime images already ship `ai-dynamo`.
+# One TP1 prefill and one TP1 decode worker sharing a node (`nodes: colocate`
+# places decode on the prefill node's spare GPUs), each a TRT-LLM OpenEngine gRPC
+# engine beside a Dynamo sidecar (`sidecar: true`; docs/sidecars.md). KV moves
+# through the UCX cache transceiver; the Dynamo frontend routes with `--router-mode kv`.
+#
+# The setup script and the ai-dynamo pin let the sidecar run on Dynamo's 1.6.x TRT-LLM image;
+# see docs/sidecars.md.
 #
 # Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
 
@@ -21,8 +24,12 @@ model:
 resources:
   gpu_type: "h100"
   gpus_per_node: 8
+
+setup_script: "install-trtllm-openengine.sh"
+
 dynamo:
-  install: false
+  source:
+    pypi: "1.7.0.dev20261116"
 
 frontend:
   type: dynamo
@@ -38,6 +45,7 @@ roles:
     nodes: 1
     workers: 1
     gpus: 1
+    sidecar: true
     env:
       PYTHONUNBUFFERED: "1"
       TLLM_LOG_LEVEL: "INFO"
@@ -57,6 +65,7 @@ roles:
     nodes: colocate
     workers: 1
     gpus: 1
+    sidecar: true
     env:
       PYTHONUNBUFFERED: "1"
       TLLM_LOG_LEVEL: "INFO"
