@@ -124,10 +124,12 @@ roles:
         use_kv_cache_manager_v2: true
         remote_cache_config:
           directory: /logs/rt_rdv
-          cache_size: 214748364800
-          transport: fabric
-          expected_num_donors: 8
-          expected_claim_size: 435939180544
+          transport: {kind: fabric, compact_host_memory: true}
+          level:
+            size: 214748364800
+            expected:
+              num_donors: 8
+              claim_size: 435939180544
       max_batch_size: 64
       max_num_tokens: 16384
       max_seq_len: 262144
@@ -261,8 +263,9 @@ roles:
         use_kv_cache_manager_v2: true
         remote_cache_config:
           directory: /logs/rt_rdv
-          donate_size: 171798691840
-          transport: fabric
+          transport: {kind: fabric, compact_host_memory: true}
+          donor:
+            size: 171798691840
         defer_generation_only_release: true
       max_batch_size: 16
       max_num_tokens: 896
