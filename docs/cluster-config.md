@@ -116,6 +116,96 @@ Do not run `make setup` on a Mac: it downloads Linux binaries into `bin/`, which
 
 [`examples/host/vllm-agg-1gpu.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/host/vllm-agg-1gpu.yaml) is a one-GPU vLLM recipe for `host`, benchmarked with a custom `vllm bench serve` command; it sets nothing launcher-specific, so the same file is a valid `docker` or `slurm` recipe.
 
+#### Host jobs over SSH
+
+Set `ssh` alongside `launcher: host` to run the entire job on another machine:
+the orchestrator, engine, health checks, benchmark and post-processing all run
+there. The engine can expose its own API with `frontend.type: vllm` or `sglang`;
+this does not require a separate router. This is one remote machine, with the
+same topology and benchmark limitations as local host mode.
+
+```yaml
+launcher: host
+ssh:
+  host: gpu-box
+  workdir: /home/user/srt-slurm
+```
+
+`host` is an OpenSSH destination (an alias from `~/.ssh/config` or
+`user@hostname`). Configure passwordless authentication and the host's known
+key before applying: the transport uses `BatchMode=yes` and
+`StrictHostKeyChecking=yes`. Ports, identities and jump hosts come from your SSH
+config. See [SSHConfig](schema-reference.md#sshconfig) for every setting.
+
+The target needs an existing checkout with host-launcher support, Python 3.10+
+for supervision and `uv`. Submission invokes the existing host-mode `srtctl apply`
+on that checkout, using the remote SSH session's environment. Engine and benchmark
+tools, recipe setup hooks and dependency requirements behave exactly as in local
+host mode. There is no separate SSH virtualenv or package configuration. The `uv`
+job environment uses Python 3.12, as local host jobs do. `ssh.python` and `ssh.uv`
+select executables when they are not on the remote SSH session's `PATH`. The
+checkout is used in place, without fetching, resetting or copying source from
+the submitting machine.
+
+```bash
+srtctl dry-run -f examples/host/vllm-agg-1gpu.yaml
+srtctl apply -f examples/host/vllm-agg-1gpu.yaml --json
+```
+
+The dry-run prints the target, remote checkout, environment and output plan
+without connecting or creating remote files. Apply transfers that one recipe
+and the effective cluster configuration into a private remote submission
+directory. Recipe overrides, selectors, sweeps, tags, `--serve-only` and
+`--no-preflight` are forwarded as arguments. Directory submissions are not
+supported. Model resolution, source pinning, preflight and setup checks take
+place remotely, so a laptop need not have the remote model or binary paths.
+The `preflight`, `render` and `cache-inputs` subcommands are not supported with
+an SSH target; they require local execution. Only the recipe and configuration
+are transferred: models, mounts, setup
+scripts and other referenced files must already exist on the target. All paths
+except the local `-f` recipe refer to the remote machine; relative output paths
+are relative to `ssh.workdir`.
+
+srtctl does not copy the local process environment or authentication secrets into
+the request; your OpenSSH settings still apply. Configure authentication for
+gated models or reporting on the target, and keep credentials
+out of recipe and cluster YAML, which are saved with the job. The remote copy
+of the cluster configuration clears `ssh` to avoid recursive dispatch and sets
+`srtctl_root` to the resolved remote checkout.
+
+Apply returns an `ssh-<id>` once the detached supervisor starts. This acknowledges
+submission, not model readiness or benchmark success; validation or startup
+failures are recorded in status and logs. Jobs continue after the SSH connection
+or local terminal closes. Use the same SSH cluster configuration to manage them:
+
+```bash
+srtctl remote list
+srtctl remote status ssh-0123456789abcdef0123456789abcdef
+srtctl remote logs ssh-0123456789abcdef0123456789abcdef --follow
+srtctl remote stop ssh-0123456789abcdef0123456789abcdef
+```
+
+List and status return JSON with state, exit code and remote output/log paths.
+Logs reads the saved apply output; Ctrl+C stops following without stopping the
+job. Stop requests graceful Ctrl+C handling from the remote supervisor: the
+host orchestrator cleans up the engine groups and runs teardown. The supervisor
+allows 180 seconds, then kills the apply process group and marks a timeout as
+failed; inspect the target for surviving processes in that case. A missing
+supervisor heartbeat is reported as `unknown`, never as a successful stop, and
+stop does not signal a PID from a stale status file.
+
+Submission records and the aggregate log are under
+`<ssh.workdir>/outputs/ssh/<ssh-id>/`. By default the underlying host jobs write
+their usual output directories under its `runs/` subdirectory; `--output` or
+the cluster's `output_dir` overrides that destination on the remote machine.
+The Slurm dashboard and MCP job tools do not list these submissions; use the
+`remote` commands. To call the server from your laptop, use a reachable server
+address or an SSH port forward; remote benchmarks use the target's loopback
+address.
+
+A copyable cluster configuration is in
+[`examples/host/srtslurm-ssh.yaml.example`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/host/srtslurm-ssh.yaml.example).
+
 ### Running without `srtslurm.yaml`
 
 `srtslurm.yaml` is optional. A recipe can be fully self-sustaining as long as it supplies everything the cluster yaml would otherwise provide:

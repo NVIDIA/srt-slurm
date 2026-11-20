@@ -1,5 +1,11 @@
 # Monitoring
 
+For host jobs submitted through `ssh` in `srtslurm.yaml`, use `srtctl remote list`,
+`srtctl remote status <ssh-id>`, `srtctl remote logs <ssh-id> --follow` and
+`srtctl remote stop <ssh-id>`. These jobs survive disconnects; their state and
+logs stay on the target. See [SSH host jobs](cluster-config.md#host-jobs-over-ssh).
+The dashboard below uses Slurm and does not list SSH submissions.
+
 ## Table of Contents
 
 - [Live Dashboard (srtctl monitor)](#live-dashboard-srtctl-monitor)

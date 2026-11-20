@@ -378,6 +378,35 @@ class HostSetupConfig:
         return bool(self.commands or self.teardown)
 
 
+@dataclass(frozen=True)
+class SSHConfig:
+    """Run a complete host-mode job on one passwordless SSH target.
+
+    All paths except the recipe passed to ``-f`` belong to the remote machine.
+    SSH authentication, ports and jump hosts use the user's OpenSSH config.
+    """
+
+    # SSH destination, such as an alias in ~/.ssh/config or user@hostname.
+    host: str
+    # Existing remote srt-slurm checkout, with launcher: host support; absolute or ~/relative.
+    workdir: str
+    # Remote Python 3.10+ used for the dependency-free job supervisor.
+    python: str = "python3"
+    # Remote uv executable used to run srtctl from workdir.
+    uv: str = "uv"
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if not self.host or self.host.startswith("-") or any(c.isspace() or c == "\0" for c in self.host):
+            raise ValueError("ssh.host must be a non-empty SSH destination, without whitespace or a leading '-'")
+        if not self.workdir.startswith(("/", "~/")):
+            raise ValueError("ssh.workdir must be an absolute remote path or start with ~/")
+        for name, value in (("python", self.python), ("uv", self.uv)):
+            if not value or "\0" in value or "\n" in value:
+                raise ValueError(f"ssh.{name} must name one executable, not an empty value")
+
+
 @dataclass
 class ClusterConfig:
     """Cluster configuration from srtslurm.yaml."""
@@ -465,6 +494,8 @@ class ClusterConfig:
     # machine, containers under `docker run`) or `host` (one job on this machine, every process on the
     # host without containers). See docs/cluster-config.md#launcher.
     launcher: Literal["slurm", "docker", "host"] = "slurm"
+    # With launcher: host, submit the entire job over SSH; see docs/cluster-config.md#host-jobs-over-ssh.
+    ssh: SSHConfig | None = None
     # Extra `docker run` arguments for every container under `launcher: docker`, e.g. `["--user", "1000:1000"]`.
     docker_args: list[str] | None = None
     # The `--gpus` value for every container under `launcher: docker` (default `all`), e.g. `"device=2,3,4,5"`
@@ -473,6 +504,13 @@ class ClusterConfig:
     docker_gpus: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if self.ssh is not None:
+            from srtctl.core.launcher import launchers
+
+            if not launchers()[self.launcher].supports_ssh:
+                raise ValueError("ssh requires launcher: host; the entire job runs on that SSH target")
 
 
 # ============================================================================

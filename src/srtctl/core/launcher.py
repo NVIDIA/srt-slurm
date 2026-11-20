@@ -90,6 +90,7 @@ class Launcher(ABC):
     # opens an image, so preflight does not stat the recipe's images and the runtime does not
     # require the file to exist.
     uses_container_images: ClassVar[bool] = True
+    supports_ssh: ClassVar[bool] = False
 
     def build_task_command(self, spec: LaunchSpec) -> list[str]:
         """The command the task runs: the bash wrapper around ``spec.command``, or the command itself.

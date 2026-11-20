@@ -2162,6 +2162,9 @@ def build_parser() -> argparse.ArgumentParser:
   srtctl apply -f config.yaml --sweep            # Submit sweep
   srtctl preflight -f config.yaml                # Check model/container availability
   srtctl dry-run -f config.yaml                  # Dry run
+  srtctl remote list                            # List jobs submitted through ssh in srtslurm.yaml
+  srtctl remote logs ssh-<id> --follow            # Follow a remote host job; Ctrl+C leaves it running
+  srtctl remote stop ssh-<id>                     # Request graceful shutdown of a remote host job
   srtctl cache-inputs -f config.yaml             # Pre-generate benchmark datasets
   srtctl bake-image --image model.sqsh --sa-bench  # Bake dependencies into an image
   srtctl render -f config.yaml --to ./rendered   # Write the sbatch script for someone else to submit
@@ -2194,6 +2197,10 @@ def build_parser() -> argparse.ArgumentParser:
             "dsight", aliases=["dashboard"], help="Build and query an offline inference trace dashboard"
         )
     )
+
+    from srtctl.cli.remote import add_arguments as add_remote_arguments
+
+    add_remote_arguments(subparsers.add_parser("remote", help="Inspect and stop jobs submitted over SSH"))
 
     def add_override_args(p):
         p.add_argument(
@@ -2767,6 +2774,19 @@ def main():
         )
         return
 
+    if args.command == "remote":
+        from srtctl.cli.remote import run_remote_command
+
+        try:
+            exit_code = run_remote_command(args)
+        except KeyboardInterrupt:
+            exit_code = 130
+        except (OSError, ValueError, RuntimeError) as exc:
+            console.print(f"[bold red]SSH command failed:[/] {exc}")
+            exit_code = 1
+        restore_console()
+        sys.exit(exit_code)
+
     # Parse config arg: supports path:selector format for overrides
     config_path, selector = parse_config_arg(args.config)
 
@@ -2774,6 +2794,13 @@ def main():
     tags = [t.strip() for t in (getattr(args, "tags", "") or "").split(",") if t.strip()] or None
 
     try:
+        if args.command in ("apply", "dry-run", "preflight", "render", "cache-inputs"):
+            from srtctl.cli.remote import submit_over_ssh
+
+            remote_exit_code = submit_over_ssh(args, config_path, selector, console)
+            if remote_exit_code is not None:
+                restore_console()
+                sys.exit(remote_exit_code)
         with materialize_config_path(
             config_path, overrides, pin_sources=args.command == "apply"
         ) as effective_config_path:

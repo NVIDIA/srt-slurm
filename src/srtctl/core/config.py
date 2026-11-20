@@ -58,12 +58,14 @@ def load_cluster_config() -> dict[str, Any] | None:
     """
     Load cluster configuration from srtslurm.yaml if it exists.
 
-    Returns None if file doesn't exist (graceful degradation).
+    Returns None if file doesn't exist (graceful degradation). Invalid SSH
+    configuration raises rather than silently falling back to local execution.
     """
     cluster_config_path = find_cluster_config_path()
     if not cluster_config_path:
         return None
 
+    raw_config: Any = None
     try:
         with open(cluster_config_path) as f:
             raw_config = yaml.safe_load(f)
@@ -75,7 +77,10 @@ def load_cluster_config() -> dict[str, Any] | None:
 
         # Dump back to dict for compatibility
         return schema.dump(validated)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
+        # An invalid SSH target must never turn an intended remote apply into a local job.
+        if isinstance(raw_config, dict) and raw_config.get("ssh") is not None:
+            raise ValueError(f"Invalid SSH cluster config {cluster_config_path}: {e}") from e
         logger.warning(f"Failed to load or validate srtslurm.yaml: {e}")
         return None
 
