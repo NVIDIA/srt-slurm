@@ -86,6 +86,10 @@ class Launcher(ABC):
     """How and where the orchestrator's processes run."""
 
     name: ClassVar[str]
+    # Whether a launch runs inside ``LaunchSpec.container_image``. When False the launcher never
+    # opens an image, so preflight does not stat the recipe's images and the runtime does not
+    # require the file to exist.
+    uses_container_images: ClassVar[bool] = True
 
     def build_task_command(self, spec: LaunchSpec) -> list[str]:
         """The command the task runs: the bash wrapper around ``spec.command``, or the command itself.
