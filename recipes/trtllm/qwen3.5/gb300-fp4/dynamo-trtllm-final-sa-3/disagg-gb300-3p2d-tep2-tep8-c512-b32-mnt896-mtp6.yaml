@@ -322,7 +322,6 @@ benchmark:
     mkdir -p /logs/agentic/concurrency_512
     : "${AIPERF_SERVER_METRICS_URLS:?Worker metrics URLs must be provided by srtctl}"
     IFS=',' read -r -a SERVER_METRICS_URLS <<< "$AIPERF_SERVER_METRICS_URLS"
-    python3 /benchmarks/aiperf_power_window.py running --concurrency 512 --result-dir /logs/agentic/concurrency_512
     aiperf_rc=0
     aiperf profile \
       --server-metrics "${SERVER_METRICS_URLS[@]}" \
@@ -351,9 +350,6 @@ benchmark:
       --slice-duration 1.0 \
       --stats-interval 30 \
       --trace-idle-gap-cap-seconds 300 || aiperf_rc=$?
-    if [ "$aiperf_rc" -eq 0 ]; then
-      python3 /benchmarks/aiperf_power_window.py completed --concurrency 512 --result-dir /logs/agentic/concurrency_512
-    fi
     exit "$aiperf_rc"
 setup_script: install_dynamo_wheel.sh
 dynamo:
@@ -364,21 +360,3 @@ services:
 - name: otel-collector
   type: otel-collector
   enabled: false
-# Power collection as InferenceX runs it on gb300-nv by default (SemiAnalysisAI/InferenceX#3670):
-# dcgm-exporter sampling every 100 ms on the cluster's power-exporter-port (19401), and the
-# per-node CPU power exporter (Grace ACPI + NVML module power) on :9405, which srtctl also adds to
-# AIPERF_SERVER_METRICS_URLS so aiperf scrapes it during the run. The benchmark command stamps
-# the formal window with /benchmarks/aiperf_power_window.py. Best-effort: required: false.
-telemetry:
-  enabled: true
-  collect_interval_ms: 1000
-  storage_subdir: power
-  required: false
-  startup_timeout_seconds: 120
-  request_timeout_seconds: 2
-  dcgm_exporter:
-    container_image: nvcr.io#nvidia/k8s/dcgm-exporter:4.6.0-4.8.3-distroless
-    port: 19401
-    command: dcgm-exporter --collect-interval=100 --address :{port} -f /configs/dcgm-counters-noprof.csv
-  cpu_power_exporter:
-    source: acpi
