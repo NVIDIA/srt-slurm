@@ -28,6 +28,7 @@ from srtctl.core.config import (
 )
 
 if TYPE_CHECKING:
+    from srtctl.core.launcher import Launcher
     from srtctl.core.schema import SrtConfig
 
 logger = logging.getLogger(__name__)
@@ -195,6 +196,7 @@ def _preflight_container(
     raw_config: dict[str, Any],
     resolved_config: dict[str, Any],
     cluster_config: dict[str, Any] | None,
+    launcher: type[Launcher],
 ) -> tuple[PreflightResolution, list[PreflightIssue]]:
     raw = raw_config.get("model", {}).get("container")
     resolved = resolved_config.get("model", {}).get("container")
@@ -217,6 +219,20 @@ def _preflight_container(
                 message=issue.message,
             ),
             [issue],
+        )
+
+    if not launcher.uses_container_images:
+        # The recipe still names one (it runs unchanged under slurm and docker); this launcher never opens it.
+        return (
+            PreflightResolution(
+                field="model.container",
+                raw=raw,
+                resolved=resolved,
+                source=f"launcher:{launcher.name}",
+                ok=True,
+                message=f"not checked: launcher: {launcher.name} runs no container images",
+            ),
+            [],
         )
 
     # Container image URIs (e.g. "nvcr.io/nvidia/sglang-runtime:0.8.1",
@@ -468,6 +484,18 @@ def _declared_service_nodes(services: Any) -> int | None:
     return None
 
 
+def _preflight_launcher(cluster_config: dict[str, Any] | None) -> type[Launcher]:
+    """The launcher ``cluster_config`` names (``slurm`` without one).
+
+    srtslurm.yaml cannot name an unknown launcher (``ClusterConfig`` rejects the file and
+    ``load_cluster_config`` returns None); a hand-built dict naming one is checked as ``slurm``.
+    """
+    from srtctl.core.launcher import DEFAULT_LAUNCHER, launchers
+
+    table = launchers()
+    return table.get((cluster_config or {}).get("launcher") or DEFAULT_LAUNCHER, table[DEFAULT_LAUNCHER])
+
+
 def preflight_config_variants(
     raw_config: dict[str, Any],
     *,
@@ -475,6 +503,7 @@ def preflight_config_variants(
     selector: str | None = None,
 ) -> list[PreflightResult]:
     active_cluster_config = cluster_config
+    launcher = _preflight_launcher(active_cluster_config)
     variants = (
         generate_override_configs(raw_config, selector=selector) if "base" in raw_config else [("base", raw_config)]
     )
@@ -502,11 +531,14 @@ def preflight_config_variants(
             )
             continue
         model, model_issues = _preflight_model(variant, resolved, active_cluster_config)
-        container, container_issues = _preflight_container(variant, resolved, active_cluster_config)
+        container, container_issues = _preflight_container(variant, resolved, active_cluster_config, launcher)
         topology_issues = validate_topology(
             resolved.get("roles"), service_nodes=_declared_service_nodes(resolved.get("services"))
         )
-        telemetry_issues = _preflight_telemetry(variant, resolved, active_cluster_config)
+        # Exporter images are checked only for a launcher that runs them (not launcher: host).
+        telemetry_issues = (
+            _preflight_telemetry(variant, resolved, active_cluster_config) if launcher.uses_container_images else []
+        )
         issues = [*model_issues, *container_issues, *topology_issues, *telemetry_issues]
         results.append(
             PreflightResult(

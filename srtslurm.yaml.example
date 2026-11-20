@@ -152,7 +152,6 @@ model_paths:
 # ssh:
 #   host: gpu-box
 #   workdir: /home/user/srt-slurm
-#   venv: /home/user/venvs/vllm
 # See docs/cluster-config.md#host-jobs-over-ssh for remote paths and lifecycle.
 
 # Usage:

@@ -70,7 +70,6 @@ class SSHClient:
             "workdir": self.config.workdir,
             "job_id": job_id,
             "uv": self.config.uv,
-            "venv": self.config.venv,
             "recipe": "",
             "selector": None,
             "cluster_config": {},
@@ -151,7 +150,7 @@ def submit_over_ssh(args: argparse.Namespace, config_path: Path, selector: str |
         for label, value in (
             ("Target", client.config.host),
             ("Remote checkout", client.config.workdir),
-            ("Engine virtualenv", client.config.venv or "remote login environment"),
+            ("Execution", "existing host launcher using the remote environment"),
             ("Remote uv", client.config.uv),
             ("Recipe to transfer", str(config_path)),
             ("Selector", selector or "all"),

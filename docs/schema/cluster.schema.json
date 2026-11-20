@@ -813,18 +813,6 @@
           "type": "string",
           "description": "Remote uv executable used to run srtctl from workdir.",
           "default": "uv"
-        },
-        "venv": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Engine virtualenv on the remote machine; prepended to PATH and set as VIRTUAL_ENV.",
-          "default": null
         }
       },
       "description": "Run a complete host-mode job on one passwordless SSH target.",

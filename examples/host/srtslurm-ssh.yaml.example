@@ -1,11 +1,11 @@
 # Copy to srtslurm.yaml on the machine that submits jobs, then edit the remote paths.
 # The target must already have this repository with host-launcher support, uv,
-# Python 3.10+, and an engine virtualenv. Authentication uses ~/.ssh/config.
+# Python 3.10+, and the same engine/tools needed by local host mode.
+# The remote host launcher uses its existing environment. Authentication uses ~/.ssh/config.
 launcher: host
 ssh:
   host: gpu-box
   workdir: /home/user/srt-slurm
-  venv: /home/user/venvs/vllm
   # Use absolute executable paths when the remote SSH session cannot find them.
   # python: /usr/bin/python3
   # uv: /home/user/.local/bin/uv

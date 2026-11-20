@@ -9,6 +9,7 @@ import os
 import shlex
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -865,6 +866,151 @@ def test_mock_sweep_under_host_launcher_places_everything_on_this_host(tmp_path,
     placed = {node for launch in launches for node in launch.get("nodelist") or ()}
     assert placed == {socket.gethostname()}
     stop_leftovers.assert_called_once_with()
+
+
+# An image that exists on a Slurm cluster and not on this machine.
+MISSING_IMAGE = "/nonexistent/cluster/vllm.sqsh"
+HOST_EXAMPLE = Path(__file__).resolve().parent.parent / "examples" / "host" / "vllm-agg-1gpu.yaml"
+
+# Every kind of image `launcher: host` ignores: what each case adds to the host example, the
+# preflight errors it gets under slurm (proving the recipe really names a missing image of that
+# kind), and the image files the job's launches still name.
+IGNORED_IMAGES = {
+    "model": ({}, {"container-not-available"}, {"vllm.sqsh"}),
+    "tachometer": (
+        {
+            "observability": {
+                "tachometer": {
+                    "enabled": True,
+                    "dcgm_exporter": {"container_image": "/nonexistent/cluster/dcgm.sqsh", "port": 9401},
+                    "node_exporter": {"container_image": "/nonexistent/cluster/node.sqsh", "port": 9101},
+                }
+            }
+        },
+        {"container-not-available", "tachometer-container-not-available"},
+        {"vllm.sqsh", "dcgm.sqsh", "node.sqsh"},
+    ),
+    "power-telemetry": (
+        {
+            "benchmark": {"concurrencies": [8]},
+            "telemetry": {
+                "enabled": True,
+                "collect_interval_ms": 1000,
+                "storage_subdir": "power",
+                "startup_timeout_seconds": 0.1,  # the mock run starts no collector; do not wait the default 30 s for it
+                "dcgm_exporter": {"container_image": "/nonexistent/cluster/dcgm.sqsh", "port": 9401},
+            },
+        },
+        {"container-not-available", "telemetry-container-not-available"},
+        {"vllm.sqsh", "dcgm.sqsh"},
+    ),
+}
+
+
+def _recipe_with_missing_images(tmp_path: Path, case: str = "model", **model) -> Path:
+    """The host example with ``model.container`` (and ``case``'s exporter images) on no machine here."""
+    data = yaml.safe_load(HOST_EXAMPLE.read_text())
+    data["model"].update(container=MISSING_IMAGE, **model)
+    for key, value in IGNORED_IMAGES[case][0].items():
+        data[key] = {**data.get(key, {}), **value}
+    path = tmp_path / "recipe.yaml"
+    path.write_text(yaml.safe_dump(data))
+    return path
+
+
+def _srtctl(monkeypatch, recipe: Path, command: str, *args: str) -> tuple[int, list[dict]]:
+    """``srtctl <command> -f <recipe>`` through ``main()``, with only the hand-off to the orchestrator stubbed.
+
+    Returns the exit code and the hand-offs. The recipe is passed by its bare name from its
+    directory, since ``-f`` splits ``path:selector`` on the colon of a Windows drive.
+    """
+    from srtctl.cli import submit as submit_cli
+
+    handed_off: list[dict] = []
+    monkeypatch.chdir(recipe.parent)
+    monkeypatch.setattr(sys, "argv", ["srtctl", command, "-f", recipe.name, *args])
+    with patch.object(submit_cli, "submit_with_orchestrator", side_effect=lambda **kwargs: handed_off.append(kwargs)):
+        try:
+            submit_cli.main()
+        except SystemExit as exc:
+            return exc.code if isinstance(exc.code, int) else 1, handed_off
+    return 0, handed_off
+
+
+class TestHostIgnoresImages:
+    """A Slurm recipe's image need not exist on the machine ``launcher: host`` runs on.
+
+    Host never opens an image, so neither preflight nor the job looks for one; the model and the
+    topology are still checked, and the other launchers still require their images.
+    """
+
+    def test_only_host_runs_without_images(self):
+        assert {name: cls.uses_container_images for name, cls in launchers().items()} == {
+            "slurm": True,
+            "docker": True,
+            "host": False,
+        }
+
+    @pytest.mark.parametrize("case", sorted(IGNORED_IMAGES))
+    def test_apply_reaches_submission_under_host_only(self, case, tmp_path, cluster, monkeypatch, capsys):
+        from srtctl.core.config import load_cluster_config
+        from srtctl.core.validation import preflight_config_variants
+
+        recipe = _recipe_with_missing_images(tmp_path, case)
+        cluster(launcher="slurm")
+        (result,) = preflight_config_variants(yaml.safe_load(recipe.read_text()), cluster_config=load_cluster_config())
+        assert {issue.code for issue in result.errors} == IGNORED_IMAGES[case][1]
+
+        for launcher in ("slurm", "docker"):
+            cluster(launcher=launcher)
+            assert _srtctl(monkeypatch, recipe, "apply", "-y") == (1, []), launcher
+            assert "Preflight failed" in capsys.readouterr().out
+
+        cluster(launcher="host")
+        code, handed_off = _srtctl(monkeypatch, recipe, "apply", "-y")
+        assert (code, len(handed_off)) == (0, 1), capsys.readouterr().out
+
+    def test_apply_under_host_still_runs_preflight(self, tmp_path, cluster, monkeypatch, capsys):
+        """Only the image checks are skipped: a missing local model still stops the submission."""
+        recipe = _recipe_with_missing_images(tmp_path, path="/nonexistent/models/qwen")
+        cluster(launcher="host")
+        assert _srtctl(monkeypatch, recipe, "apply", "-y") == (1, [])
+        out = capsys.readouterr().out
+        assert "Preflight failed" in out and "model.path" in out and "model.container" not in out
+
+    def test_preflight_command_says_the_image_is_not_checked(self, tmp_path, cluster, monkeypatch, capsys):
+        recipe = _recipe_with_missing_images(tmp_path)
+        cluster(launcher="host")
+        assert _srtctl(monkeypatch, recipe, "preflight") == (0, [])
+        assert "not checked: launcher: host runs no container images" in " ".join(capsys.readouterr().out.split())
+
+    @pytest.mark.parametrize("case", sorted(IGNORED_IMAGES))
+    def test_the_job_starts_without_the_images(self, case, tmp_path, cluster):
+        """The real orchestrator, with only process launches faked, starts although every image file is missing.
+
+        The launches still name the images; dropping them is HostLauncher.launch's job, tested by
+        test_container_image_is_ignored_and_logged_once.
+        """
+        cluster(launcher="host")
+        launches: list[dict] = []
+        with patch.object(HostLauncher, "stop_leftovers"):
+            exit_code = run_mock_sweep(
+                config_path=_recipe_with_missing_images(tmp_path, case),
+                output_dir=tmp_path / "out",
+                job_id="host-mock",
+                options=MockOptions(phase_pause_s=0, on_srun=launches.append),
+            )
+        assert exit_code == 0
+        named = {Path(str(launch["container_image"])).name for launch in launches if launch.get("container_image")}
+        assert IGNORED_IMAGES[case][2] <= named
+
+    def test_the_job_still_requires_the_image_where_it_runs(self, tmp_path, cluster):
+        from srtctl.core.runtime import RuntimeContext
+
+        cluster(launcher="docker")
+        config = SrtConfig.from_yaml(_recipe_with_missing_images(tmp_path))
+        with pytest.raises(FileNotFoundError, match="vllm.sqsh"):
+            RuntimeContext.from_config(config, job_id="1", log_dir_base=tmp_path / "out")
 
 
 def _alive(pid: int) -> bool:

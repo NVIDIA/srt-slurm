@@ -52,7 +52,7 @@ reporting:
 
 **default_host_setup**: A [`host_setup`](runtime-env.md#host_setup) block applied to every job on the cluster, for node state that has to be set outside the container, such as locking GPU clocks. A recipe that sets its own `host_setup:` block replaces it entirely; `host_setup: {commands: []}` opts a single run out.
 
-**preflight**: `srtctl apply` normally stats `model.path`, `model.container` and the telemetry images on the submitting node before calling sbatch. On clusters where those live only on compute nodes (node-local NVMe such as `/raid/models`), that check can never pass from the login node; set `preflight: false` and every `apply` behaves as if `--no-preflight` had been passed, with an INFO line saying so. Paths are still resolved at runtime and the framework fails loudly on the compute node if one is genuinely missing.
+**preflight**: `srtctl apply` normally stats `model.path`, `model.container` and the telemetry images on the submitting node before calling sbatch. On clusters where those live only on compute nodes (node-local NVMe such as `/raid/models`), that check can never pass from the login node; set `preflight: false` and every `apply` behaves as if `--no-preflight` had been passed, with an INFO line saying so. Paths are still resolved at runtime and the framework fails loudly on the compute node if one is genuinely missing. Under `launcher: host`, which runs no container images, preflight still checks `model.path`, the topology and that `model.container` is set, but does not look for the `model.container` or exporter image files, and the job does not require the image file to exist, so a recipe whose image exists only on a cluster needs neither `preflight: false` nor `--no-preflight`.
 
 **nginx_raise_ulimit**: When set to `true` or `false`, this value is applied to jobs that omit `frontend.nginx_raise_ulimit` in the recipe. Use `true` on clusters where raising the nginx container's open-file limit is allowed; leave unset if each job should rely on the frontend default (`false`). A recipe that sets `frontend.nginx_raise_ulimit` always wins.
 
@@ -94,7 +94,7 @@ launcher: host
 | | `docker` | `host` |
 |---|---|---|
 | Process launch | `docker run ... <image> bash -c <wrapper>` | `bash -c <wrapper>` on this machine, in its own process group |
-| Image (`model.container`, `roles.<role>.container`) | the container each process runs in | ignored (logged once); the same recipe still runs under `docker` and `slurm` |
+| Image (`model.container`, `roles.<role>.container`, the exporter images under `observability.tachometer` and `telemetry`) | the container each process runs in | ignored (logged once), and neither preflight nor the job checks that an image file exists, so a Slurm recipe whose `.sqsh` is only on the cluster runs here unchanged; a recipe must still name an image, and one that names a Docker image (as `examples/host/` does) also runs under `docker` and `slurm`, while `docker` refuses a `.sqsh` |
 | Engine, benchmark client, tools | inside the image | on the `PATH` of the shell that ran `srtctl apply`, typically the engine installed in a virtualenv |
 | Container mounts (`/logs`, `/model`, `/configs`, `extra_mount`, ...) | bind mounts | container paths in the command line, the exported environment and `container-workdir` are rewritten to the host directories behind them |
 | Graceful stop of a named step | `docker kill --signal=TERM` | `killpg` on the step's process group |
@@ -129,7 +129,6 @@ launcher: host
 ssh:
   host: gpu-box
   workdir: /home/user/srt-slurm
-  venv: /home/user/venvs/vllm
 ```
 
 `host` is an OpenSSH destination (an alias from `~/.ssh/config` or
@@ -139,12 +138,14 @@ key before applying: the transport uses `BatchMode=yes` and
 config. See [SSHConfig](schema-reference.md#sshconfig) for every setting.
 
 The target needs an existing checkout with host-launcher support, Python 3.10+
-for supervision, `uv`, and the engine and benchmark tools installed. The `uv`
-job environment uses Python 3.12, as local host jobs do. `ssh.venv` selects the
-engine environment; omitting it uses the remote login environment. `ssh.python`
-and `ssh.uv` select executables when they are not on the remote SSH session's
-`PATH`. The checkout is used in place, without fetching, resetting or copying
-source from the submitting machine.
+for supervision and `uv`. Submission invokes the existing host-mode `srtctl apply`
+on that checkout, using the remote SSH session's environment. Engine and benchmark
+tools, recipe setup hooks and dependency requirements behave exactly as in local
+host mode. There is no separate SSH virtualenv or package configuration. The `uv`
+job environment uses Python 3.12, as local host jobs do. `ssh.python` and `ssh.uv`
+select executables when they are not on the remote SSH session's `PATH`. The
+checkout is used in place, without fetching, resetting or copying source from
+the submitting machine.
 
 ```bash
 srtctl dry-run -f examples/host/vllm-agg-1gpu.yaml

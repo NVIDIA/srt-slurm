@@ -21,7 +21,7 @@ from srtctl.core.schema import SrtConfig
 
 def test_ssh_dry_run_is_offline_and_defers_remote_filesystem_checks(tmp_path, monkeypatch):
     cluster = tmp_path / "cluster.yaml"
-    cluster.write_text("launcher: host\nssh:\n  host: gpu-box\n  workdir: /remote/repo\n  venv: ~/engine-env\n")
+    cluster.write_text("launcher: host\nssh:\n  host: gpu-box\n  workdir: /remote/repo\n")
     monkeypatch.setenv("SRTSLURM_CONFIG", str(cluster))
     recipe = tmp_path / "recipe.yaml"
     recipe.write_text("model: {path: /only/on/remote, container: /only/on/remote/image.sqsh}\n")
@@ -31,6 +31,7 @@ def test_ssh_dry_run_is_offline_and_defers_remote_filesystem_checks(tmp_path, mo
         assert remote.submit_over_ssh(args, recipe, None, Console(file=stream)) == 0
     assert "gpu-box" in stream.getvalue() and "/remote/repo" in stream.getvalue()
     assert "no connection" in stream.getvalue()
+    assert "existing host launcher using the remote environment" in stream.getvalue()
     assert not (tmp_path / "outputs").exists()
 
 

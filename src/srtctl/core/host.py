@@ -6,7 +6,8 @@
 For a machine with no container runtime and no Slurm (a Mac, a workstation, a VM
 without the NVIDIA Container Toolkit): each launch runs the same bash-wrapped command
 an ``srun`` step or ``docker run`` container would, as a process group on this host,
-with the binaries on this machine's ``PATH``. Container images are not used.
+with the binaries on this machine's ``PATH``. Container images are not used, so neither preflight
+nor the job requires the recipe's image files to exist.
 
 The orchestrator still describes every launch with the container mounts it would
 hand ``srun`` or ``docker run`` (the run's logs at ``/logs``, the model at ``/model``,
@@ -175,6 +176,7 @@ class HostLauncher(LocalLauncher):
     """
 
     name = "host"
+    uses_container_images = False
     supports_ssh = True
 
     def __init__(self) -> None:

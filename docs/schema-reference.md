@@ -846,4 +846,3 @@ Run a complete host-mode job on one passwordless SSH target.
 | `workdir` | str | required | Existing remote srt-slurm checkout, with launcher: host support; absolute or ~/relative. |
 | `python` | str | `'python3'` | Remote Python 3.10+ used for the dependency-free job supervisor. |
 | `uv` | str | `'uv'` | Remote uv executable used to run srtctl from workdir. |
-| `venv` | str \| None | `None` | Engine virtualenv on the remote machine; prepended to PATH and set as VIRTUAL_ENV. |

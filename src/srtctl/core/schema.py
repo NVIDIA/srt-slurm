@@ -394,17 +394,14 @@ class SSHConfig:
     python: str = "python3"
     # Remote uv executable used to run srtctl from workdir.
     uv: str = "uv"
-    # Engine virtualenv on the remote machine; prepended to PATH and set as VIRTUAL_ENV.
-    venv: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
     def __post_init__(self) -> None:
         if not self.host or self.host.startswith("-") or any(c.isspace() or c == "\0" for c in self.host):
             raise ValueError("ssh.host must be a non-empty SSH destination, without whitespace or a leading '-'")
-        for name, value in (("workdir", self.workdir), ("venv", self.venv)):
-            if value is not None and not value.startswith(("/", "~/")):
-                raise ValueError(f"ssh.{name} must be an absolute remote path or start with ~/")
+        if not self.workdir.startswith(("/", "~/")):
+            raise ValueError("ssh.workdir must be an absolute remote path or start with ~/")
         for name, value in (("python", self.python), ("uv", self.uv)):
             if not value or "\0" in value or "\n" in value:
                 raise ValueError(f"ssh.{name} must name one executable, not an empty value")

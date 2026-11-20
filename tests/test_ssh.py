@@ -88,10 +88,7 @@ def target(tmp_path, monkeypatch):
     host.parent.mkdir(parents=True)
     host.touch()
     uv = executable(bindir / "fake uv", FAKE_UV)
-    venv = tmp_path / "engine env"
-    (venv / "bin").mkdir(parents=True)
-    (venv / "bin" / "python3").symlink_to(sys.executable)
-    config = SSHConfig(host="gpu-box", workdir=str(workdir), python=sys.executable, uv=str(uv), venv=str(venv))
+    config = SSHConfig(host="gpu-box", workdir=str(workdir), python=sys.executable, uv=str(uv))
     client = remote.SSHClient(config)
     jobs: list[str] = []
 
@@ -124,7 +121,7 @@ def test_ssh_requires_capable_launcher(launcher):
         {"host": "-oProxyCommand=bad", "workdir": "/repo"},
         {"host": "gpu box", "workdir": "/repo"},
         {"host": "gpu", "workdir": "relative/repo"},
-        {"host": "gpu", "workdir": "/repo", "venv": "relative/env"},
+        {"host": "gpu", "workdir": "/repo", "venv": "/remote/engine-env"},
     ],
 )
 def test_invalid_ssh_config_never_falls_back_to_local(settings, tmp_path, monkeypatch):
@@ -142,6 +139,25 @@ def test_ssh_uses_passwordless_auth_and_existing_known_hosts():
     assert "StrictHostKeyChecking=yes" in command
 
 
+def test_remote_environment_reuses_existing_host_environment(tmp_path, monkeypatch):
+    client = remote.SSHClient(SSHConfig(host="gpu", workdir=str(tmp_path)))
+    request = client.request("submit", "ssh-" + "a" * 32)
+    environment = {
+        "PATH": "/remote/engine-env/bin:/usr/bin",
+        "VIRTUAL_ENV": "/remote/engine-env",
+        "SLURM_JOB_ID": "stale-allocation",
+        "SRTCTL_HOST_PATH": "/stale/tools",
+        "SRTCTL_HOST_VIRTUAL_ENV": "/stale/env",
+    }
+    with patch.dict(os.environ, environment, clear=True):
+        actual = ssh_job._environment(request, tmp_path / "job")
+    assert actual["PATH"] == environment["PATH"]
+    assert actual["VIRTUAL_ENV"] == environment["VIRTUAL_ENV"]
+    assert actual["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / ".venv")
+    assert not any(key.startswith(("SLURM_", "SRTCTL_HOST_")) for key in actual)
+    assert "venv" not in request
+
+
 def test_detached_submit_stages_recipe_and_remote_config(target):
     client, launch = target
     state = launch()
@@ -153,8 +169,9 @@ def test_detached_submit_stages_recipe_and_remote_config(target):
     assert record["cwd"] == client.config.workdir
     assert "ssh" not in record["cluster"]
     assert record["cluster"]["srtctl_root"] == client.config.workdir
-    assert record["venv"] == client.config.venv
-    assert record["path"].split(os.pathsep)[0] == str(Path(client.config.venv) / "bin")
+    assert "venv" not in json.loads((root / "request.json").read_text())
+    assert record["venv"] == os.environ.get("VIRTUAL_ENV")
+    assert record["path"] == os.environ["PATH"]
     assert "--yes" in record["args"] and "--json" in record["args"]
     assert state["exit_code"] == 0
 

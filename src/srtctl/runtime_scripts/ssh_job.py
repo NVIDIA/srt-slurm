@@ -34,7 +34,6 @@ class Request(TypedDict):
     workdir: str
     job_id: str
     uv: str
-    venv: str | None
     recipe: str
     selector: str | None
     cluster_config: dict[str, Any]
@@ -90,12 +89,6 @@ def _environment(request: Request, directory: Path) -> dict[str, str]:
         env.pop(key, None)
     env["SRTSLURM_CONFIG"] = str(directory / "srtslurm.yaml")
     env["UV_PROJECT_ENVIRONMENT"] = str(_path(request["workdir"]) / ".venv")
-    if request["venv"] is not None:
-        venv = _path(request["venv"])
-        if not (venv / "bin" / "python3").is_file():
-            raise ValueError(f"ssh.venv has no bin/python3: {venv}")
-        env["VIRTUAL_ENV"] = str(venv)
-        env["PATH"] = str(venv / "bin") + os.pathsep + env.get("PATH", os.defpath)
     return env
 
 
