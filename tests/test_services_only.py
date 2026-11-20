@@ -258,6 +258,61 @@ def test_start_tachometer_scrapes_every_service_that_serves_metrics(tmp_path: Pa
     assert gen.call_args.kwargs["processes"] == []
 
 
+def test_power_telemetry_plans_every_pool_gpu_of_a_services_only_job(tmp_path: Path) -> None:
+    """``dcgm-power`` without engine roles: the pool is sampled and each of its GPUs is an expected device."""
+    import json
+    from unittest.mock import MagicMock, patch
+
+    from srtctl.cli.do_sweep import SweepOrchestrator
+    from srtctl.core.processes import ProcessRegistry
+    from srtctl.core.runtime import Nodes, RuntimeContext
+
+    config = _load(
+        benchmark={"concurrencies": [1]},  # power telemetry insists on these
+        telemetry={
+            "enabled": True,
+            "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
+            "startup_timeout_seconds": 0.2,
+            "request_timeout_seconds": 0.1,
+            "collector_join_timeout_seconds": 3.0,
+        },
+    )
+    runtime = RuntimeContext(
+        job_id="1",
+        run_name="run_1",
+        nodes=Nodes(head="node1", bench="node1", infra="node1", worker=(), pools={"files": ("node1", "node2")}),
+        head_node_ip="10.0.0.1",
+        infra_node_ip="10.0.0.1",
+        log_dir=tmp_path,
+        model_path=Path("fake/model"),
+        container_image=Path("/img.sqsh"),
+        gpus_per_node=8,
+        network_interface="eth0",
+        container_mounts={},
+        environment={},
+        is_hf_model=True,
+    )
+    orchestrator = SweepOrchestrator(config=config, runtime=runtime)
+    registry = ProcessRegistry(job_id="1")
+    exporter = MagicMock()
+    exporter.poll.return_value = None
+    with patch("srtctl.cli.mixins.telemetry_stage.start_srun_process", return_value=exporter) as srun:
+        session = orchestrator.start_power_telemetry(registry)
+        orchestrator.capture_power_worker_identity(registry)
+    session.stop_and_finalize()
+
+    assert srun.call_args.kwargs["nodelist"] == ["node1", "node2"], "the exporter rides the pool"
+    manifest = json.loads((tmp_path / "power" / "manifest.json").read_text())
+    planned = {(d["hostname"], d["gpu_index"]): d["assignments"] for d in manifest["expected_devices"]}
+    assert set(planned) == {(node, gpu) for node in ("node1", "node2") for gpu in range(8)}
+    for ordinal, node in enumerate(("node1", "node2")):
+        for gpu in range(8):
+            assert planned[(node, gpu)] == [
+                {"worker_role": "files", "worker_index": ordinal, "worker_process": 0, "het_group": None}
+            ]
+    assert manifest["worker_identity_proof"]["error"] == "no engine workers to probe"
+
+
 # --- custom benchmark environment ---------------------------------------------------
 
 

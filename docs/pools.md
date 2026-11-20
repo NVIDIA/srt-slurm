@@ -141,7 +141,7 @@ See the `custom` section of [Benchmarks](benchmarks.md#custom) for the full vari
 
 ## Telemetry and teardown
 
-The implied dcgm and node exporters run on `compute`, so tachometer scrapes pool nodes like worker nodes and the parquet output covers the whole job. Pool services are `ManagedProcess`es with a step name like every other service: SIGTERM reaches the process inside the step on teardown, `critical: true` fails the job when an instance exits (the generic default is `false`, so a pool that may finish early needs nothing), and `shutdown_tier` orders them with the rest.
+The implied dcgm and node exporters run on `compute`, so tachometer scrapes pool nodes like worker nodes and the parquet output covers the whole job. `dcgm-power` plans every pool node's `gpus_per_node` GPUs as expected devices under the service's name (see [GPU Power Telemetry](power-telemetry.md#artifacts)), so a services-only job publishes power like an engine job. Pool services are `ManagedProcess`es with a step name like every other service: SIGTERM reaches the process inside the step on teardown, `critical: true` fails the job when an instance exits (the generic default is `false`, so a pool that may finish early needs nothing), and `shutdown_tier` orders them with the rest.
 
 ## Limits
 

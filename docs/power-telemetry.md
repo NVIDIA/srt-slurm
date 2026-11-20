@@ -1,8 +1,9 @@
 # GPU Power Telemetry (`dcgm-power`)
 
 The `dcgm-power` telemetry provider records raw per-GPU watts for every
-allocated worker node, the topology needed to map each GPU to a `prefill`,
-`decode`, or `agg` role, and the exact formal benchmark window for every
+allocated compute node (engine workers and service pools), the topology needed
+to map each GPU to a `prefill`, `decode`, or `agg` role or to the service that
+owns its pool node, and the exact formal benchmark window for every
 measured concurrency. It never integrates power into energy and never branches
 on model, precision, or recipe; consumers integrate watts over the recorded
 window themselves. The provider name is historical: the exporter that supplies
@@ -218,8 +219,13 @@ one row per observation, `(scrape_seq, hostname, gpu_index)` unique. Rows are
 never interpolated, averaged, or role-attributed — role and heterogeneous
 group live once in the manifest topology. The collector retains all GPU samples,
 including idle GPUs on an exclusive worker node. GPU energy totals include only
-worker GPUs; CPU energy remains whole socket. A GPU on a node that hosts no
-worker is still `unexpected_device`.
+worker GPUs; CPU energy remains whole socket. A service pool node
+(`services[].nodes`) is planned whole: each of the job's `gpus_per_node` GPUs on
+it is expected under the service's name (`worker_role`), with the node's ordinal
+in its pool as `worker_index`. A pool node that reports more GPUs than planned
+is `unexpected_device` with no excuse, since no probe records which GPUs a pool
+service holds; a GPU on a node that hosts neither a worker nor a pool is
+`unexpected_device` too.
 
 Idle GPUs on a worker node are excused only by `worker_identity_proof`: once the
 server is healthy, one bare-host step per worker node (DCGM exporters only) joins

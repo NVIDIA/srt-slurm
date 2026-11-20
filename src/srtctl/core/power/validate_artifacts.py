@@ -608,7 +608,8 @@ def _expected_devices(manifest: dict[str, Any]) -> list[ExpectedDevice]:
             raise ValueError(f"assignments is not a non-empty list: {raw_assignments!r}")
         assignments = tuple(
             DeviceAssignment(
-                worker_role=_role(assignment["worker_role"]),
+                # An engine role, or the owning service's name on a pool node.
+                worker_role=_text(assignment["worker_role"], "worker_role"),
                 worker_index=_whole(assignment["worker_index"], "worker_index", minimum=0),
                 worker_process=_whole(assignment["worker_process"], "worker_process", minimum=0),
                 het_group=(
@@ -653,7 +654,9 @@ def _check_topology(
 
     counts: dict[str, int] = {}
     for role in roles.values():
-        counts[role] = counts.get(role, 0) + 1
+        # A pool device carries its service's name; ``--expect-role`` names engine roles only.
+        if role in WORKER_ROLES:
+            counts[role] = counts.get(role, 0) + 1
 
     if expected_roles is not None:
         unknown = sorted(set(expected_roles) - set(WORKER_ROLES))
