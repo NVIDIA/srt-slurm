@@ -131,25 +131,14 @@ class TelemetryStageMixin:
         partial launch stays reachable by the outer cleanup path.
         """
         cmd_str = resolve_exporter_command(exporter_config, default_command_template)
-
-        if self.runtime.nodes.het:
-            groups: dict[int, list[str]] = {}
-            for node in nodelist:
-                g = self.runtime.nodes.het_group_for(node)
-                if g is None:
-                    raise RuntimeError(f"node {node!r} not in any het component")
-                groups.setdefault(g, []).append(node)
-            chunks = sorted(groups.items())
-        else:
-            chunks = [(-1, nodelist)]  # sentinel: no --het-group
+        chunks = self._het_chunks(nodelist)
 
         # Host-native exporters (``binary`` set) run straight on the node: no
         # container image, no mounts -- the command already carries host paths.
         host_native = bool(exporter_config.binary)
         managed: list[ManagedProcess] = []
-        for group_id, nodes in chunks:
-            het_group = group_id if group_id >= 0 else None
-            chunk_log = log_file if len(chunks) == 1 else log_file.with_suffix(f".g{group_id}.out")
+        for het_group, nodes in chunks:
+            chunk_log = log_file if len(chunks) == 1 else log_file.with_suffix(f".g{het_group}.out")
             proc = start_srun_process(
                 command=shlex.split(cmd_str),
                 nodes=len(nodes),
@@ -164,7 +153,7 @@ class TelemetryStageMixin:
                 het_group=het_group,
                 use_bash_wrapper=use_bash_wrapper,
             )
-            chunk_name = name if len(chunks) == 1 else f"{name}_g{group_id}"
+            chunk_name = name if len(chunks) == 1 else f"{name}_g{het_group}"
             process = ManagedProcess(
                 name=chunk_name,
                 popen=proc,
@@ -176,6 +165,64 @@ class TelemetryStageMixin:
                 on_started(process)
             managed.append(process)
         return managed
+
+    def _het_chunks(self, nodes: list[str]) -> list[tuple[int | None, list[str]]]:
+        """Split ``nodes`` into one ``(het_group, nodes)`` srun per het component.
+
+        A single srun cannot span het components; outside a het job this is one
+        chunk with ``het_group=None``.
+
+        Raises:
+            RuntimeError: A node belongs to no het component.
+        """
+        if not self.runtime.nodes.het:
+            return [(None, nodes)]
+        groups: dict[int, list[str]] = {}
+        for node in nodes:
+            group = self.runtime.nodes.het_group_for(node)
+            if group is None:
+                raise RuntimeError(f"node {node!r} not in any het component")
+            groups.setdefault(group, []).append(node)
+        return [(group, chunk) for group, chunk in sorted(groups.items())]
+
+    def _start_host_collectors(
+        self,
+        *,
+        name: str,
+        command: list[str],
+        nodes: list[str],
+        registry: ProcessRegistry,
+        on_started: Callable[[ManagedProcess], None],
+    ) -> None:
+        """Run ``command`` once per node on the bare host, one srun per het component.
+
+        Each process is non-critical and registered before the next launch, so a
+        partial launch stays reachable by cleanup.
+        """
+        chunks = self._het_chunks(nodes)
+        for het_group, chunk in chunks:
+            suffix = "" if len(chunks) == 1 else f".g{het_group}"
+            chunk_name = name if len(chunks) == 1 else f"{name}_g{het_group}"
+            log_file = self.runtime.log_dir / f"{name}{suffix}.%N.out"
+            proc = start_srun_process(
+                command=command,
+                nodes=len(chunk),
+                ntasks=len(chunk),
+                nodelist=chunk,
+                output=str(log_file),
+                srun_options=self.runtime.srun_options,
+                het_group=het_group,
+                use_bash_wrapper=False,  # bare host, no container
+            )
+            process = ManagedProcess(
+                name=chunk_name,
+                popen=proc,
+                log_file=log_file,
+                node=",".join(chunk),
+                critical=False,
+            )
+            registry.add_process(process)
+            on_started(process)
 
     def start_power_telemetry(self, registry: ProcessRegistry) -> PowerTelemetrySession | None:
         """Start GPU power telemetry when it is enabled.
@@ -393,42 +440,13 @@ class TelemetryStageMixin:
                 )
 
         try:
-            if self.runtime.nodes.het:
-                groups: dict[int, list[str]] = {}
-                for node in worker_nodes:
-                    group_id = self.runtime.nodes.het_group_for(node)
-                    if group_id is None:
-                        raise RuntimeError(f"node {node!r} not in any het component")
-                    groups.setdefault(group_id, []).append(node)
-                chunks = sorted(groups.items())
-            else:
-                chunks = [(-1, worker_nodes)]
-
-            for group_id, nodes in chunks:
-                suffix = "" if len(chunks) == 1 else f".g{group_id}"
-                log_file = self.runtime.log_dir / f"telemetry_cpu_power_exporter{suffix}.%N.out"
-                proc = start_srun_process(
-                    command=exporter_command,
-                    nodes=len(nodes),
-                    ntasks=len(nodes),
-                    nodelist=nodes,
-                    output=str(log_file),
-                    srun_options=self.runtime.srun_options,
-                    het_group=group_id if group_id >= 0 else None,
-                    use_bash_wrapper=False,  # bare host, no container
-                )
-                name = (
-                    "telemetry_cpu_power_exporter" if len(chunks) == 1 else f"telemetry_cpu_power_exporter_g{group_id}"
-                )
-                process = ManagedProcess(
-                    name=name,
-                    popen=proc,
-                    log_file=log_file,
-                    node=",".join(nodes),
-                    critical=False,
-                )
-                registry.add_process(process)
-                collector.add_exporter(process)
+            self._start_host_collectors(
+                name="telemetry_cpu_power_exporter",
+                command=exporter_command,
+                nodes=worker_nodes,
+                registry=registry,
+                on_started=collector.add_exporter,
+            )
         except Exception:
             logger.exception("CPU power exporter launch failed")
             return collector
@@ -469,17 +487,6 @@ class TelemetryStageMixin:
         self._cpu_power_host_ready = False
         session.initialize()
 
-        if self.runtime.nodes.het:
-            groups: dict[int, list[str]] = {}
-            for node in worker_nodes:
-                group_id = self.runtime.nodes.het_group_for(node)
-                if group_id is None:
-                    raise RuntimeError(f"node {node!r} not in any het component")
-                groups.setdefault(group_id, []).append(node)
-            chunks = sorted(groups.items())
-        else:
-            chunks = [(-1, worker_nodes)]
-
         command = [
             sys.executable,
             "-m",
@@ -494,28 +501,13 @@ class TelemetryStageMixin:
             str(cpu_power.sample_interval_seconds),
         ]
         try:
-            for group_id, nodes in chunks:
-                suffix = "" if len(chunks) == 1 else f".g{group_id}"
-                log_file = self.runtime.log_dir / f"telemetry_cpu_power{suffix}.%N.out"
-                proc = start_srun_process(
-                    command=command,
-                    nodes=len(nodes),
-                    ntasks=len(nodes),
-                    nodelist=nodes,
-                    output=str(log_file),
-                    srun_options=self.runtime.srun_options,
-                    het_group=group_id if group_id >= 0 else None,
-                    use_bash_wrapper=False,  # bare host, no container
-                )
-                process = ManagedProcess(
-                    name="telemetry_cpu_power" if len(chunks) == 1 else f"telemetry_cpu_power_g{group_id}",
-                    popen=proc,
-                    log_file=log_file,
-                    node=",".join(nodes),
-                    critical=False,
-                )
-                registry.add_process(process)
-                session.add_process(process)
+            self._start_host_collectors(
+                name="telemetry_cpu_power",
+                command=command,
+                nodes=worker_nodes,
+                registry=registry,
+                on_started=session.add_process,
+            )
         except Exception:
             logger.exception("CPU power collector launch failed")
             return session
