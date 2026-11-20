@@ -8,6 +8,7 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
+from srtctl.backends.llamacpp import LlamaCppBackend
 from srtctl.core.health import WorkerHealthResult, probe_direct_server
 from srtctl.frontends.base import Frontend, agg_leader_nodes, register_frontend
 from srtctl.ports import FRONTEND_PUBLIC_PORT
@@ -55,6 +56,7 @@ class LlamaCppFrontend(Frontend):
         return probe_direct_server(host, port)
 
     def validate(self, config: Any) -> None:
+        LlamaCppBackend.validate_environment(config.environment, "environment")
         if config.frontend.enable_multiple_frontends:
             raise ValueError("frontend.type: llamacpp requires frontend.enable_multiple_frontends: false")
         if config.topology.is_disaggregated or config.topology.num_agg != 1:

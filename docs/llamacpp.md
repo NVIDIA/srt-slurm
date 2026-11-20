@@ -73,13 +73,26 @@ to stop the worker container. Logs are written under `outputs/<job_id>/logs/`.
 
 Pass server flags in `roles.agg.args`, using names such as `ctx-size`,
 `batch-size`, `threads`, `n-gpu-layers`, `tensor-split`, and `parallel`.
-Underscores are normalized to hyphens. Boolean `true` emits a bare flag;
-`false` omits it, so use the actual `no-*` flag with `true` when upstream
-requires an explicit disabling flag. Values that llama.cpp expects as a
-comma-separated string, such as `tensor-split`, should be quoted strings.
+Underscores are normalized to hyphens. For the value-taking options `flash-attn`,
+`fit`, `reasoning`, and `log-colors`, YAML booleans are emitted as explicit `on`
+or `off` values. This also handles unquoted YAML `on` and `off`; `auto` is passed
+through as a string for options that support it. For other options, boolean
+`true` emits a bare flag and `false` omits it; use the actual `no-*` flag with
+`true` when upstream requires an explicit disabling flag.
+
+Values that llama.cpp expects as a comma-separated string, such as `tensor-split`,
+`device`, and `lora`, must be quoted strings. YAML lists for these arguments are
+rejected at config load with guidance to use the quoted form. The two-token
+option `control-vector-layer-range` accepts a list of exactly two values,
+`[START, END]`.
 
 SRT manages `model`, `host`, `port`, and `metrics`; setting those flags under
-`roles.agg.args` is rejected at config load. Set `engine.model_file` or
+`roles.agg.args` is rejected at config load. Model download flags (`hf-repo`,
+`hf-file`, `docker-repo`, `model-url`) and endpoint changes (`api-key`,
+`api-key-file`, `api-prefix`, `ssl-key-file`, `ssl-cert-file`) are also rejected.
+Their llama.cpp environment equivalents are rejected in both recipe
+`environment` and `roles.agg.env`, so the selected GGUF, HTTP readiness checks,
+and metrics setting remain consistent. Set `engine.model_file` or
 `engine.metrics` instead. `alias` controls the API model name; without it SRT
 uses the GGUF filename without `.gguf`. With comma-separated aliases, clients
 use the first alias.

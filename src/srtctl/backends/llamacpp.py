@@ -24,6 +24,26 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 
+# Value-taking booleans and reserved option/env pairs in llama.cpp b12464,
+# common/arg.cpp at d3c3e242c16b8cbf51400fad410cd69b22d64f35.
+_ON_OFF_FLAGS = frozenset({"flash-attn", "fit", "reasoning", "log-colors"})
+_RESERVED_OPTIONS = {
+    "model": "LLAMA_ARG_MODEL",
+    "host": "LLAMA_ARG_HOST",
+    "port": "LLAMA_ARG_PORT",
+    "metrics": "LLAMA_ARG_ENDPOINT_METRICS",
+    "hf-repo": "LLAMA_ARG_HF_REPO",
+    "hf-file": "LLAMA_ARG_HF_FILE",
+    "docker-repo": "LLAMA_ARG_DOCKER_REPO",
+    "model-url": "LLAMA_ARG_MODEL_URL",
+    "api-key": "LLAMA_API_KEY",
+    "api-key-file": "LLAMA_ARG_API_KEY_FILE",
+    "api-prefix": "LLAMA_ARG_API_PREFIX",
+    "ssl-key-file": "LLAMA_ARG_SSL_KEY_FILE",
+    "ssl-cert-file": "LLAMA_ARG_SSL_CERT_FILE",
+}
+
+
 @dataclass(frozen=True)
 class LlamaCppBackend(Backend):
     """Run one ``llama-server`` against a GGUF file inside ``model.path``.
@@ -55,12 +75,35 @@ class LlamaCppBackend(Backend):
         if not self.server_binary.strip():
             raise ValidationError("engine.server_binary must not be empty")
         for role, settings in self.roles.items():
-            managed = {key.replace("_", "-") for key in settings.args} & {"model", "m", "host", "port", "metrics"}
+            managed = {key.replace("_", "-") for key in settings.args} & _RESERVED_OPTIONS.keys()
             if managed:
                 raise ValidationError(
                     f"roles.{role}.args contains SRT-managed flags: {', '.join(sorted(managed))}; "
-                    "use engine.model_file and engine.metrics, and let SRT select the host and port"
+                    "use engine.model_file and engine.metrics, and let SRT select the host and port; "
+                    "model downloads, API authentication, API prefixes and TLS are unsupported"
                 )
+            for key, value in settings.args.items():
+                if not isinstance(value, list):
+                    continue
+                if key.replace("_", "-") == "control-vector-layer-range":
+                    if len(value) != 2:
+                        raise ValidationError(f"roles.{role}.args.{key} requires two values: [START, END]")
+                else:
+                    raise ValidationError(
+                        f"roles.{role}.args.{key} does not accept a YAML list; "
+                        'use a quoted string for comma-separated values, e.g. tensor-split: "0.5,0.5"'
+                    )
+            self.validate_environment(settings.env, f"roles.{role}.env")
+
+    @staticmethod
+    def validate_environment(environment: Mapping[str, str], location: str) -> None:
+        """Keep explicit recipe environment overrides consistent with the managed server contract."""
+        reserved = environment.keys() & set(_RESERVED_OPTIONS.values())
+        if reserved:
+            raise ValidationError(
+                f"{location} contains SRT-managed llama.cpp environment variables: {', '.join(sorted(reserved))}; "
+                "use engine.model_file and engine.metrics with the local GGUF and unauthenticated HTTP endpoint"
+            )
 
     def _model_aliases(self) -> str:
         alias = self.get_config_for_mode("agg").get("alias")
@@ -144,6 +187,9 @@ class LlamaCppBackend(Backend):
             raise ValueError("llamacpp requires one aggregate server process on one node")
         config = self.get_config_for_mode(process.endpoint_mode)
         config["alias"] = self._model_aliases()
+        for key, value in config.items():
+            if isinstance(value, bool) and key.replace("_", "-") in _ON_OFF_FLAGS:
+                config[key] = "on" if value else "off"
         port = (
             runtime.frontend_port if frontend.worker_api_port(process.endpoint_mode) == "public" else process.http_port
         )

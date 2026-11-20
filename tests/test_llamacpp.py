@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
+from textwrap import indent
 
 import pytest
 import yaml
@@ -14,7 +15,7 @@ from marshmallow import ValidationError
 
 from srtctl.backends import Backend, LlamaCppBackend
 from srtctl.cli.do_sweep import SweepOrchestrator
-from srtctl.core.config import resolve_config_with_defaults
+from srtctl.core.config import load_config, resolve_config_with_defaults
 from srtctl.core.docker import DockerLauncher
 from srtctl.core.launcher import LaunchSpec
 from srtctl.core.runtime import RuntimeContext
@@ -70,11 +71,131 @@ def test_missing_model_file_is_required(recipe):
         load(recipe)
 
 
-@pytest.mark.parametrize("flag", ["model", "m", "host", "port", "metrics"])
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "model",
+        "host",
+        "port",
+        "metrics",
+        "hf-repo",
+        "hf_file",
+        "docker-repo",
+        "model-url",
+        "api-key",
+        "api_key_file",
+        "api-prefix",
+        "ssl-key-file",
+        "ssl_cert_file",
+    ],
+)
 def test_managed_arguments_cannot_disagree_with_runtime(recipe, flag):
     recipe["roles"]["agg"]["args"][flag] = "conflicting-value"
     with pytest.raises(ValidationError, match="SRT-managed flags"):
         load(recipe)
+
+
+def load_yaml_arguments(recipe: dict, tmp_path: Path, arguments: str) -> SrtConfig:
+    path = tmp_path / "recipe.yaml"
+    path.write_text(
+        yaml.safe_dump({key: value for key, value in recipe.items() if key != "roles"})
+        + "roles:\n  agg:\n    nodes: 1\n    workers: 1\n    gpus: 1\n    args:\n"
+        + indent(arguments, "      ")
+        + "\n"
+    )
+    return load_config(path)
+
+
+@pytest.mark.parametrize("flag", ["flash-attn", "flash_attn", "fit", "reasoning", "log-colors"])
+@pytest.mark.parametrize("value, expected", [("on", "on"), ("off", "off"), ("true", "on"), ("false", "off")])
+def test_yaml_value_booleans_emit_explicit_values(recipe, tmp_path, flag, value, expected):
+    config = load_yaml_arguments(recipe, tmp_path, f"{flag}: {value}\nn-gpu-layers: 99\nmlock: true\nmmap: false")
+    runtime = RuntimeContext.from_config(config, "llama-bools", log_dir_base=tmp_path / "out")
+    processes = config.worker_processes(config.allocate_worker_endpoints(runtime.nodes.worker))
+    command = config.backend.build_worker_command(processes[0], processes, runtime, frontend_type="llamacpp")
+    name = "--" + flag.replace("_", "-")
+    assert command[command.index(name) + 1] == expected
+    assert command[command.index("--n-gpu-layers") + 1] == "99"
+    assert "--mlock" in command
+    assert "--mmap" not in command
+    # Command rendering must not mutate the bound recipe args.
+    assert config.backend.get_config_for_mode("agg")[flag] == yaml.safe_load(value)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        "tensor-split: [0.5, 0.5]",
+        "tensor_split: [1, 1]",
+        "device: [CUDA0, CUDA1]",
+        "override-tensor: ['layer.*=CPU', 'output.*=CUDA0']",
+        "lora: [first.gguf, second.gguf]",
+        "lora-scaled: ['first.gguf:0.5', 'second.gguf:1.0']",
+    ],
+)
+def test_yaml_lists_fail_at_config_load_with_quoted_string_guidance(recipe, tmp_path, arguments):
+    with pytest.raises(ValueError, match="quoted.*string"):
+        load_yaml_arguments(recipe, tmp_path, arguments)
+
+
+def test_csv_strings_and_two_token_layer_range_keep_their_cli_shape(recipe, tmp_path):
+    config = load_yaml_arguments(
+        recipe,
+        tmp_path,
+        'tensor-split: "0.5,0.5"\ndevice: "CUDA0,CUDA1"\ncontrol-vector-layer-range: [2, 8]\nflash-attn: auto',
+    )
+    runtime = RuntimeContext.from_config(config, "llama-lists", log_dir_base=tmp_path / "out")
+    processes = config.worker_processes(config.allocate_worker_endpoints(runtime.nodes.worker))
+    command = config.backend.build_worker_command(processes[0], processes, runtime, frontend_type="llamacpp")
+    assert command[command.index("--tensor-split") + 1] == "0.5,0.5"
+    assert command[command.index("--device") + 1] == "CUDA0,CUDA1"
+    assert command[command.index("--flash-attn") + 1] == "auto"
+    start = command.index("--control-vector-layer-range")
+    assert command[start + 1 : start + 3] == ["2", "8"]
+
+
+@pytest.mark.parametrize("values", ["[]", "[2]", "[2, 8, 10]"])
+def test_layer_range_requires_two_values(recipe, tmp_path, values):
+    with pytest.raises(ValueError, match="control-vector-layer-range.*two"):
+        load_yaml_arguments(recipe, tmp_path, "control-vector-layer-range: " + values)
+
+
+@pytest.mark.parametrize("scope", ["role", "global"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "LLAMA_API_KEY",
+        "LLAMA_ARG_API_KEY_FILE",
+        "LLAMA_ARG_API_PREFIX",
+        "LLAMA_ARG_SSL_KEY_FILE",
+        "LLAMA_ARG_SSL_CERT_FILE",
+        "LLAMA_ARG_HF_REPO",
+        "LLAMA_ARG_HF_FILE",
+        "LLAMA_ARG_DOCKER_REPO",
+        "LLAMA_ARG_MODEL_URL",
+        "LLAMA_ARG_MODEL",
+        "LLAMA_ARG_HOST",
+        "LLAMA_ARG_PORT",
+        "LLAMA_ARG_ENDPOINT_METRICS",
+    ],
+)
+def test_environment_cannot_change_the_model_or_endpoint_contract(recipe, scope, name):
+    environment = {name: "unsupported-value-not-to-echo"}
+    if scope == "role":
+        recipe["roles"]["agg"]["env"] = environment
+    else:
+        recipe["environment"] = environment
+    with pytest.raises(ValidationError, match=name) as exc:
+        load(recipe)
+    assert "unsupported-value-not-to-echo" not in str(exc.value)
+
+
+def test_tuning_environment_is_preserved(recipe):
+    recipe["environment"] = {"LLAMA_ARG_FLASH_ATTN": "on"}
+    recipe["roles"]["agg"]["env"] = {"CUDA_VISIBLE_DEVICES": "0", "LLAMA_ARG_THREADS": "4"}
+    config = load(recipe)
+    assert config.environment["LLAMA_ARG_FLASH_ATTN"] == "on"
+    assert config.backend.get_environment_for_mode("agg") == {"CUDA_VISIBLE_DEVICES": "0", "LLAMA_ARG_THREADS": "4"}
 
 
 def test_command_uses_gguf_mount_public_port_alias_and_arguments(recipe, tmp_path):
