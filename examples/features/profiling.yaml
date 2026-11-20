@@ -3,7 +3,8 @@
 # `profiling:` captures a torch profile between `start_step` and `stop_step` for
 # each worker role while the configured benchmark drives traffic. Traces land
 # under `<log_dir>/profiles/<role>/`. `type` may be `torch`, `nsys`, or
-# `nsys-time`; see docs/profiling.md.
+# `nsys-time`; see docs/profiling.md. For Nsight, `nsys_export` defaults to
+# "sqlite"; set it to "none" to disable export alongside the .nsys-rep report.
 #
 # Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
 

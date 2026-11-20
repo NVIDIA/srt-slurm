@@ -702,6 +702,7 @@ def show_config_details(config: SrtConfig) -> None:
         if profiling.enabled:
             details.add_row("profiling", "type", profiling.type)
             if profiling.is_nsys:
+                details.add_row("profiling", "nsys_export", profiling.nsys_export)
                 details.add_row("profiling", "nsys_trace", profiling.nsys_trace)
                 details.add_row("profiling", "capture_range_end", profiling.capture_range_end)
                 fork_setting = (
