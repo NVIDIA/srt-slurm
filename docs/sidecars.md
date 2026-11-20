@@ -30,11 +30,12 @@ roles:
 dynamo:
   source:
     wheel: "<nightly-with-sidecars>"
-  sidecar_port: 19000
   sidecar_args:
     - --grpc-connections
     - "4"
 ```
+
+Sidecar gRPC ports start at `dynamo.sidecar_port`. Unset, they start at 19000, below Linux's default ephemeral port range (32768-60999). An engine binds its port only after loading weights; if the port is inside the node's ephemeral range (`net.ipv4.ip_local_port_range`), any outgoing connection on the node can be handed it as a source port first, and the engine fails with `EADDRINUSE`. So when a cluster's range covers 19000 (for example `9000 65000`), the orchestrator reads the range on the head node at job start and starts the block just above it (65001). It logs a warning when the base is still inside the range, which happens when the range ends at 65535 or an explicit `sidecar_port` falls inside it.
 
 The default sidecar commands are `python3 -m dynamo.sglang.sidecar`, `python3 -m dynamo.vllm.sidecar`, and `python3 -m dynamo.trtllm.sidecar`. All three use the shared `--grpc-endpoint` flag.
 

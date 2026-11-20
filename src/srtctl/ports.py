@@ -8,6 +8,7 @@ the bottom of this module, handed out by ``srtctl.core.topology.NodePortAllocato
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 
 # Shared infrastructure services.
 ETCD_CLIENT_PORT = 2379
@@ -108,13 +109,38 @@ RAY_GCS_PORT = 6379
 RAY_DASHBOARD_PORT = 8265
 
 # Dynamo sidecar gRPC listener next to a native engine (dynamo.sidecar_port), one
-# per sidecar process across the job. Keep this block below Linux's default
-# ephemeral range (32768-60999): a loopback connect to a port inside it can be
-# handed that port as its source and connect to itself, and the TIME_WAIT socket
-# it leaves makes the engine's bind fail. 19000 clears SGLang NCCL (17500 + n)
-# and TokenSpeed's per-node scans (below 18200 at 8 processes per node), and
-# stays under vLLM's scan ranges (20000) for up to 1000 sidecars.
+# per sidecar process across the job. The block must sit outside the node's
+# ephemeral range (net.ipv4.ip_local_port_range): an engine binds it only after
+# loading weights, and until then any outgoing connection on the node (NCCL, UCX,
+# etcd, NIXL, or a loopback connect to itself) can be handed that port as its
+# source, so the bind fails with EADDRINUSE. 19000 is below Linux's default range
+# (32768-60999), clears SGLang NCCL (17500 + n) and TokenSpeed's per-node scans
+# (below 18200 at 8 processes per node), and stays under vLLM's scan ranges
+# (20000) for up to 1000 sidecars. Clusters that widen the range past 19000 get
+# the block above it instead; see sidecar_grpc_base.
 DYNAMO_SIDECAR_GRPC_PORT = 19000
+EPHEMERAL_PORT_RANGE_FILE = Path("/proc/sys/net/ipv4/ip_local_port_range")
+
+
+def read_ephemeral_port_range(path: Path = EPHEMERAL_PORT_RANGE_FILE) -> tuple[int, int] | None:
+    """This node's ephemeral port range, or None when the kernel does not expose it."""
+    try:
+        low, high = (int(field) for field in path.read_text().split())
+    except (OSError, ValueError):
+        return None
+    return low, high
+
+
+def sidecar_grpc_base(ephemeral: tuple[int, int] | None) -> int:
+    """First sidecar gRPC port outside the ephemeral range: the default when it fits below, else just above.
+
+    Above the range the allocator raises if the job's sidecars run past 65535;
+    a range that ends at 65535 leaves no room, so the default stands and the
+    caller should warn.
+    """
+    if ephemeral is not None and ephemeral[0] <= DYNAMO_SIDECAR_GRPC_PORT <= ephemeral[1] < 65535:
+        return ephemeral[1] + 1
+    return DYNAMO_SIDECAR_GRPC_PORT
 
 
 def rank_offset_subscriber_port(port: int, rank: int) -> int:

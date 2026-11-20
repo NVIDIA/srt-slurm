@@ -10,10 +10,12 @@ processes on a node share a port and that job-global kinds never repeat.
 
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from srtctl.backends.sglang import SGLangBackend
+from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.core.config import resolve_config_with_defaults
 from srtctl.core.schema import SrtConfig
 from srtctl.core.topology import NodePortAllocator, Process
@@ -38,6 +40,8 @@ from srtctl.ports import (
     TRTLLM_DIST_INIT_PORTS,
     VLLM_SCAN_PORTS,
     PortKind,
+    read_ephemeral_port_range,
+    sidecar_grpc_base,
 )
 
 TOPOLOGY_EXAMPLE_DIRS = (
@@ -117,10 +121,7 @@ def _example_processes(config: SrtConfig) -> list[Process]:
     """The process topology srtctl would launch for a recipe, on synthetic nodes."""
     nodes = [f"node-{index}" for index in range(config.total_nodes)]
     endpoints = config.allocate_worker_endpoints(nodes)
-    return config.worker_processes(
-        endpoints,
-        port_allocator=NodePortAllocator(bases={SIDECAR_GRPC_PORTS.name: config.dynamo.sidecar_port}),
-    )
+    return config.worker_processes(endpoints)
 
 
 def _example_recipes() -> list[Path]:
@@ -245,3 +246,31 @@ def test_sglang_dp_workers_sharing_a_node_get_disjoint_kv_events_blocks(dp_args:
             bound[(process.node, process.kv_events_port + rank)] += 1
     duplicates = {key: count for key, count in bound.items() if count > 1}
     assert not duplicates, f"KV-event ports bound twice on one node: {duplicates}"
+
+
+class TestSidecarGrpcBase:
+    """The sidecar block sits outside the ephemeral range, where no other socket can take it first."""
+
+    @pytest.mark.parametrize(
+        ("ephemeral", "expected"),
+        [
+            (None, 19000),
+            ((32768, 60999), 19000),  # Linux default: 19000 is below it
+            ((9000, 65000), 65001),  # widened range covers 19000: go above it
+            ((1024, 65535), 19000),  # no room above: keep the default (do_sweep warns)
+        ],
+    )
+    def test_base_avoids_the_range(self, ephemeral, expected):
+        assert sidecar_grpc_base(ephemeral) == expected
+
+    def test_reads_the_sysctl(self, tmp_path):
+        sysctl = tmp_path / "ip_local_port_range"
+        sysctl.write_text("9000\t65000\n")
+        assert read_ephemeral_port_range(sysctl) == (9000, 65000)
+        assert read_ephemeral_port_range(tmp_path / "missing") is None
+
+    @pytest.mark.parametrize(("configured", "expected"), [(None, 65001), (19000, 19000)])
+    def test_orchestrator_honors_an_explicit_port(self, monkeypatch, configured, expected):
+        monkeypatch.setattr("srtctl.cli.do_sweep.read_ephemeral_port_range", lambda: (9000, 65000))
+        context = SimpleNamespace(config=SimpleNamespace(dynamo=SimpleNamespace(sidecar_port=configured)))
+        assert SweepOrchestrator._sidecar_grpc_base(context) == expected

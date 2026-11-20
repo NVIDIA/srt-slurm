@@ -53,8 +53,11 @@ from srtctl.core.supervisor import WORKER_RESTARTS_FILENAME
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
 from srtctl.logging_utils import setup_logging
 from srtctl.ports import (
+    DYNAMO_SIDECAR_GRPC_PORT,
     FRONTEND_PUBLIC_PORT,
     SIDECAR_GRPC_PORTS,
+    read_ephemeral_port_range,
+    sidecar_grpc_base,
 )
 from srtctl.services.implicit import uses_discovery_plane
 
@@ -148,8 +151,26 @@ class SweepOrchestrator(
         Port defaults come from ``srtctl.ports`` and are allocated
         deterministically within a job.
         """
-        allocator = NodePortAllocator(bases={SIDECAR_GRPC_PORTS.name: self.config.dynamo.sidecar_port})
+        allocator = NodePortAllocator(bases={SIDECAR_GRPC_PORTS.name: self._sidecar_grpc_base()})
         return self.config.worker_processes(self.endpoints, port_allocator=allocator)
+
+    def _sidecar_grpc_base(self) -> int:
+        """``dynamo.sidecar_port``, or a base outside this node's ephemeral port range when unset.
+
+        Read on the head node; worker nodes of one allocation share its sysctls.
+        """
+        ephemeral = read_ephemeral_port_range()
+        base = self.config.dynamo.sidecar_port or sidecar_grpc_base(ephemeral)
+        if ephemeral is not None and ephemeral[0] <= base <= ephemeral[1]:
+            logger.warning(
+                "Sidecar gRPC ports start at %d, inside this node's ephemeral port range %d-%d; another "
+                "socket can take one before the engine binds it. Set dynamo.sidecar_port outside the range.",
+                base,
+                *ephemeral,
+            )
+        elif base != DYNAMO_SIDECAR_GRPC_PORT:
+            logger.info("Sidecar gRPC ports start at %d (ephemeral port range: %s)", base, ephemeral)
+        return base
 
     @functools.cached_property
     def worker_runtime(self) -> RuntimeContext:

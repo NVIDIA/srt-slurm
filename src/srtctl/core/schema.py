@@ -73,7 +73,6 @@ from srtctl.core.power.contract import (
 from srtctl.core.power.mapping import DCGM_POWER_MAPPING, PowerMetricMapping
 from srtctl.core.roles import COLOCATE, PER_ROLE_ENGINE_KEYS, ROLE_NAMES, ROLE_TO_MODE
 from srtctl.core.source import DynamoSourceConfig, is_commit_sha
-from srtctl.ports import DYNAMO_SIDECAR_GRPC_PORT
 from srtctl.services.config import ServiceConfig
 
 if TYPE_CHECKING:
@@ -2492,8 +2491,8 @@ class DynamoConfig:
     event_plane: EventPlane | None = None
     # Job-wide native sidecar mode; prefer `roles.<role>.sidecar: true`.
     sidecar: bool = False
-    # Base gRPC port between engine and sidecar; co-located workers get deterministic offsets. The sidecar dials it on loopback; vLLM and SGLang bind it on the engine's host (0.0.0.0).
-    sidecar_port: int = DYNAMO_SIDECAR_GRPC_PORT
+    # Base gRPC port between engine and sidecar; co-located workers get deterministic offsets. The sidecar dials it on loopback; vLLM and SGLang bind it on the engine's host (0.0.0.0). Unset: 19000, or just above the worker node's ephemeral port range (net.ipv4.ip_local_port_range) when that range covers 19000.
+    sidecar_port: int | None = None
     # Standalone sidecar executable; unset runs `python3 -m dynamo.<framework>.sidecar`.
     sidecar_binary: str | None = None
     # Seconds to wait for the native engine's gRPC endpoint.
@@ -2519,7 +2518,7 @@ class DynamoConfig:
                 f"Invalid event_plane '{self.event_plane}', must be one of: {', '.join(self._VALID_EVENT_PLANES)}"
             )
 
-        if not 1 <= self.sidecar_port <= 65535:
+        if self.sidecar_port is not None and not 1 <= self.sidecar_port <= 65535:
             raise ValueError(f"dynamo.sidecar_port must be between 1 and 65535, got {self.sidecar_port}")
         if self.sidecar_startup_timeout < 1:
             raise ValueError("dynamo.sidecar_startup_timeout must be at least 1")

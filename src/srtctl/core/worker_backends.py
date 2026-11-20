@@ -16,7 +16,7 @@ from functools import partial
 from typing import TYPE_CHECKING
 
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints
-from srtctl.ports import PROXY_PORTS, SIDECAR_GRPC_PORTS
+from srtctl.ports import DYNAMO_SIDECAR_GRPC_PORT, PROXY_PORTS, SIDECAR_GRPC_PORTS
 
 if TYPE_CHECKING:
     from srtctl.backends import BackendConfig
@@ -56,7 +56,9 @@ def worker_processes(
     port_allocator: NodePortAllocator | None = None,
 ) -> list[Process]:
     """Expand each role with its engine, sharing every job-wide port reservation."""
-    allocator = port_allocator or NodePortAllocator(bases={SIDECAR_GRPC_PORTS.name: config.dynamo.sidecar_port})
+    allocator = port_allocator or NodePortAllocator(
+        bases={SIDECAR_GRPC_PORTS.name: config.dynamo.sidecar_port or DYNAMO_SIDECAR_GRPC_PORT}
+    )
 
     def expand(backend: BackendConfig, selected: list[Endpoint]) -> list[Process]:
         return backend.endpoints_to_processes(

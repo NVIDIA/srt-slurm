@@ -761,9 +761,16 @@
           "default": false
         },
         "sidecar_port": {
-          "type": "integer",
-          "description": "Base gRPC port between engine and sidecar; co-located workers get deterministic offsets. The sidecar dials it on loopback; vLLM and SGLang bind it on the engine's host (0.0.0.0).",
-          "default": 19000
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Base gRPC port between engine and sidecar; co-located workers get deterministic offsets. The sidecar dials it on loopback; vLLM and SGLang bind it on the engine's host (0.0.0.0). Unset: 19000, or just above the worker node's ephemeral port range (net.ipv4.ip_local_port_range) when that range covers 19000.",
+          "default": null
         },
         "sidecar_binary": {
           "anyOf": [
