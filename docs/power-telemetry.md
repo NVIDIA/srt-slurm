@@ -172,6 +172,7 @@ default_gpu_exporter:
   command: "/home/amd/tools/entrypoint.sh"
   port: 5000
   kind: custom
+  worker_gpu_probe: kfd
   gpu_labels:
     index: gpu_id
     identity: serial_number
@@ -201,6 +202,9 @@ For any `kind: custom` exporter:
 - `gpu_labels.identity` must be unique per physical GPU. GPUs that share one
   (compute partitions, for example) fail device validation (`gpu_uuid_changed`),
   as MIG instances do on NVIDIA.
+- `worker_gpu_probe: kfd` lets a partly used node publish. It reports the PCI
+  `serial_number`, so `gpu_labels.identity` must be `serial_number`; any other
+  identity fails closed as `worker_gpu_uuid_mismatch`.
 
 ## Artifacts
 
@@ -222,15 +226,20 @@ worker GPUs; CPU energy remains whole socket. A GPU on a node that hosts no
 worker is still `unexpected_device`.
 
 Idle GPUs on a worker node are excused only by `worker_identity_proof`: once the
-server is healthy, one bare-host step per worker node (DCGM exporters only) joins
-`scontrol listpids` with `nvidia-smi --query-compute-apps` to record the GPU UUIDs
-each worker step holds, since the plan's `CUDA_VISIBLE_DEVICES` numbering and the exporter's
-device index are otherwise joined on index alone. Those UUIDs must equal the
-exporter's at the planned indices; a disagreement is `worker_gpu_uuid_mismatch`
-and blocks publication even on a fully used node. When the probe cannot run
-(other exporter kinds, MPS, no Slurm step listing) the manifest records why, a fully
-used node publishes as before, and a partly used node stays `unexpected_device`
-with `worker_identity_invalid`.
+server is healthy, one bare-host step per worker node joins `scontrol listpids`
+with a GPU probe to record the GPU identities each worker step holds, since the
+plan's visible-devices numbering and the exporter's device index are otherwise
+joined on index alone. DCGM exporters use `nvidia-smi --query-compute-apps`
+UUIDs. `worker_gpu_probe: kfd` reads
+`/sys/class/kfd/kfd/proc/<pid>/vram_<gpu id>` and the GPU's PCI `serial_number`:
+every `/dev/kfd` process maps every GPU on the node regardless of
+`ROCR_VISIBLE_DEVICES`, so a process holds only the GPUs where it has VRAM
+allocated. Those identities must equal the exporter's at the planned indices; a
+disagreement is `worker_gpu_uuid_mismatch` and blocks publication even on a
+fully used node. When the probe cannot run (no `worker_gpu_probe`, MPS, no
+Slurm step listing) the manifest records why, a fully used node publishes as
+before, and a partly used node stays `unexpected_device` with
+`worker_identity_invalid`.
 
 `manifest.json` records producer identity (version, git commit, exporter image
 and its SHA-256), the power metric and scope, the sample interval, expected and observed device sets, the

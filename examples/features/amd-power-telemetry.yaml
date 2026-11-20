@@ -43,6 +43,7 @@ telemetry:
     command: /home/amd/tools/entrypoint.sh
     port: 5000
     kind: custom
+    worker_gpu_probe: kfd
     gpu_labels:
       index: gpu_id
       identity: serial_number

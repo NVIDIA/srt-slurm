@@ -7,9 +7,9 @@ The plan numbers a worker's GPUs by ``CUDA_VISIBLE_DEVICES`` while the exporter
 labels samples by its own device index, and nothing guarantees the two orders
 agree on a node the job only partly uses. Once the server is healthy, one
 bare-host probe per worker node asks Slurm which PIDs belong to each worker
-step and the vendor tool which GPU UUIDs those PIDs hold. ``validate_devices``
+step and the probe which GPU identities those PIDs hold. ``validate_devices``
 excuses the idle GPUs an exclusive node's exporter also reports only when this
-record matches the UUIDs the exporter saw at the planned indices.
+record matches the identities the exporter saw at the planned indices.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -66,13 +67,75 @@ apps = subprocess.run(
 print(json.dumps({"steps": steps, "compute_apps": apps.stdout}))
 """
 
-# Keyed by the exporter config's ``kind``: the probe must report the same identity
-# the exporter writes into ``gpu_uuid``, which only DCGM's NVML UUID is known to be.
-WORKER_PROBE_SCRIPTS: dict[str, str] = {"dcgm": NVIDIA_PROBE_SCRIPT}
+# Every process ``/dev/kfd`` knows maps every GPU on the node, whatever its
+# ``ROCR_VISIBLE_DEVICES``, so a process holds a GPU only where it has VRAM
+# allocated. The identity is the PCI ``serial_number`` the amdgpu driver reads
+# from the board FRU, the value rocm/device-metrics-exporter labels ``serial_number``.
+KFD_PROBE_SCRIPT = """import csv, io, json, os, subprocess, sys
+
+steps = {}
+for step_id in sys.argv[1:]:
+    listed = subprocess.run(["scontrol", "listpids", step_id], capture_output=True, text=True, timeout=10, check=True)
+    steps[step_id] = listed.stdout
+topology = "/sys/class/kfd/kfd/topology/nodes"
+serials = {}
+for node in os.listdir(topology):
+    with open(f"{topology}/{node}/gpu_id") as f:
+        gpu_id = f.read().strip()
+    if gpu_id == "0":
+        continue
+    with open(f"{topology}/{node}/properties") as f:
+        properties = dict(line.split()[:2] for line in f if line.strip())
+    location, domain = int(properties["location_id"]), int(properties["domain"])
+    bdf = f"{domain:04x}:{location >> 8:02x}:{(location >> 3) & 0x1F:02x}.{location & 0x7:x}"
+    with open(f"/sys/bus/pci/devices/{bdf}/serial_number") as f:
+        serials[gpu_id] = f.read().strip()
+apps = io.StringIO()
+writer = csv.writer(apps)
+for pid in os.listdir("/sys/class/kfd/kfd/proc"):
+    base = f"/sys/class/kfd/kfd/proc/{pid}"
+    try:
+        with open(f"/proc/{pid}/comm") as f:
+            name = f.read().strip()
+        for entry in os.listdir(base):
+            if entry.startswith("vram_"):
+                with open(f"{base}/{entry}") as f:
+                    if int(f.read()) > 0:
+                        writer.writerow([pid, serials[entry.removeprefix("vram_")], name])
+    except FileNotFoundError:
+        continue  # the process exited while the probe ran
+print(json.dumps({"steps": steps, "compute_apps": apps.getvalue()}))
+"""
 
 
-def parse_node_probe(raw_output: str) -> dict[str, tuple[str, ...]]:
-    """``{step id: UUIDs its processes hold}`` from one node's probe output.
+@dataclass(frozen=True)
+class WorkerProbe:
+    """A bare-host script and the identity format it reports."""
+
+    script: str
+    is_identity: Callable[[Any], bool]
+
+
+def is_device_identity(value: Any) -> bool:
+    """The shape every probe's identity shares; a stored proof does not say which probe wrote it."""
+    return isinstance(value, str) and bool(value) and not any(c.isspace() for c in value)
+
+
+def is_gpu_uuid(value: Any) -> bool:
+    """A full-GPU ``GPU-…`` UUID; MIG instances are not sampled per device."""
+    return is_device_identity(value) and value.startswith("GPU-") and len(value) > 4
+
+
+# Keyed by the exporter config's ``worker_gpu_probe``: a probe must report the
+# same identity the exporter writes into ``gpu_uuid``.
+WORKER_PROBES: dict[str, WorkerProbe] = {
+    "nvidia-smi": WorkerProbe(NVIDIA_PROBE_SCRIPT, is_gpu_uuid),
+    "kfd": WorkerProbe(KFD_PROBE_SCRIPT, is_device_identity),
+}
+
+
+def parse_node_probe(raw_output: str, is_identity: Callable[[Any], bool]) -> dict[str, tuple[str, ...]]:
+    """``{step id: GPU identities its processes hold}`` from one node's probe output.
 
     The JSON is the probe's last line, so stderr noise or an appended earlier
     run above it is ignored. A step whose processes hold no GPU cannot be
@@ -93,7 +156,7 @@ def parse_node_probe(raw_output: str) -> dict[str, tuple[str, ...]]:
     for row in csv.reader(io.StringIO(apps), skipinitialspace=True):
         if not row:
             continue
-        if len(row) != 3 or not row[0].isdigit() or int(row[0]) <= 0 or not is_gpu_uuid(row[1]):
+        if len(row) != 3 or not row[0].isdigit() or int(row[0]) <= 0 or not is_identity(row[1]):
             raise ValueError("invalid compute-app identity")
         if MPS_SERVER_PROCESS in row[2]:
             raise ValueError("MPS worker attribution is unsupported")
@@ -116,10 +179,3 @@ def parse_node_probe(raw_output: str) -> dict[str, tuple[str, ...]]:
             raise ValueError(f"worker step {step_id} has no attributable compute-app UUIDs")
         attributed[step_id] = tuple(sorted(uuids))
     return attributed
-
-
-def is_gpu_uuid(value: Any) -> bool:
-    """A full-GPU ``GPU-…`` UUID; MIG instances are not sampled per device."""
-    return (
-        isinstance(value, str) and value.startswith("GPU-") and len(value) > 4 and not any(c.isspace() for c in value)
-    )
