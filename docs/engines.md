@@ -451,9 +451,12 @@ All workers must answer `/health` before router startup. ATOMesh then queries
 Mooncake `/query` and rejects an empty engine-ID map; the worker registry gates
 benchmark readiness and native vLLM `/metrics` are collected.
 
-This mode requires Mooncake on both roles, equal TP, DP=1, a shared engine config,
+This mode requires Mooncake on both roles, DP=1, a shared engine config,
 one router, enabled health checks, and `prefill.restart: never`: ATOMesh caches
 engine IDs at startup. NIXL is not supported by this integration.
+Mooncake workers may use different TP/PP layouts when the installed vLLM model
+and connector support that combination; ATOMesh forwards bootstrap metadata
+and does not repartition KV itself. MoRI-IO READ retains its equal-TP constraint.
 Native ATOM routing retains its own transfer discovery and has no worker metrics.
 
 For session affinity use `frontend.args.policy: dp_sticky` and send `X-Session-ID`.

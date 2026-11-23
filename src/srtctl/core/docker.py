@@ -111,8 +111,6 @@ class DockerLauncher(Launcher):
             container_name,
             "--label",
             f"{JOB_LABEL}={self._job_label()}",
-            "--gpus",
-            _gpus_flag_value(get_srtslurm_setting("docker_gpus") or "all"),
             "--network",
             "host",
             "--ipc",
@@ -134,6 +132,9 @@ class DockerLauncher(Launcher):
             "--entrypoint",
             "",
         ]
+        gpu_request = get_srtslurm_setting("docker_gpus")
+        if gpu_request != "":
+            cmd.extend(["--gpus", _gpus_flag_value("all" if gpu_request is None else gpu_request)])
         if spec.step_name:
             cmd.extend(["--label", f"{STEP_LABEL}={spec.step_name}"])
         mounts, pre_commands = self._mounts(spec)

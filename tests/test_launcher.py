@@ -134,6 +134,18 @@ class TestLocalDockerCommand:
         assert cmd[cmd.index("--gpus") + 1] == '"device=2,3,4,5"'
         assert "all" not in cmd
 
+    def test_explicit_devices_can_replace_gpu_runtime_request(self, docker, cluster):
+        cluster(
+            launcher="docker",
+            docker_gpus="",
+            docker_args=["--device=/dev/kfd", "--device=/dev/dri"],
+        )
+        spec = LaunchSpec(command=["true"], container_image="rocm:1", env_to_set={"HIP_VISIBLE_DEVICES": "4,5,6,7"})
+        cmd = docker.docker_command(spec, "c")
+        assert "--gpus" not in cmd
+        assert "--device=/dev/kfd" in cmd and "--device=/dev/dri" in cmd
+        assert "HIP_VISIBLE_DEVICES=4,5,6,7" in cmd[-1]
+
     def test_docker_gpus_single_device_or_all_is_not_quoted(self, docker, cluster):
         cluster(launcher="docker", docker_gpus="device=3")
         cmd = docker.docker_command(LaunchSpec(command=["true"], container_image="img:1"), "c")

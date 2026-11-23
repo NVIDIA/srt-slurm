@@ -52,15 +52,15 @@ class AtomeshFrontend(StaticRouterFrontend):
         for mode in ("prefill", "decode"):
             if backend._get_parallel_size(mode, "data-parallel-size") != 1:
                 raise ValueError(f"ATOMesh vLLM requires {mode} data-parallel-size: 1")
-        if backend._get_parallel_size("prefill", "tensor-parallel-size") != backend._get_parallel_size(
-            "decode", "tensor-parallel-size"
-        ):
-            raise ValueError("ATOMesh vLLM requires the same tensor-parallel-size on prefill and decode")
         if {"backend", "vllm-kv-connector"} & {str(key).replace("_", "-") for key in (config.frontend.args or {})}:
             raise ValueError("frontend.args.backend and vllm-kv-connector are managed by srtctl for atomesh")
 
     def _validate_moriio_workers(self, config: Any) -> None:
         backend = config.backend
+        if backend._get_parallel_size("prefill", "tensor-parallel-size") != backend._get_parallel_size(
+            "decode", "tensor-parallel-size"
+        ):
+            raise ValueError("ATOMesh MoRI-IO requires the same tensor-parallel-size on prefill and decode")
         for mode in ("prefill", "decode"):
             row = backend.kv_connector_for_mode(mode)
             if row is None or not row.discovery:

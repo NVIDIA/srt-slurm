@@ -53,7 +53,6 @@ def test_rejects_unsupported_vllm_config(overrides: dict, message: str) -> None:
         ("prefill", {"restart": RestartPolicy(policy="on-failure")}, "prefill restart: never"),
         ("prefill", {"args": {"data-parallel-size": 2}}, "prefill data-parallel-size: 1"),
         ("decode", {"args": {"data-parallel-size": 2}}, "decode data-parallel-size: 1"),
-        ("decode", {"args": {"tensor-parallel-size": 2}}, "same tensor-parallel-size"),
         ("decode", {"args": {"connector": "nixl"}}, "Mooncake on both"),
     ],
 )
@@ -71,6 +70,28 @@ def test_rejects_mixed_atom_and_vllm_roles() -> None:
     }
     with pytest.raises(ValidationError, match="same backend type"):
         _config(engine=None, roles=roles)
+
+
+def test_mooncake_accepts_colocated_pp_prefill_and_tp_decode() -> None:
+    config = _config(
+        roles={
+            "prefill": RoleConfig(
+                nodes=1,
+                workers=1,
+                gpus=4,
+                args={"tensor-parallel-size": 1, "pipeline-parallel-size": 4},
+            ),
+            "decode": RoleConfig(
+                nodes="colocate",
+                workers=1,
+                gpus=4,
+                args={"tensor-parallel-size": 4, "pipeline-parallel-size": 1},
+            ),
+        }
+    )
+    assert config.total_nodes == 1
+    assert config.backend._get_parallel_size("prefill", "pipeline-parallel-size") == 4
+    assert config.backend._get_parallel_size("decode", "tensor-parallel-size") == 4
 
 
 def test_vllm_bootstrap_health_and_metrics_follow_allocated_workers() -> None:

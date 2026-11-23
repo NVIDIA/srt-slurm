@@ -66,6 +66,8 @@ launcher: docker
 # docker_gpus: "device=2,3,4,5"          # `--gpus` value for every container (default: all)
 ```
 
+For ROCm hosts that expose devices directly, set `docker_gpus: ""` to omit the GPU runtime request and supply the device flags in `docker_args`, for example `["--device=/dev/kfd", "--device=/dev/dri", "--device=/dev/infiniband"]`. Set `visible_devices_env: HIP_VISIBLE_DEVICES` so colocated workers receive their allocated GPU subsets.
+
 Under `launcher: docker`, `srtctl apply` renders the same job script, stages `outputs/<job_id>/` the same way, and runs the script in the foreground with `SRTCTL_JOB_ID=docker-<timestamp>` in place of `SLURM_JOB_ID`; its output is teed to `logs/sweep_<job_id>.log`. The orchestrator, health checks, benchmarks and postprocessing are unchanged; only the launcher underneath differs:
 
 | | `slurm` | `docker` |
