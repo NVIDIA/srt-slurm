@@ -1085,11 +1085,16 @@ class VLLMBackend(Backend):
                         )
                     )
                 else:
-                    processes.extend(
-                        endpoints_to_processes(
-                            [endpoint], port_allocator=allocator, sidecar_grpc=dynamo_sidecar, bootstrap_ports=False
-                        )
+                    endpoint_processes = endpoints_to_processes(
+                        [endpoint], port_allocator=allocator, sidecar_grpc=dynamo_sidecar, bootstrap_ports=False
                     )
+                    if self.is_dp_mode(endpoint.mode):
+                        self._validate_endpoint_parallelism(endpoint)
+                        dp_rpc_port = allocator.next(DP_RPC_PORTS, endpoint.leader_node)
+                        endpoint_processes = [
+                            replace(process, dp_rpc_port=dp_rpc_port) for process in endpoint_processes
+                        ]
+                    processes.extend(endpoint_processes)
         elif not any(self.is_dp_mode(ep.mode) for ep in endpoints):
             # Standard TP mode: one process per node, or one per engine of the
             # worker under backend.failover (engine 0 plus its shadows).
@@ -1419,6 +1424,19 @@ class VLLMBackend(Backend):
 
             # Behind a router, an external-LB rank is a `vllm serve` of its own (endpoints_to_processes).
             is_rank_server = self.is_external_lb(mode) and not binds_public_port and not frontend.expands_node_local_dp
+
+            if is_dp_mode and not frontend.expands_node_local_dp and not is_rank_server:
+                for key in list(config):
+                    if normalize_vllm_config_key(key) in {"data-parallel-address", "data-parallel-rpc-port"}:
+                        config.pop(key)
+                cmd.extend(
+                    [
+                        "--data-parallel-address",
+                        leader_ip,
+                        "--data-parallel-rpc-port",
+                        str(process.dp_rpc_port or VLLM_DATA_PARALLEL_RPC_PORT),
+                    ]
+                )
 
             if frontend.expands_node_local_dp and is_dp_mode and self.dp_launch_mode != "per_node":
                 raise ValueError(

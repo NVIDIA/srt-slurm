@@ -52,7 +52,11 @@ def test_rejects_unsupported_vllm_config(overrides: dict, message: str) -> None:
     [
         ("prefill", {"restart": RestartPolicy(policy="on-failure")}, "prefill restart: never"),
         ("prefill", {"args": {"data-parallel-size": 2}}, "prefill data-parallel-size: 1"),
-        ("decode", {"args": {"data-parallel-size": 2}}, "decode data-parallel-size: 1"),
+        (
+            "decode",
+            {"args": {"data-parallel-size": 2, "data-parallel-external-lb": True}},
+            "decode internal load balancing",
+        ),
         ("decode", {"args": {"connector": "nixl"}}, "Mooncake on both"),
     ],
 )
@@ -92,6 +96,23 @@ def test_mooncake_accepts_colocated_pp_prefill_and_tp_decode() -> None:
     assert config.total_nodes == 1
     assert config.backend._get_parallel_size("prefill", "pipeline-parallel-size") == 4
     assert config.backend._get_parallel_size("decode", "tensor-parallel-size") == 4
+
+
+def test_mooncake_accepts_decode_dp_ep_behind_one_api() -> None:
+    config = _config(
+        roles={
+            "prefill": RoleConfig(nodes=1, workers=1, gpus=4, args={"pipeline-parallel-size": 4}),
+            "decode": RoleConfig(
+                nodes="colocate",
+                workers=1,
+                gpus=4,
+                args={"data-parallel-size": 4, "enable-expert-parallel": True},
+            ),
+        }
+    )
+    assert config.total_nodes == 1
+    assert config.backend._get_parallel_size("decode", "data-parallel-size") == 4
+    assert not AtomeshFrontend().expands_node_local_dp
 
 
 def test_vllm_bootstrap_health_and_metrics_follow_allocated_workers() -> None:

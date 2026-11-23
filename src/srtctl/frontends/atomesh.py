@@ -47,11 +47,10 @@ class AtomeshFrontend(StaticRouterFrontend):
             if any(backend.bootstrap_connector(mode) is None for mode in ("prefill", "decode")):
                 raise ValueError("ATOMesh vLLM requires Mooncake on both prefill and decode")
             validate_mooncake_workers(config)
+            if backend.is_external_lb("decode"):
+                raise ValueError("ATOMesh Mooncake requires decode internal load balancing")
         if config.frontend.enable_multiple_frontends:
             raise ValueError("ATOMesh vLLM requires frontend.enable_multiple_frontends: false")
-        for mode in ("prefill", "decode"):
-            if backend._get_parallel_size(mode, "data-parallel-size") != 1:
-                raise ValueError(f"ATOMesh vLLM requires {mode} data-parallel-size: 1")
         if {"backend", "vllm-kv-connector"} & {str(key).replace("_", "-") for key in (config.frontend.args or {})}:
             raise ValueError("frontend.args.backend and vllm-kv-connector are managed by srtctl for atomesh")
 
@@ -62,6 +61,8 @@ class AtomeshFrontend(StaticRouterFrontend):
         ):
             raise ValueError("ATOMesh MoRI-IO requires the same tensor-parallel-size on prefill and decode")
         for mode in ("prefill", "decode"):
+            if backend._get_parallel_size(mode, "data-parallel-size") != 1:
+                raise ValueError(f"ATOMesh MoRI-IO requires {mode} data-parallel-size: 1")
             row = backend.kv_connector_for_mode(mode)
             if row is None or not row.discovery:
                 raise ValueError("ATOMesh MoRI-IO READ requires MoRI-IO on both prefill and decode")

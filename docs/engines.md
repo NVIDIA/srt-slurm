@@ -451,9 +451,16 @@ All workers must answer `/health` before router startup. ATOMesh then queries
 Mooncake `/query` and rejects an empty engine-ID map; the worker registry gates
 benchmark readiness and native vLLM `/metrics` are collected.
 
-This mode requires Mooncake on both roles, DP=1, a shared engine config,
+This mode requires Mooncake on both roles, prefill DP=1, a shared engine config,
 one router, enabled health checks, and `prefill.restart: never`: ATOMesh caches
 engine IDs at startup. NIXL is not supported by this integration.
+Decode may use `data-parallel-size` greater than one with vLLM's internal load
+balancing. One API endpoint owns the decode DP pool; ATOMesh does not expand it
+into rank-specific URLs. The DP coordination address and port come from the
+allocated topology. `data-parallel-external-lb` is rejected. See the
+[decode DP example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/atomesh-mooncake-decode-dp.yaml).
+For MoE models, `roles.decode.args.enable-expert-parallel: true` can shard
+experts across that pool when supported by the worker image.
 Mooncake workers may use different TP/PP layouts when the installed vLLM model
 and connector support that combination; ATOMesh forwards bootstrap metadata
 and does not repartition KV itself. MoRI-IO READ retains its equal-TP constraint.
