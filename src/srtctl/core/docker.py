@@ -71,6 +71,11 @@ class DockerLauncher(Launcher):
 
     name = "docker"
 
+    def model_mount(self, model_path: Path, hf_cache_mount: Path | None = None) -> tuple[Path, Path, Path]:
+        # Keep escaping model symlinks addressable without creating aliases in a root-owned container directory.
+        path = model_path.resolve()
+        return path, path, path
+
     def __init__(self) -> None:
         self._steps: dict[str, _DockerStep] = {}
         self._lock = threading.Lock()
@@ -119,19 +124,14 @@ class DockerLauncher(Launcher):
             "memlock=-1",
             "--ulimit",
             "stack=67108864",
-            # Performance counters for nsys CPU sampling: a Slurm cluster allows them host-wide,
-            # a stock Ubuntu host (perf_event_paranoid=4) refuses them to anyone without this.
-            "--cap-add",
-            "PERFMON",
-            # NUMA affinity: SGLang/vLLM pin each rank's host memory and threads to its GPU's NUMA
-            # node (set_mempolicy/sched_setaffinity); without this they log "User lacks permission
-            # to set NUMA affinity" and run unpinned, which an srun step on a host without the
-            # restriction does not.
-            "--cap-add",
-            "SYS_NICE",
             "--entrypoint",
             "",
         ]
+        capabilities = get_srtslurm_setting("docker_cap_add")
+        if capabilities is None:
+            capabilities = ("PERFMON", "SYS_NICE")
+        for capability in capabilities:
+            cmd.extend(["--cap-add", capability])
         gpu_request = get_srtslurm_setting("docker_gpus")
         if gpu_request != "":
             cmd.extend(["--gpus", _gpus_flag_value("all" if gpu_request is None else gpu_request)])
@@ -200,8 +200,8 @@ class DockerLauncher(Launcher):
         exactly that: every weight file is a relative symlink into the hub's blob store.
         Mounted at ``/model`` on its own, the files resolve to nothing. For such a
         directory the launcher mounts the common root of the directory and its link
-        targets at its own host path and creates the recipe's container path as a
-        symlink to the directory, so the relative links resolve exactly as on the host.
+        targets at its own host path. A distinct container alias also needs a
+        symlink; model mounts retain their host path and require no alias.
         """
         mounts: list[tuple[str, str]] = []
         pre_commands: list[str] = []
@@ -214,6 +214,8 @@ class DockerLauncher(Launcher):
             if root not in roots:
                 roots.add(root)
                 mounts.append((root, root))
+            if str(container) == os.path.realpath(host):
+                continue
             parent = os.path.dirname(str(container))
             if parent not in ("", "/"):
                 pre_commands.append(f"mkdir -p {shlex.quote(parent)}")

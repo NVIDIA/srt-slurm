@@ -348,6 +348,21 @@
       "description": "Extra `docker run` arguments for every container under `launcher: docker`, e.g. `[\"--user\", \"1000:1000\"]`.",
       "default": null
     },
+    "docker_cap_add": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Additional Docker capabilities; unset defaults to [\"PERFMON\", \"SYS_NICE\"]. An empty list adds none.",
+      "default": null
+    },
     "docker_gpus": {
       "anyOf": [
         {

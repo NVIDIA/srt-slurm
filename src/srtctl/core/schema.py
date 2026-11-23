@@ -466,6 +466,8 @@ class ClusterConfig:
     launcher: Literal["slurm", "docker"] = "slurm"
     # Extra `docker run` arguments for every container under `launcher: docker`, e.g. `["--user", "1000:1000"]`.
     docker_args: list[str] | None = None
+    # Additional Docker capabilities; unset defaults to ["PERFMON", "SYS_NICE"]. An empty list adds none.
+    docker_cap_add: list[str] | None = None
     # The `--gpus` value for every container under `launcher: docker` (default `all`), e.g. `"device=2,3,4,5"`
     # on a shared or partly faulty machine. Docker renumbers the listed devices from 0, so the per-worker
     # `CUDA_VISIBLE_DEVICES` masks the orchestrator computes stay valid.

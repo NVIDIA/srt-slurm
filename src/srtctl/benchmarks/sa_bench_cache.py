@@ -24,7 +24,8 @@ from typing import TYPE_CHECKING, cast
 from srtctl.benchmarks.base import SCRIPTS_DIR
 from srtctl.benchmarks.sa_bench import DEFAULT_NUM_PROMPTS_MULT, DEFAULT_NUM_WARMUP_MULT
 from srtctl.core.config import get_srtslurm_setting
-from srtctl.core.runtime import resolve_container_image, resolve_local_model_mount, resolve_model_path
+from srtctl.core.launcher import get_launcher
+from srtctl.core.runtime import resolve_container_image, resolve_model_path
 from srtctl.core.slurm import get_container_mounts_str, get_slurm_job_id
 from srtctl.ports import FRONTEND_PUBLIC_PORT
 
@@ -199,7 +200,7 @@ def _base_mounts(config: SrtConfig, model_path: Path, is_hf_model: bool) -> tupl
     mounts: dict[Path, Path] = {}
     container_model_path = model_path
     if not is_hf_model:
-        model_mount, model_mount_target, container_model_path = resolve_local_model_mount(
+        model_mount, model_mount_target, container_model_path = get_launcher().model_mount(
             model_path, HF_MODEL_CACHE_MOUNT
         )
         mounts[model_mount] = model_mount_target

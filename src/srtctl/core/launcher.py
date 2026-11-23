@@ -76,6 +76,12 @@ class Launcher(ABC):
 
     name: ClassVar[str]
 
+    def model_mount(self, model_path: Path, hf_cache_mount: Path | None = None) -> tuple[Path, Path, Path]:
+        """Host mount, container mount and model argument for this launcher."""
+        from srtctl.core.runtime import HF_MODEL_CACHE_MOUNT, resolve_local_model_mount
+
+        return resolve_local_model_mount(model_path, HF_MODEL_CACHE_MOUNT if hf_cache_mount is None else hf_cache_mount)
+
     def build_task_command(self, spec: LaunchSpec) -> list[str]:
         """The command the task runs: the bash wrapper around ``spec.command``, or the command itself.
 

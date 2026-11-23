@@ -530,7 +530,7 @@ class RuntimeContext:
         # Only mount local model paths - HF models are downloaded at runtime
         container_model_path: Path | None = None
         if not is_hf_model:
-            model_mount, model_mount_target, container_model_path = resolve_local_model_mount(model_path)
+            model_mount, model_mount_target, container_model_path = get_launcher().model_mount(model_path)
             container_mounts[model_mount] = model_mount_target
 
         # Optional: stage the model to node-local storage before workers start.

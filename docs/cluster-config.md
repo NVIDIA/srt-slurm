@@ -64,9 +64,12 @@ reporting:
 launcher: docker
 # docker_args: ["--user", "1000:1000"]   # extra `docker run` arguments for every container
 # docker_gpus: "device=2,3,4,5"          # `--gpus` value for every container (default: all)
+# docker_cap_add: ["SYS_NICE"]         # omit PERFMON where CPU profiling is unused or disallowed
 ```
 
 For ROCm hosts that expose devices directly, set `docker_gpus: ""` to omit the GPU runtime request and supply the device flags in `docker_args`, for example `["--device=/dev/kfd", "--device=/dev/dri", "--device=/dev/infiniband"]`. Set `visible_devices_env: HIP_VISIBLE_DEVICES` so colocated workers receive their allocated GPU subsets.
+
+`docker_cap_add` controls the launcher's additional capability requests. Unset retains `PERFMON` for CPU profiling and `SYS_NICE` for NUMA affinity; an empty list adds neither. Container authorization policies still apply. Docker model paths retain their absolute host paths, including the common root needed by escaping weight symlinks, so non-root workers do not need to create a model alias under `/`. Explicit aliases in user-defined mounts still require permission to create that alias.
 
 Under `launcher: docker`, `srtctl apply` renders the same job script, stages `outputs/<job_id>/` the same way, and runs the script in the foreground with `SRTCTL_JOB_ID=docker-<timestamp>` in place of `SLURM_JOB_ID`; its output is teed to `logs/sweep_<job_id>.log`. The orchestrator, health checks, benchmarks and postprocessing are unchanged; only the launcher underneath differs:
 
