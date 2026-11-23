@@ -29,6 +29,12 @@ MINIMAL_CONFIG = {
     "roles": {"prefill": {"nodes": 1, "workers": 1}, "decode": {"nodes": 1, "workers": 1}},
     "benchmark": {"type": "manual"},
 }
+SWEEP_CONFIG = {
+    **MINIMAL_CONFIG,
+    "sweep": {"tokens": [1, 2]},
+    "roles": {**MINIMAL_CONFIG["roles"], "prefill": {"nodes": 1, "workers": 1, "args": {"x": "{tokens}"}}},
+}
+TWO_VARIANTS = {"base": MINIMAL_CONFIG, "override_x": {"name": "x-job"}, "override_y": {"name": "y-job"}}
 
 
 def _sbatch(stdout: str = "Submitted batch job 42") -> MagicMock:
@@ -48,11 +54,13 @@ def _apply(
     target: Path | str | None = None,
     args: tuple = (),
     command: str = "apply",
+    output: bool = True,
 ) -> int:
     cfg = tmp_path / "cfg.yaml"
     cfg.write_text(yaml.dump(config or MINIMAL_CONFIG))
     monkeypatch.delenv("RUNNER_NAME", raising=False)
-    argv = ["srtctl", command, "-f", str(target or cfg), "-o", str(tmp_path), *args] + (["--json"] if json_mode else [])
+    output_args = ["-o", str(tmp_path)] if output else []
+    argv = ["srtctl", command, "-f", str(target or cfg), *output_args, *args] + (["--json"] if json_mode else [])
     monkeypatch.setattr(sys, "argv", argv)
     code = 0
     with (
@@ -344,9 +352,7 @@ def test_directory_mixed_results_exit_3(monkeypatch, tmp_path, capsys, json_mode
 
 
 def test_sweep_item_two_fails_after_item_one_accepted(monkeypatch, tmp_path, capsys):
-    sweep = {**MINIMAL_CONFIG, "sweep": {"tokens": [1, 2, 3]}}
-    sweep["roles"] = {**MINIMAL_CONFIG["roles"], "prefill": {"nodes": 1, "workers": 1, "args": {"x": "{tokens}"}}}
-    code = _apply(monkeypatch, tmp_path, config=sweep, extra_patches=(_fail_preflight_on_call(2),))
+    code = _apply(monkeypatch, tmp_path, config=SWEEP_CONFIG, extra_patches=(_fail_preflight_on_call(2),))
     accepted, submitted, error = _records(capsys)
     assert code == 3
     assert (accepted["submission_index"], submitted["submission_index"], error["submission_index"]) == (1, 1, 2)
@@ -421,3 +427,60 @@ def test_dry_run_bad_set_still_exits_2_with_usage(monkeypatch, capsys):
     assert excinfo.value.code == 2
     assert "usage:" in captured.err
     assert "{" not in captured.out
+
+
+@pytest.mark.parametrize(
+    ("target", "config", "args"),
+    [
+        (":override_x", None, ()),
+        ("dir", None, ("--set", "name=x")),
+        (None, TWO_VARIANTS, ("--serve-only",)),
+        (None, SWEEP_CONFIG, ("--serve-only",)),
+        (None, None, ("--serve-only", "--mock")),
+        (None, None, ("--serve-only", "--sweep")),
+    ],
+    ids=[
+        "empty-path",
+        "set-on-dir",
+        "serve-only-variants",
+        "serve-only-sweep",
+        "serve-only-mock",
+        "serve-only-force-sweep",
+    ],
+)
+def test_unsupported_invocation_shapes_exit_2(monkeypatch, tmp_path, capsys, target, config, args):
+    if target == "dir":
+        target = _recipes(tmp_path, a=MINIMAL_CONFIG)
+    assert _apply(monkeypatch, tmp_path, config=config, target=target, args=args) == 2
+    assert _records(capsys)[-1]["code"] == "invocation_invalid"
+
+
+def test_empty_recipe_file_is_recipe_invalid(monkeypatch, tmp_path, capsys):
+    empty = tmp_path / "empty.yaml"
+    empty.write_text("\n")
+    assert _apply(monkeypatch, tmp_path, target=empty) == 1
+    (record,) = _records(capsys)
+    assert record["code"] == "recipe_invalid"
+    assert record["recipe_path"] == str(empty)
+
+
+def test_directory_submits_override_and_sweep_files(monkeypatch, tmp_path, capsys):
+    directory = _recipes(tmp_path, a_override=TWO_VARIANTS, b_sweep=SWEEP_CONFIG)
+    assert _apply(monkeypatch, tmp_path, target=directory) == 0
+    submitted = [r for r in _records(capsys) if r["status"] == "submitted"]
+    assert [(Path(r["recipe_path"]).name, r.get("variant")) for r in submitted] == [
+        ("a_override.yaml", "override_x"),
+        ("a_override.yaml", "override_y"),
+        ("b_sweep.yaml", None),
+        ("b_sweep.yaml", None),
+    ]
+
+
+def test_srtslurm_output_dir_is_the_default_output_base(monkeypatch, tmp_path, capsys):
+    base = tmp_path / "cluster-outputs"
+    setting = patch(
+        "srtctl.cli.submit.get_srtslurm_setting",
+        side_effect=lambda key, default=None: str(base) if key == "output_dir" else default,
+    )
+    assert _apply(monkeypatch, tmp_path, output=False, extra_patches=(setting,)) == 0
+    assert _records(capsys)[0]["output_dir"] == str(base / "42")
