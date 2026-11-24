@@ -63,6 +63,11 @@ The setup will:
 4. Create `srtslurm.yaml` with your settings
 5. Auto-detect and set `srtctl_root` path
 
+Each batch job runs the orchestrator from a compute-architecture venv, `.venv-compute` in the
+srt-slurm checkout, which the first job creates with `uv sync`. To keep it elsewhere, such as
+node-local disk when the checkout sits on small or distant shared storage, set
+[`compute_venv`](cluster-config.md) in `srtslurm.yaml`.
+
 The scraper binaries are attached to srt-slurm GitHub releases for `x86_64` and `aarch64`. `make setup` downloads the matching asset from the latest release and verifies its SHA-256 checksum. Run `make tachometer-scraper` to build the vendored source instead.
 
 After setup, the existing Python observability capture needs only:

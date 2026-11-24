@@ -171,6 +171,18 @@
       "description": "srtctl checkout on the shared filesystem that compute nodes mount at /srtctl-src. Default: this checkout.",
       "default": null
     },
+    "compute_venv": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Path of the batch job's compute-architecture venv (default: `.venv-compute` in the srtctl checkout), e.g. node-local disk when the checkout sits on small or distant shared storage. Must exist on every node when `telemetry.cpu_power` is on. Environment variables expand on the submitting host.",
+      "default": null
+    },
     "output_dir": {
       "anyOf": [
         {

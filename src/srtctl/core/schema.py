@@ -421,6 +421,10 @@ class ClusterConfig:
     default_reuse_container: bool = False
     # srtctl checkout on the shared filesystem that compute nodes mount at /srtctl-src. Default: this checkout.
     srtctl_root: str | None = None
+    # Path of the batch job's compute-architecture venv (default: `.venv-compute` in the srtctl checkout), e.g.
+    # node-local disk when the checkout sits on small or distant shared storage. Must exist on every node when
+    # `telemetry.cpu_power` is on. Environment variables expand on the submitting host.
+    compute_venv: str | None = None
     output_dir: str | None = None  # Custom output directory for job logs
     # Alias -> path map; a recipe's `model.path` may name an alias instead of a path.
     model_paths: dict[str, str] | None = None

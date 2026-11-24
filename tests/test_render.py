@@ -3,6 +3,7 @@
 """`srtctl render`: the sbatch script `apply` would submit, written out for someone else to submit."""
 
 import logging
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -234,3 +235,34 @@ def test_job_script_picks_the_venv_for_the_launcher(recipe: Path, env: dict[str,
         check=True,
     )
     assert result.stdout.strip() == f"/src/{venv}"
+
+
+@pytest.mark.skipif(shutil.which("flock") is None, reason="needs util-linux flock")
+@pytest.mark.parametrize("compute_venv", [None, "node-local/venv"])
+def test_the_compute_venv_and_its_lock_follow_srtslurm_compute_venv(
+    recipe: Path, tmp_path: Path, compute_venv: str | None
+) -> None:
+    venv = tmp_path / compute_venv if compute_venv else None
+
+    def setting(key, default=None):
+        return str(venv) if key == "compute_venv" and venv else default
+
+    with patch("srtctl.cli.submit.get_srtslurm_setting", side_effect=setting):
+        body = submit.generate_minimal_sbatch_script(config=SrtConfig.from_yaml(recipe), config_path=recipe)
+    venv_setup = body[
+        body.index('if [ -n "${SRTCTL_JOB_ID:-}" ]') : body.index("uv run --python 3.12 --no-dev --no-sync")
+    ]
+    source = tmp_path / "srt-slurm"
+    source.mkdir()
+    stub = tmp_path / "bin" / "uv"
+    stub.parent.mkdir()
+    stub.write_text('#!/bin/sh\necho "$* -> $UV_PROJECT_ENVIRONMENT" >> "$UV_CALLS"\n')
+    stub.chmod(0o755)
+    calls = tmp_path / "uv-calls"
+    env = {"PATH": f"{stub.parent}:/usr/bin:/bin", "SRTCTL_SOURCE": str(source), "UV_CALLS": str(calls)}
+
+    subprocess.run(["bash", "-c", f"set -e\n{venv_setup}"], env=env, check=True)
+
+    venv = venv or source / ".venv-compute"
+    assert calls.read_text().splitlines()[-1] == f"sync --python 3.12 --no-dev -> {venv}"
+    assert Path(f"{venv}.lock").exists()

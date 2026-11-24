@@ -1037,6 +1037,17 @@ def generate_minimal_sbatch_script(
     config_environment = config.dynamo.get_wheel_environment()
     config_environment.update(config.environment)
 
+    compute_venv = get_srtslurm_setting("compute_venv")
+    telemetry = config.telemetry
+    if compute_venv and total_nodes > 1 and telemetry.enabled and telemetry.cpu_power.enabled is True:
+        # Only the batch host syncs the venv; the cpu_power collector runs its Python on every node.
+        logger.warning(
+            "telemetry.cpu_power runs %s/bin/python on all %d nodes, but only the batch host syncs that venv, "
+            "so the collector fails on the others unless compute_venv is on storage every node mounts",
+            compute_venv,
+            total_nodes,
+        )
+
     rendered = template.render(
         job_name=job_name,
         total_nodes=total_nodes,
@@ -1055,6 +1066,7 @@ def generate_minimal_sbatch_script(
         sbatch_directives=config.sbatch_directives,
         container_image=container_image,
         srtctl_source=str(srtctl_source.resolve()),
+        compute_venv=shlex.quote(os.path.expandvars(compute_venv)) if compute_venv else None,
         output_base=output_base,
         setup_script=setup_script,
         serve_only=serve_only,
