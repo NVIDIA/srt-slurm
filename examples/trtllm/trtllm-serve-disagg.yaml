@@ -4,7 +4,8 @@
 # sharing a node (`nodes: colocate` places decode on the prefill node's spare
 # GPUs). srtctl writes the static ser.yaml listing both server URLs and launches
 # `trtllm-serve disaggregated --config ser.yaml` on the head node as the router.
-# KV moves through the UCX cache transceiver. No Dynamo, NATS, or etcd.
+# KV moves through the NIXL cache transceiver, which TensorRT-LLM 1.4's default Python
+# transceiver requires (it rejects UCX). No Dynamo, NATS, or etcd.
 #
 # Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
 
@@ -48,7 +49,7 @@ roles:
       kv_cache_config:
         free_gpu_memory_fraction: 0.5
       cache_transceiver_config:
-        backend: "UCX"
+        backend: "NIXL"
   decode:
     nodes: colocate
     workers: 1
@@ -66,7 +67,7 @@ roles:
       kv_cache_config:
         free_gpu_memory_fraction: 0.5
       cache_transceiver_config:
-        backend: "UCX"
+        backend: "NIXL"
 
 benchmark:
   type: "sa-bench"

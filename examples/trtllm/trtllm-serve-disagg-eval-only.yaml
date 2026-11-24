@@ -46,7 +46,7 @@ roles:
       kv_cache_config:
         free_gpu_memory_fraction: 0.5
       cache_transceiver_config:
-        backend: "UCX"
+        backend: "NIXL"
   decode:
     nodes: 1
     workers: 1
@@ -64,7 +64,7 @@ roles:
       kv_cache_config:
         free_gpu_memory_fraction: 0.5
       cache_transceiver_config:
-        backend: "UCX"
+        backend: "NIXL"
 
 benchmark:
   placement:
