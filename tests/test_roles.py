@@ -368,7 +368,7 @@ def test_per_role_kv_events_and_sidecar() -> None:
     ("engine", "frontend", "sidecar", "warns"),
     [
         ("vllm", "dynamo", None, True),
-        ("trtllm", "dynamo", None, False),
+        ("trtllm", "dynamo", None, True),
         ("vllm", "dynamo", True, False),
         ("vllm", "vllm", None, False),
     ],

@@ -23,9 +23,11 @@ CONNECTOR = {"connector": "mooncake-store"}
 
 
 def _recipe(frontend: str = "trtllm_serve") -> dict[str, Any]:
-    """The example recipe for ``frontend``, with the model and container resolvable without srtslurm.yaml."""
+    """The example recipe for ``frontend``, resolvable without srtslurm.yaml; Dynamo runs the Python worker."""
     name = "dynamo-disagg-mooncake.yaml" if frontend == "dynamo" else "trtllm-serve-disagg-mooncake.yaml"
     recipe = yaml.safe_load((EXAMPLES / name).read_text())
+    for role in recipe["roles"].values():
+        role.pop("sidecar", None)
     recipe["model"].update(path="hf:Qwen/Qwen3-0.6B", container="trtllm.sqsh")
     return recipe
 

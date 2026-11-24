@@ -8,6 +8,9 @@
 # placeholders for the layout; see
 # tests/snapshots/launch/trtllm__dynamo-disagg-multinode.txt for the launch plan.
 #
+# Dynamo 1.7.0 is pip-installed into the engine container at job start (`dynamo.source`).
+# The image must ship TensorRT-LLM 1.4.0rc0 or later; see docs/sidecars.md.
+#
 # Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
 
 schema: 2
@@ -24,8 +27,10 @@ model:
 resources:
   gpu_type: "h100"
   gpus_per_node: 8
+
 dynamo:
-  install: false
+  source:
+    pypi: "1.7.0"
 
 frontend:
   type: dynamo
@@ -41,6 +46,7 @@ roles:
     nodes: 1
     workers: 1
     gpus: 8
+    sidecar: true
     env:
       PYTHONUNBUFFERED: "1"
       TLLM_LOG_LEVEL: "INFO"
@@ -55,11 +61,12 @@ roles:
       kv_cache_config:
         free_gpu_memory_fraction: 0.5
       cache_transceiver_config:
-        backend: "UCX"
+        backend: "NIXL"
   decode:
     nodes: 2
     workers: 1
     gpus: 16
+    sidecar: true
     env:
       PYTHONUNBUFFERED: "1"
       TLLM_LOG_LEVEL: "INFO"
@@ -73,7 +80,7 @@ roles:
       kv_cache_config:
         free_gpu_memory_fraction: 0.5
       cache_transceiver_config:
-        backend: "UCX"
+        backend: "NIXL"
 
 benchmark:
   type: "sa-bench"

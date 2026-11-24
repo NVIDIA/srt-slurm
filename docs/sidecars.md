@@ -6,7 +6,7 @@ Native sidecar mode runs a framework's native engine beside a Dynamo sidecar tha
 
 Set `sidecar: true` on every role to run the framework's native engine process beside a CPU-only Dynamo sidecar instead of launching `python3 -m dynamo.<framework>`. The mode is job-wide, so every role must agree; the sidecar knobs (`sidecar_port`, `sidecar_args`, ...) stay under `dynamo`. `dynamo.sidecar: true` is the equivalent job-wide spelling. The engine and sidecar share one Slurm step and have a coupled lifecycle: if either exits, srtctl terminates the other and marks the worker failed.
 
-vLLM jobs behind the Dynamo frontend that do not set `sidecar: true` still run the Python `dynamo.vllm` worker, and srtctl logs a warning when it loads them; sidecar mode will become the default for vLLM. The vLLM Dynamo examples set `sidecar: true` on every role, except `features/vllm-failover.yaml`: shadow engine recovery runs in the Python worker, so srtctl does not warn for `engine.failover`.
+vLLM and TRT-LLM jobs behind the Dynamo frontend that do not set `sidecar: true` still run the Python `dynamo.vllm` or `dynamo.trtllm` worker, and srtctl logs a warning when it loads them; sidecar mode will become the default for both engines. The vLLM and TRT-LLM Dynamo examples set `sidecar: true` on every role, except `features/vllm-failover.yaml`: shadow engine recovery runs in the Python worker, so srtctl does not warn for `engine.failover`.
 
 For SGLang, srtctl also adds `--incremental-streaming-output` to the engine (the sidecar consumes deltas) and sets two variables in the worker environment: `SGLANG_RUST_SERVER=1`, because the sidecar speaks `sglang.api.v1`, which only SGLang's Rust server serves, and `SGLANG_RUST_BUILD_MODE=never`, so the native extensions are loaded from the image instead of being rebuilt with cargo, which images that run SGLang from a source checkout cannot do. Set any of them in the role's `args` or `env` to override.
 
@@ -38,7 +38,12 @@ dynamo:
 
 The default sidecar commands are `python3 -m dynamo.sglang.sidecar`, `python3 -m dynamo.vllm.sidecar`, and `python3 -m dynamo.trtllm.sidecar`. All three use the shared `--grpc-endpoint` flag.
 
-TensorRT-LLM supports aggregate, prefill, and decode workers through OpenEngine gRPC. Each endpoint runs one sidecar on global MPI rank zero; prefill and decode sidecars register their disaggregation roles. The engine receives the configured parallelism and served model name, while the sidecar reads tokenizer artifacts from the model path. `dynamo.sidecar_context_length` can override the context length inferred from the corresponding role's `args.max_seq_len`. The image must include compatible TensorRT-LLM OpenEngine and Dynamo sidecar builds.
+TensorRT-LLM supports aggregate, prefill, and decode workers through OpenEngine gRPC. Each endpoint runs one sidecar on global MPI rank zero; prefill and decode sidecars register their disaggregation roles. The engine receives the configured parallelism and served model name, while the sidecar reads tokenizer artifacts from the model path. `dynamo.sidecar_context_length` can override the context length inferred from the corresponding role's `args.max_seq_len`. The image must include compatible TensorRT-LLM OpenEngine and Dynamo sidecar builds:
+
+- **TensorRT-LLM 1.4.0rc0 or later.** The engine imports the generated `openengine.v1` protobuf package, which TensorRT-LLM bundles as a private copy from 1.4.0rc0 on. TensorRT-LLM 1.3.x lists it only in its optional `tensorrt_llm[openengine]` extra, so the engine in Dynamo's 1.6.x TensorRT-LLM runtime images (TensorRT-LLM 1.3.0rc29) exits with `No module named 'openengine'`.
+- **Dynamo 1.7.0 or later.** Earlier sidecars register the model path instead of the engine's served model name, so requests for the served name get 404 ([ai-dynamo/dynamo#17556](https://github.com/ai-dynamo/dynamo/pull/17556)).
+
+The `examples/trtllm/dynamo-agg*.yaml` and `dynamo-disagg*.yaml` examples install Dynamo 1.7.0 through `dynamo.source.pypi`, so they run on any `trtllm` image with TensorRT-LLM 1.4.0rc0 or later, such as `nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.7.0` or a TensorRT-LLM release image. Their disaggregated workers move KV with NIXL, because TensorRT-LLM 1.4's default Python cache transceiver does not support UCX.
 
 The [disaggregated TRT-LLM example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/trtllm/dynamo-sidecar-disagg.yaml) places a prefill and decode worker with sidecars on separate nodes.
 

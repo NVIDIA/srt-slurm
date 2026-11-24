@@ -249,7 +249,7 @@ For every role whose `args` select the connector, srtslurm writes `/logs/mooncak
 
 Keys every server of the pool must agree on (`model_key`, `namespace`, `metadata_server`, `protocol`, `master_server_address`) cannot be set per role. The rest of the keys pass through to TensorRT-LLM's reader, which supplies its own defaults (`metadata_server: P2PHANDSHAKE`, `protocol: rdma`, `namespace: trtllm`, ...). Notes:
 
-- The same recipe works with `frontend.type: trtllm_serve` and `frontend.type: dynamo`. trtllm-serve skips its own pool provisioning when `MOONCAKE_CONFIG_PATH` is already set, and `dynamo.trtllm` provisions nothing, so no wrapper is needed around either worker.
+- The same recipe works with `frontend.type: trtllm_serve` and `frontend.type: dynamo` (remove the roles' `sidecar: true` for `trtllm_serve`). trtllm-serve skips its own pool provisioning when `MOONCAKE_CONFIG_PATH` is already set, and the Dynamo worker, whether `dynamo.trtllm` or the OpenEngine engine beside a sidecar, provisions nothing, so no wrapper is needed around any of them.
 - srtslurm launches the native `mooncake_master` binary directly. A `capacity` role's ranks lend the memory, so separate donor processes are unnecessary.
 - `global_segment_size` is per rank: a node needs its ranks times the segment size of host memory. TensorRT-LLM refuses `GB`/`MB`, because vLLM's reader of the same file scales them by 1024 and TensorRT-LLM's by 1000; write `GiB` or a byte count.
 - Leave `local_hostname` unset so each rank uses its own address; a value in `store_config` would apply to every rank of the role. TensorRT-LLM does not read `MOONCAKE_LOCAL_HOSTNAME`, `MOONCAKE_MASTER`, or `MOONCAKE_TE_META_DATA_SERVER`; srtslurm still stamps them, and they are inert for these workers.
