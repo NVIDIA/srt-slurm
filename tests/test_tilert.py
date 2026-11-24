@@ -358,11 +358,22 @@ def test_recipe_rust_front_selects_the_launched_router_command(tmp_path: Path, a
     assert command[command.index("--port") + 1] == "8000"
 
 
+@pytest.mark.parametrize("key", ["rust-front", "rust_front", "--rust-front"])
 @pytest.mark.parametrize("value", ["yes", "true", 1, 0, None])
-def test_rust_front_rejects_every_non_boolean(value) -> None:
+def test_rust_front_rejects_a_non_boolean_under_every_key_spelling(key, value) -> None:
+    """A non-boolean must not load under a spelling the launcher would then ignore."""
     data = _recipe()
-    data["frontend"].setdefault("args", {})["rust-front"] = value
+    data["frontend"].setdefault("args", {})[key] = value
     with pytest.raises(ValidationError, match="rust-front must be true or false"):
+        _load(data)
+
+
+@pytest.mark.parametrize("key", ["vllm-url", "vllm_url", "--vllm-url", "decode", "host", "port", "--port"])
+def test_frontend_args_cannot_override_a_router_argument_srtctl_manages(key) -> None:
+    """srtctl builds --vllm-url, --decode, --host and --port from the topology; a recipe value would be a second copy."""
+    data = _recipe()
+    data["frontend"].setdefault("args", {})[key] = "x"
+    with pytest.raises(ValidationError, match="cannot override srtctl-managed TileRT router argument"):
         _load(data)
 
 
