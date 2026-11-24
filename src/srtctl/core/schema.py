@@ -2752,13 +2752,14 @@ class FrontendConfig:
         nginx_session_affinity_header: Header hashed when affinity is on (default
             ``X-Dynamo-Session-ID``). Set ``X-Correlation-ID`` for clients (e.g. aiperf) that
             carry the session id in that header instead.
-        router_policy: Dynamo router policy document, inline. The mapping is Dynamo's
-            ``--router-policy-config`` YAML, whole: ``worker_selection``,
-            ``request_classifier``, ``policy_classes`` / ``default_policy_class``,
-            ``models``, ``router``. srtctl writes it unchanged to
-            ``/logs/router_policy_config.yaml`` and passes that file to the Dynamo
-            frontend. To use a file of your own instead, set
-            ``args.router-policy-config`` to its container path.
+        router_policy_config: Dynamo's ``--router-policy-config`` document, as a path or
+            inline. A string is a path to the YAML file: relative to srtctl's
+            ``configs/`` directory (mounted at ``/configs``), or an absolute path
+            inside the container. A mapping is the document itself
+            (``worker_selection``, ``request_classifier``, ``policy_classes`` /
+            ``default_policy_class``, ``models``, ``router``); srtctl writes it
+            unchanged to ``/logs/router_policy_config.yaml``. Either way the Dynamo
+            frontend is started with ``--router-policy-config`` and validates the file.
         epp_config: llm-d Endpoint Picker configuration (``EndpointPickerConfig``:
             ``plugins``, ``schedulingProfiles``, ...) for ``frontend.type: llm-d``.
             srtctl writes it to a file with the ``file-discovery`` plugin and
@@ -2784,7 +2785,7 @@ class FrontendConfig:
     nginx_session_affinity: bool = False
     nginx_session_affinity_header: str = "X-Dynamo-Session-ID"
     nginx_keepalive_timeout: str = "600s"
-    router_policy: dict[str, Any] | None = None
+    router_policy_config: dict[str, Any] | str | None = None
     epp_config: dict[str, Any] | None = None
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
@@ -3452,11 +3453,13 @@ class SrtConfig:
         )
 
     def _validate_frontend_router_policy(self):
-        """An inline Dynamo router policy targets Dynamo and is the only policy file."""
-        if self.frontend.router_policy is None:
+        """A Dynamo router policy config targets Dynamo, names a file, and is the only policy file."""
+        if self.frontend.router_policy_config is None:
             return
         if self.frontend.type != "dynamo":
-            raise ValidationError("frontend.router_policy is only supported with frontend.type: dynamo")
+            raise ValidationError("frontend.router_policy_config is only supported with frontend.type: dynamo")
+        if isinstance(self.frontend.router_policy_config, str) and not self.frontend.router_policy_config.strip():
+            raise ValidationError("frontend.router_policy_config must be a non-empty path or a mapping")
 
         args = self.frontend.args or {}
         env = self.frontend.env or {}
@@ -3466,7 +3469,7 @@ class SrtConfig:
             or "DYN_ROUTER_POLICY_CONFIG" in self.environment
         ):
             raise ValidationError(
-                "frontend.router_policy cannot be combined with frontend.args.router-policy-config "
+                "frontend.router_policy_config cannot be combined with frontend.args.router-policy-config "
                 "or DYN_ROUTER_POLICY_CONFIG in frontend.env/environment"
             )
 

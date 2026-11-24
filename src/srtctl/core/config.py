@@ -147,7 +147,7 @@ LEGACY_SECTION_KEYS: dict[str, tuple[str, ...]] = {
         for role in ROLE_NAMES
         for key in (f"{role}_nodes", f"{role}_workers", f"gpus_per_{role}", f"{role}_critical")
     ),
-    "frontend": ("orchestrator_placement", "dedicated_node", "worker_selection"),
+    "frontend": ("orchestrator_placement", "dedicated_node"),
     "benchmark": ("client_placement", "client_dedicated_node"),
     "dynamo": ("version", "hash", "wheel", "cargo_patches"),
 }

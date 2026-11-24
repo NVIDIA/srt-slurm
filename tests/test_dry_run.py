@@ -723,12 +723,21 @@ class TestDryRunExecutionExtensions:
         assert "dynamo router plugin crate:" in output
         assert "/configs/router-plugins/least-active" in output
 
-    def test_inline_router_policy_shown(self, capsys):
+    def test_router_policy_config_path_shown(self, capsys):
+        config = _make_config({"frontend": {"type": "dynamo", "router_policy_config": "policy.yaml"}})
+
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "router_policy_config" in output
+        assert "/configs/policy.yaml" in output
+        assert "(auto)" not in output
+
+    def test_inline_router_policy_config_shown(self, capsys):
         config = _make_config(
             {
                 "frontend": {
                     "type": "dynamo",
-                    "router_policy": {
+                    "router_policy_config": {
                         "worker_selection": {
                             "prefill": {"type": "dynamo-two-tier-cost-fn", "parameters": {"cache_threshold": 0.0}},
                             "decode": "default",

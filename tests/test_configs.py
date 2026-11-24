@@ -753,15 +753,15 @@ class TestFrontendConfig:
         assert frontend.type == "dynamo"
         assert frontend.enable_multiple_frontends is True
         assert frontend.nginx_container == "nginx:1.27.4"
-        assert frontend.router_policy is None
+        assert frontend.router_policy_config is None
         assert frontend.args is None
         assert frontend.env is None
 
-    def test_frontend_router_policy_deserializes(self):
+    def test_frontend_router_policy_config_deserializes(self):
         """The inline Dynamo router policy document is retained whole, every section."""
         from srtctl.core.schema import SrtConfig
 
-        router_policy = {
+        router_policy_config = {
             "worker_selection": {
                 "prefill": {"type": "dynamo-two-tier-cost-fn", "parameters": {"cache_threshold": 0.0}},
                 "decode": "default",
@@ -776,20 +776,38 @@ class TestFrontendConfig:
                 "model": {"path": "/model", "container": "/container.sqsh", "precision": "fp8"},
                 "resources": {"gpu_type": "h100", "gpus_per_node": 8},
                 "roles": {"agg": {"nodes": 1}},
-                "frontend": {"type": "dynamo", "router_policy": router_policy},
+                "frontend": {"type": "dynamo", "router_policy_config": router_policy_config},
             }
         )
 
-        assert config.frontend.router_policy == router_policy
+        assert config.frontend.router_policy_config == router_policy_config
+
+    def test_frontend_router_policy_config_accepts_a_path(self):
+        """A string is a path to the policy file; a blank one is rejected."""
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import SrtConfig
+
+        raw = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/container.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+            "roles": {"agg": {"nodes": 1}},
+            "frontend": {"type": "dynamo", "router_policy_config": "router-policies/two-tier.yaml"},
+        }
+        assert SrtConfig.Schema().load(raw).frontend.router_policy_config == "router-policies/two-tier.yaml"
+        raw["frontend"]["router_policy_config"] = " "
+        with pytest.raises(ValidationError, match="non-empty path or a mapping"):
+            SrtConfig.Schema().load(raw)
 
     @pytest.mark.parametrize(
         ("frontend", "environment"),
         [
-            ({"type": "sglang", "router_policy": {"worker_selection": {"prefill": "default"}}}, None),
+            ({"type": "sglang", "router_policy_config": {"worker_selection": {"prefill": "default"}}}, None),
             (
                 {
                     "type": "dynamo",
-                    "router_policy": {"worker_selection": {"prefill": "default"}},
+                    "router_policy_config": {"worker_selection": {"prefill": "default"}},
                     "args": {"router-policy-config": "/configs/policy.yaml"},
                 },
                 None,
@@ -797,24 +815,24 @@ class TestFrontendConfig:
             (
                 {
                     "type": "dynamo",
-                    "router_policy": {"worker_selection": {"prefill": "default"}},
+                    "router_policy_config": {"worker_selection": {"prefill": "default"}},
                     "env": {"DYN_ROUTER_POLICY_CONFIG": "/configs/policy.yaml"},
                 },
                 None,
             ),
             (
-                {"type": "dynamo", "router_policy": {"worker_selection": {"prefill": "default"}}},
+                {"type": "dynamo", "router_policy_config": {"worker_selection": {"prefill": "default"}}},
                 {"DYN_ROUTER_POLICY_CONFIG": "/configs/policy.yaml"},
             ),
         ],
     )
-    def test_frontend_router_policy_rejects_ambiguous_configuration(self, frontend, environment):
+    def test_frontend_router_policy_config_rejects_ambiguous_configuration(self, frontend, environment):
         """Inline policy config must target Dynamo and be its only policy source."""
         from marshmallow import ValidationError
 
         from srtctl.core.schema import SrtConfig
 
-        with pytest.raises(ValidationError, match="frontend.router_policy"):
+        with pytest.raises(ValidationError, match="frontend.router_policy_config"):
             raw_config = {
                 "name": "test",
                 "model": {"path": "/model", "container": "/container.sqsh", "precision": "fp8"},

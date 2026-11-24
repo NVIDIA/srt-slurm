@@ -869,7 +869,7 @@
               "type": "null"
             }
           ],
-          "description": "Rust crate of custom router plugins (worker-selection policies, request classifiers) to link into the Dynamo frontend built from ``git``. A path under srtctl's ``configs/`` directory, or an absolute path inside the container. The crate exposes ``pub fn register(&mut RouterPluginRegistry)``; select its policy types under ``frontend.router_policy.worker_selection``. The build cache is keyed by the crate's contents, so an edited crate is rebuilt on the next job.",
+          "description": "Rust crate of custom router plugins (worker-selection policies, request classifiers) to link into the Dynamo frontend built from ``git``. A path under srtctl's ``configs/`` directory, or an absolute path inside the container. The crate exposes ``pub fn register(&mut RouterPluginRegistry)``; select its policy types under ``frontend.router_policy_config.worker_selection``. The build cache is keyed by the crate's contents, so an edited crate is rebuilt on the next job.",
           "default": null
         },
         "pypi": {
@@ -957,16 +957,19 @@
           "description": "Idle timeout for client and upstream keepalive connections in the generated nginx.conf (default \"600s\"). nginx's own default is 75s, which closes a session's connection during the long recorded think-time of an agentic replay; the client's next write on that pooled socket then fails with \"broken pipe\" / \"server disconnected\" and nothing is logged server-side.",
           "default": "600s"
         },
-        "router_policy": {
+        "router_policy_config": {
           "anyOf": [
             {
               "type": "object"
             },
             {
+              "type": "string"
+            },
+            {
               "type": "null"
             }
           ],
-          "description": "Dynamo router policy document, inline. The mapping is Dynamo's ``--router-policy-config`` YAML, whole: ``worker_selection``, ``request_classifier``, ``policy_classes`` / ``default_policy_class``, ``models``, ``router``. srtctl writes it unchanged to ``/logs/router_policy_config.yaml`` and passes that file to the Dynamo frontend. To use a file of your own instead, set ``args.router-policy-config`` to its container path.",
+          "description": "Dynamo's ``--router-policy-config`` document, as a path or inline. A string is a path to the YAML file: relative to srtctl's ``configs/`` directory (mounted at ``/configs``), or an absolute path inside the container. A mapping is the document itself (``worker_selection``, ``request_classifier``, ``policy_classes`` / ``default_policy_class``, ``models``, ``router``); srtctl writes it unchanged to ``/logs/router_policy_config.yaml``. Either way the Dynamo frontend is started with ``--router-policy-config`` and validates the file.",
           "default": null
         },
         "epp_config": {

@@ -8,7 +8,7 @@
 //!
 //! ```yaml
 //! frontend:
-//!   router_policy:
+//!   router_policy_config:
 //!     worker_selection:
 //!       aggregated:
 //!         type: srtctl-example-least-active
@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use dynamo_kv_router::plugins::prelude::*;
 
-/// The policy type name recipes select under `frontend.router_policy.worker_selection.<role>.type`.
+/// The policy type name recipes select under `frontend.router_policy_config.worker_selection.<role>.type`.
 pub const POLICY_TYPE: &str = "srtctl-example-least-active";
 
 #[derive(serde::Deserialize)]

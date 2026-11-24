@@ -137,7 +137,7 @@ class DynamoSourceConfig:
             from ``git``. A path under srtctl's ``configs/`` directory, or an
             absolute path inside the container. The crate exposes
             ``pub fn register(&mut RouterPluginRegistry)``; select its policy types
-            under ``frontend.router_policy.worker_selection``. The build cache is keyed by the
+            under ``frontend.router_policy_config.worker_selection``. The build cache is keyed by the
             crate's contents, so an edited crate is rebuilt on the next job.
         pypi: Release version from PyPI.
         wheel: Staged nightly ``ai-dynamo`` version.

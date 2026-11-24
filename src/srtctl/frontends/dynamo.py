@@ -47,6 +47,20 @@ ROUTER_POLICY_CONFIG_CONTAINER_PATH = f"/logs/{ROUTER_POLICY_CONFIG_FILENAME}"
 HEALTH_INSTANCES_ENDPOINT = "/health?instances=true"
 
 
+def router_policy_config_path(router_policy_config: dict[str, Any] | str | None) -> str | None:
+    """Container path passed as ``--router-policy-config`` for ``frontend.router_policy_config``.
+
+    An inline mapping is the file srtctl writes into the log directory. A string is the
+    user's own file: relative to ``/configs`` (srtctl's ``configs/`` directory), or absolute.
+    """
+    if router_policy_config is None:
+        return None
+    if isinstance(router_policy_config, dict):
+        return ROUTER_POLICY_CONFIG_CONTAINER_PATH
+    path = router_policy_config.strip()
+    return path if path.startswith("/") else f"/configs/{path}"
+
+
 def _vllm_mode_config(backend: VLLMBackend, mode: str) -> dict[str, Any]:
     """The recipe's vLLM args (``roles.<role>.args``) for a health mode name (prefill, decode, aggregated)."""
     return backend.get_config_for_mode(cast("WorkerMode", "agg" if mode == "aggregated" else mode))
@@ -124,7 +138,7 @@ class DynamoFrontend(DynamicFrontend):
 
     Uses dynamo.frontend module with NATS/etcd for worker discovery.
     Health checks via /health endpoint. The dynamo.* recipe rules (sidecar,
-    failover, router_policy) are dynamo-config validations and stay in the
+    failover, router_policy_config) are dynamo-config validations and stay in the
     schema.
     """
 
@@ -260,12 +274,14 @@ class DynamoFrontend(DynamicFrontend):
 
         processes: list[ManagedProcess] = []
         frontend_args = dict(config.frontend.args or {})
-        router_policy = config.frontend.router_policy
-        if router_policy is not None:
+        router_policy_config = config.frontend.router_policy_config
+        if isinstance(router_policy_config, dict):
             policy_path = runtime.log_dir / ROUTER_POLICY_CONFIG_FILENAME
-            policy_path.write_text(yaml.safe_dump(router_policy, sort_keys=False))
-            frontend_args["router-policy-config"] = ROUTER_POLICY_CONFIG_CONTAINER_PATH
+            policy_path.write_text(yaml.safe_dump(router_policy_config, sort_keys=False))
             logger.info("Dynamo router policy config written to %s", policy_path)
+        policy_container_path = router_policy_config_path(router_policy_config)
+        if policy_container_path is not None:
+            frontend_args["router-policy-config"] = policy_container_path
 
         for idx, node in enumerate(topology.frontend_nodes):
             logger.info("Starting dynamo frontend %d on %s", idx, node)
