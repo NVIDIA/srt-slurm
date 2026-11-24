@@ -136,7 +136,6 @@ RULES = [
         frozenset(
             {
                 ("frontends/base.py", "getattr(frontend, 'numa_bind')"),
-                ("frontends/dynamo.py", "getattr(frontend, 'worker_selection')"),
                 ("frontends/static_router.py", "getattr(frontend, 'container_image')"),
                 ("services/implicit.py", "getattr(frontend, 'type')"),
             }

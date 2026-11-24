@@ -418,3 +418,25 @@ def test_migrate_folds_worker_criticality_into_roles() -> None:
     (config,) = _migrated_loads_and_v1_does_not(legacy)
     assert config.topology.worker_critical("decode") is False
     assert config.topology.worker_critical("prefill") is True
+
+
+def test_frontend_worker_selection_moves_under_router_policy() -> None:
+    """The removed 2.0 shorthand becomes the worker_selection section of frontend.router_policy."""
+    text = """\
+schema: 2
+name: t
+frontend:
+  type: dynamo
+  worker_selection:
+    aggregated: dynamo-two-tier-cost-fn  # keep me
+"""
+    assert legacy_keys_present(yaml.safe_load(text)) == ["frontend.worker_selection"]
+    result = migrate_recipe_text(text)
+    migrated, notes = result.text, result.notes
+    frontend = yaml.safe_load(migrated)["frontend"]
+    assert frontend == {
+        "type": "dynamo",
+        "router_policy": {"worker_selection": {"aggregated": "dynamo-two-tier-cost-fn"}},
+    }
+    assert "# keep me" in migrated
+    assert any("frontend.router_policy.worker_selection" in note for note in notes)

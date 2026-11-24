@@ -2,7 +2,7 @@
 #
 # `dynamo.source.router_plugin_crate` names a Rust crate of worker-selection policies.
 # The job builds Dynamo at `source.rev` with that crate linked into the frontend, and
-# `frontend.worker_selection` selects the crate's policy type per worker role. Two
+# `frontend.router_policy` selects the crate's policy type per worker role. Two
 # `dynamo.mocker` workers stand in for engines, so a strategy can be tried end to end
 # in minutes with no model weights on the GPU.
 #
@@ -38,11 +38,13 @@ dynamo:
 frontend:
   type: dynamo
   enable_multiple_frontends: false
-  worker_selection:
-    aggregated:
-      type: srtctl-example-least-active   # registered by the crate's `register`
-      parameters:
-        active_request_weight: 1.0
+  # Dynamo's router policy YAML, inline; srtctl passes it with --router-policy-config.
+  router_policy:
+    worker_selection:
+      aggregated:
+        type: srtctl-example-least-active   # registered by the crate's `register`
+        parameters:
+          active_request_weight: 1.0
 
 engine:
   type: mocker

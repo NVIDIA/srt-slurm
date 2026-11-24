@@ -24,6 +24,7 @@ Internally, srtctl still stores the resolved configuration in fields with these 
 | `resources.agg_critical` | `roles.agg.critical` |
 | `frontend.orchestrator_placement` | `frontend.placement.node: <location>` |
 | `frontend.dedicated_node` | `frontend.placement.node: dedicated` |
+| `frontend.worker_selection` | `frontend.router_policy.worker_selection` (a 2.0 key, removed when `router_policy` took the whole Dynamo policy file) |
 | `benchmark.client_placement` | `benchmark.placement.node: <location>` |
 | `benchmark.client_dedicated_node` | `benchmark.placement.node: dedicated` |
 | `dynamo.version` | `dynamo.source.pypi` |

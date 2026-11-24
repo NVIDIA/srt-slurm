@@ -723,14 +723,17 @@ class TestDryRunExecutionExtensions:
         assert "dynamo router plugin crate:" in output
         assert "/configs/router-plugins/least-active" in output
 
-    def test_inline_worker_selection_translation_shown(self, capsys):
+    def test_inline_router_policy_shown(self, capsys):
         config = _make_config(
             {
                 "frontend": {
                     "type": "dynamo",
-                    "worker_selection": {
-                        "prefill": {"type": "dynamo-two-tier-cost-fn", "parameters": {"cache_threshold": 0.0}},
-                        "decode": "default",
+                    "router_policy": {
+                        "worker_selection": {
+                            "prefill": {"type": "dynamo-two-tier-cost-fn", "parameters": {"cache_threshold": 0.0}},
+                            "decode": "default",
+                        },
+                        "default_policy_class": "standard",
                     },
                 }
             }
@@ -743,6 +746,7 @@ class TestDryRunExecutionExtensions:
         assert "(auto)" in output
         assert "worker_selection" in output
         assert "dynamo-two-tier-cost-fn" in output
+        assert "default_policy_class" in output
 
     def test_custom_benchmark_details_shown(self, capsys):
         config = _make_config(

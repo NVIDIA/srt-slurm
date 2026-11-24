@@ -124,7 +124,7 @@ class DynamoFrontend(DynamicFrontend):
 
     Uses dynamo.frontend module with NATS/etcd for worker discovery.
     Health checks via /health endpoint. The dynamo.* recipe rules (sidecar,
-    failover, worker_selection) are dynamo-config validations and stay in the
+    failover, router_policy) are dynamo-config validations and stay in the
     schema.
     """
 
@@ -260,10 +260,10 @@ class DynamoFrontend(DynamicFrontend):
 
         processes: list[ManagedProcess] = []
         frontend_args = dict(config.frontend.args or {})
-        worker_selection = getattr(config.frontend, "worker_selection", None)
-        if worker_selection is not None:
+        router_policy = config.frontend.router_policy
+        if router_policy is not None:
             policy_path = runtime.log_dir / ROUTER_POLICY_CONFIG_FILENAME
-            policy_path.write_text(yaml.safe_dump({"worker_selection": worker_selection}, sort_keys=False))
+            policy_path.write_text(yaml.safe_dump(router_policy, sort_keys=False))
             frontend_args["router-policy-config"] = ROUTER_POLICY_CONFIG_CONTAINER_PATH
             logger.info("Dynamo router policy config written to %s", policy_path)
 

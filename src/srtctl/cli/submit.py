@@ -683,7 +683,7 @@ def show_config_details(config: SrtConfig) -> None:
         or config.telemetry.enabled
         or mooncake_cfg is not None
         or config.profiling.enabled
-        or config.frontend.worker_selection is not None
+        or config.frontend.router_policy is not None
     )
     if show_extensions:
         details = Table(title="Execution Extensions", show_lines=False, pad_edge=False)
@@ -822,12 +822,12 @@ def show_config_details(config: SrtConfig) -> None:
                     f"{', required' if cpu_power.required else ''})",
                 )
 
-        if config.frontend.worker_selection is not None:
+        if config.frontend.router_policy is not None:
             details.add_row("frontend", "router_policy_config", f"{ROUTER_POLICY_CONFIG_CONTAINER_PATH} (auto)")
             details.add_row(
                 "frontend",
-                "worker_selection",
-                yaml.safe_dump(config.frontend.worker_selection, sort_keys=False).rstrip(),
+                "router_policy",
+                yaml.safe_dump(config.frontend.router_policy, sort_keys=False).rstrip(),
             )
 
         if mooncake_cfg is not None:

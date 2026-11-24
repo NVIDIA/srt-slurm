@@ -2752,10 +2752,13 @@ class FrontendConfig:
         nginx_session_affinity_header: Header hashed when affinity is on (default
             ``X-Dynamo-Session-ID``). Set ``X-Correlation-ID`` for clients (e.g. aiperf) that
             carry the session id in that header instead.
-        worker_selection: Inline Dynamo worker-selection policy configuration. srtctl
-            writes this mapping under the top-level ``worker_selection`` key in a
-            generated router policy YAML and passes it to the Dynamo frontend via
-            ``--router-policy-config``.
+        router_policy: Dynamo router policy document, inline. The mapping is Dynamo's
+            ``--router-policy-config`` YAML, whole: ``worker_selection``,
+            ``request_classifier``, ``policy_classes`` / ``default_policy_class``,
+            ``models``, ``router``. srtctl writes it unchanged to
+            ``/logs/router_policy_config.yaml`` and passes that file to the Dynamo
+            frontend. To use a file of your own instead, set
+            ``args.router-policy-config`` to its container path.
         epp_config: llm-d Endpoint Picker configuration (``EndpointPickerConfig``:
             ``plugins``, ``schedulingProfiles``, ...) for ``frontend.type: llm-d``.
             srtctl writes it to a file with the ``file-discovery`` plugin and
@@ -2781,7 +2784,7 @@ class FrontendConfig:
     nginx_session_affinity: bool = False
     nginx_session_affinity_header: str = "X-Dynamo-Session-ID"
     nginx_keepalive_timeout: str = "600s"
-    worker_selection: dict[str, Any] | None = None
+    router_policy: dict[str, Any] | None = None
     epp_config: dict[str, Any] | None = None
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
@@ -2987,7 +2990,7 @@ class SrtConfig:
         self._validate_roles()
         _ = self.backend  # bind the roles onto the engine now, so a bad role setting fails at load
         self._validate_role_backends()
-        self._validate_frontend_worker_selection()
+        self._validate_frontend_router_policy()
         self._validate_profiling()
         self._validate_observability()
         self._validate_telemetry()
@@ -3448,12 +3451,12 @@ class SrtConfig:
             ", ".join(mode_name for mode_name, _ in dp_modes),
         )
 
-    def _validate_frontend_worker_selection(self):
-        """Validate srtctl's inline Dynamo worker-selection shorthand."""
-        if self.frontend.worker_selection is None:
+    def _validate_frontend_router_policy(self):
+        """An inline Dynamo router policy targets Dynamo and is the only policy file."""
+        if self.frontend.router_policy is None:
             return
         if self.frontend.type != "dynamo":
-            raise ValidationError("frontend.worker_selection is only supported with frontend.type: dynamo")
+            raise ValidationError("frontend.router_policy is only supported with frontend.type: dynamo")
 
         args = self.frontend.args or {}
         env = self.frontend.env or {}
@@ -3463,7 +3466,7 @@ class SrtConfig:
             or "DYN_ROUTER_POLICY_CONFIG" in self.environment
         ):
             raise ValidationError(
-                "frontend.worker_selection cannot be combined with frontend.args.router-policy-config "
+                "frontend.router_policy cannot be combined with frontend.args.router-policy-config "
                 "or DYN_ROUTER_POLICY_CONFIG in frontend.env/environment"
             )
 

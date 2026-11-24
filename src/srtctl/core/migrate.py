@@ -277,6 +277,9 @@ def _fold_placement(variant: CommentedMap, label: str) -> list[str]:
     frontend = variant.get("frontend")
     if isinstance(frontend, CommentedMap):
         notes += _fold_placement_block(frontend, "orchestrator_placement", "dedicated_node", f"{label}frontend.")
+        if "worker_selection" in frontend:
+            _move(frontend, "worker_selection", _child_map(frontend, "router_policy"), "worker_selection")
+            notes.append(f"{label}frontend.worker_selection -> frontend.router_policy.worker_selection")
     benchmark = variant.get("benchmark")
     if isinstance(benchmark, CommentedMap):
         notes += _fold_placement_block(benchmark, "client_placement", "client_dedicated_node", f"{label}benchmark.")
