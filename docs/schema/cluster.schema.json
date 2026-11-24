@@ -243,6 +243,18 @@
       "description": "Cluster-level container mounts (host_path -> container_path) Applied to all jobs on this cluster, useful for cluster-specific paths",
       "default": null
     },
+    "nsys_binary": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Absolute path of an nsys executable the containers can reach (for example an unpacked Nsight Systems package under a default_mounts path), used by nsys profiling and the observability preset when SRTCTL_NSYS_BIN is not set. Unset resolves `nsys` on the image's PATH, which upstream vLLM images do not have.",
+      "default": null
+    },
     "default_bash_preamble": {
       "anyOf": [
         {
