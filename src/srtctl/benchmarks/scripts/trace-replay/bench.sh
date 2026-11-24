@@ -95,7 +95,8 @@ if [ ! -f "${TRACE_FILE}" ]; then
 fi
 
 # Create isolated aiperf environment (avoids polluting container packages)
-# AIPERF_PACKAGE env var controls the version (e.g., "aiperf>=0.7.0")
+# AIPERF_PACKAGE controls the version; srtctl sets it from benchmark.aiperf_package or
+# its pinned default (DEFAULT_AIPERF_PACKAGE), so a run does not take whatever PyPI has.
 AIPERF_SPEC="${AIPERF_PACKAGE:-aiperf}"
 AIPERF_VENV="/tmp/aiperf-${SLURM_JOB_ID:-$$}"
 
@@ -137,6 +138,16 @@ TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
 # Parse concurrencies (comma-separated)
 IFS=',' read -r -a CONCURRENCY_LIST <<< "${CONCURRENCIES}"
 
+# Replay the whole trace: without a stopping condition aiperf sends only its default
+# request count. A count, duration, session count or fixed schedule in aiperf_args wins
+# (aiperf rejects a flag given twice).
+REPLAY_ARGS=()
+if ! printf '%s\n' "${EXTRA_ARGS[@]}" | grep -qE '^--(request[-_]count|num[-_]sessions|conversation[-_]num|benchmark[-_]duration|fixed[-_]schedule)$'; then
+    TRACE_REQUESTS=$(grep -c '[^[:space:]]' "${TRACE_FILE}" || true)
+    REPLAY_ARGS=(--request-count "${TRACE_REQUESTS}")
+    echo "Replaying all ${TRACE_REQUESTS} trace requests per concurrency"
+fi
+
 # a no-op if profiling is not enabled
 start_all_profiling
 
@@ -166,6 +177,7 @@ for C in "${CONCURRENCY_LIST[@]}"; do
         --artifact-dir "${RUN_ARTIFACT_DIR}" \
         "${SERVER_METRICS_ARGS[@]}" \
         --goodput "time_to_first_token:${TTFT_THRESHOLD} inter_token_latency:${ITL_THRESHOLD}" \
+        "${REPLAY_ARGS[@]}" \
         "${EXTRA_ARGS[@]}"
 
     nsys_window_stop

@@ -150,6 +150,10 @@ class AIPerfBenchmarkRunner(BenchmarkRunner):
     Provides shared aiperf_args handling for subclasses.
     """
 
+    #: aiperf installed when the recipe sets no benchmark.aiperf_package, so two runs of
+    #: one recipe use the same client instead of whatever PyPI published that day.
+    default_aiperf_package: ClassVar[str] = "aiperf==0.12.0"
+
     def append_aiperf_args(self, cmd: list[str], config: SrtConfig) -> list[str]:
         """Append aiperf_args from config as CLI flags."""
         for key, value in config.benchmark.aiperf_args.items():
