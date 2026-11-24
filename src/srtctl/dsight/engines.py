@@ -337,6 +337,11 @@ def classify_nvtx(name: str, duration_ns: int) -> dict[str, str | None] | None:
     return None
 
 
+def default_metric(sampled: set[str]) -> str | None:
+    """The first dialect's leading metric (its running-request count) that has samples."""
+    return next((d.metrics[0][0] for d in DIALECTS if d.metrics and d.metrics[0][0] in sampled), None)
+
+
 def engine_metrics() -> dict[str, MetricDefinition]:
     """Map recorded metric names to their display labels and original units."""
     return {name: definition for dialect in DIALECTS for name, definition in dialect.metrics}
