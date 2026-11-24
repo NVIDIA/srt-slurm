@@ -3,10 +3,10 @@
 # One TP1 prefill and one TP1 decode worker sharing a node (`nodes: colocate`
 # places decode on the prefill node's spare GPUs), each a TRT-LLM OpenEngine gRPC
 # engine beside a Dynamo sidecar (`sidecar: true`; docs/sidecars.md). KV moves
-# through the UCX cache transceiver; the Dynamo frontend routes with `--router-mode kv`.
+# through the NIXL cache transceiver; the Dynamo frontend routes with `--router-mode kv`.
 #
-# The setup script and the ai-dynamo pin let the sidecar run on Dynamo's 1.6.x TRT-LLM image;
-# see docs/sidecars.md.
+# Dynamo 1.7.0 is pip-installed into the engine container at job start (`dynamo.source`).
+# The image must ship TensorRT-LLM 1.4.0rc0 or later; see docs/sidecars.md.
 #
 # Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
 
@@ -25,11 +25,9 @@ resources:
   gpu_type: "h100"
   gpus_per_node: 8
 
-setup_script: "install-trtllm-openengine.sh"
-
 dynamo:
   source:
-    pypi: "1.7.0.dev20261116"
+    pypi: "1.7.0"
 
 frontend:
   type: dynamo
@@ -60,7 +58,7 @@ roles:
       kv_cache_config:
         free_gpu_memory_fraction: 0.5
       cache_transceiver_config:
-        backend: "UCX"
+        backend: "NIXL"
   decode:
     nodes: colocate
     workers: 1
@@ -79,7 +77,7 @@ roles:
       kv_cache_config:
         free_gpu_memory_fraction: 0.5
       cache_transceiver_config:
-        backend: "UCX"
+        backend: "NIXL"
 
 benchmark:
   type: "sa-bench"

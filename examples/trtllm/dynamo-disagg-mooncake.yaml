@@ -8,8 +8,8 @@
 # wrapper around the worker is needed. Needs a TRT-LLM build supporting
 # MOONCAKE_CONFIG_PATH and the capacity role. See docs/mooncake-kv-store.md.
 #
-# The setup script and the ai-dynamo pin let the sidecar run on Dynamo's 1.6.x TRT-LLM image;
-# see docs/sidecars.md.
+# Dynamo 1.7.0 is pip-installed into the engine container at job start (`dynamo.source`).
+# The image must ship TensorRT-LLM 1.4.0rc0 or later; see docs/sidecars.md.
 #
 # Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
 
@@ -28,11 +28,9 @@ resources:
   gpu_type: "h100"
   gpus_per_node: 8
 
-setup_script: "install-trtllm-openengine.sh"
-
 dynamo:
   source:
-    pypi: "1.7.0.dev20261116"
+    pypi: "1.7.0"
 
 frontend:
   type: dynamo

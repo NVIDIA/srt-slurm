@@ -60,7 +60,7 @@ containers:
   sglang: /path/to/sglang.sqsh              # SGLang image; Dynamo examples pip-install ai-dynamo into it
   sglang-rocm: /path/to/sglang-rocm.sqsh    # SGLang ROCm image, for features/amd-power-telemetry.yaml
   vllm: /path/to/vllm.sqsh                  # vLLM image with the vllm-router executable
-  trtllm: /path/to/tensorrtllm-runtime.sqsh # Dynamo TRT-LLM runtime image (ships ai-dynamo and trtllm-serve)
+  trtllm: /path/to/tensorrtllm-runtime.sqsh # Dynamo TRT-LLM runtime image (ships ai-dynamo and trtllm-serve); the trtllm/dynamo-* examples need TensorRT-LLM 1.4.0rc0 or later
   tokenspeed: /path/to/dynamo-tokenspeed.sqsh # TokenSpeed image with ai-dynamo's dynamo.tokenspeed (see ../docs/tokenspeed.md)
   dynamo-vllm: /path/to/vllm-runtime.sqsh   # Dynamo vLLM runtime image (ships ai-dynamo and gpu_memory_service), for features/vllm-failover.yaml
   vllm-lmcache: /path/to/vllm-lmcache.sqsh  # vLLM image with LMCache installed, for features/lmcache-server.yaml and -disagg.yaml
