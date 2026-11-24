@@ -2252,6 +2252,54 @@ def dynamo_cargo_patch_commands(cargo_patches: list[str] | None = None) -> tuple
     return tuple(commands)
 
 
+# Where a `dynamo.source.router_plugin_crate` is copied inside the Dynamo checkout, and the
+# dependency alias the Python bindings link their replaceable plugin catalog under
+# (ai-dynamo/dynamo#12536, 88012c18fb; `dynamo_worker_selection_policy_catalog::register`).
+_ROUTER_PLUGIN_CHECKOUT_DIR = "lib/router-plugins/srtctl-plugin"
+_ROUTER_PLUGIN_CATALOG_ALIAS = "dynamo-worker-selection-policy-catalog"
+_BINDINGS_MANIFEST = "lib/bindings/python/Cargo.toml"
+
+
+def _router_plugin_digest_command(plugin_crate: str) -> str:
+    """Bash that checks the plugin crate exists and sets DYN_PLUGIN_SRC and DYN_PLUGIN_DIGEST.
+
+    The digest covers every file's path and content except ``target/`` and ``.git/``. It is
+    computed on the node at install time, so the cache key follows the crate as it is edited.
+    """
+    return (
+        f"DYN_PLUGIN_SRC={shlex.quote(plugin_crate)} && "
+        'if [ ! -f "$DYN_PLUGIN_SRC/Cargo.toml" ]; then '
+        'echo "ERROR: dynamo.source.router_plugin_crate: no Cargo.toml in $DYN_PLUGIN_SRC '
+        '(a path under configs/, or an absolute path mounted in the container)" >&2; exit 1; fi && '
+        'DYN_PLUGIN_DIGEST=$(cd "$DYN_PLUGIN_SRC" && '
+        "find . -type f -not -path './target/*' -not -path './.git/*' -print0 | LC_ALL=C sort -z | "
+        "xargs -0 sha1sum | sha1sum | cut -c1-12) && "
+    )
+
+
+def _router_plugin_link_command() -> str:
+    """Bash, run at the Dynamo checkout root, that links $DYN_PLUGIN_SRC into the Python bindings.
+
+    Follows Dynamo's "Run With the Python Frontend" steps (examples/router/custom-policy-example):
+    the crate fills the bindings' catalog slot, so its policies are added beside the shipped ones.
+    The crate's own ``dynamo-kv-router`` line (a git rev or a local checkout path, whatever lets it
+    compile on its own) is pointed at this checkout: a plugin must build against the same Dynamo
+    as the frontend that links it.
+    """
+    dest = _ROUTER_PLUGIN_CHECKOUT_DIR
+    kv_router = 's|^dynamo-kv-router[[:space:]]*=.*|dynamo-kv-router = { path = "../../router/kv-router" }|'
+    return (
+        f"if ! grep -q '^{_ROUTER_PLUGIN_CATALOG_ALIAS}[[:space:]]*=' {_BINDINGS_MANIFEST}; then "
+        "echo 'ERROR: dynamo.source.router_plugin_crate needs a Dynamo with the plugin catalog slot "
+        "(ai-dynamo/dynamo#12536 or newer)' >&2; exit 1; fi && "
+        f"mkdir -p {dest} && "
+        f'tar -C "$DYN_PLUGIN_SRC" --exclude=./target --exclude=./.git -cf - . | tar -C {dest} -xf - && '
+        f"sed -i -E {shlex.quote(kv_router)} {dest}/Cargo.toml && "
+        f"cargo add --quiet --manifest-path {_BINDINGS_MANIFEST} --optional "
+        f"--rename {_ROUTER_PLUGIN_CATALOG_ALIAS} --path {dest} && "
+    )
+
+
 def _git_clone_cmd() -> str:
     """Shell-quoted ``git`` invocation for install-script bash strings; see
     ``srtctl.core.config.git_clone_command_prefix`` for why this exists."""
@@ -2264,6 +2312,7 @@ def _hash_cached_source_install(
     dynamo_hash: str,
     cargo_patches: list[str] | None = None,
     repo_url: str = DynamoSourceConfig.DEFAULT_GIT,
+    router_plugin_crate: str | None = None,
 ) -> str:
     """Bash for hash-pinned source install with a /configs/dynamo-wheels cache.
 
@@ -2284,10 +2333,19 @@ def _hash_cached_source_install(
     like ``dynamo-tokenizers`` at a git branch). When set, the cache key is suffixed with
     a digest of the overrides so patched and unpatched builds of the same hash never collide.
 
+    ``router_plugin_crate`` (optional) is the container path of a router plugin crate to
+    link into the Python bindings (see ``_router_plugin_link_command``). The cache key
+    then also carries a digest of the crate's contents, computed on the node, so each
+    edit of the crate builds once and an unchanged crate reuses its wheel.
+
     Uses FD 201 (not 200) so it nests cleanly inside the node-local
     ``flock -x 200`` from ``_serialize_node_install``.
     """
     cache_key = dynamo_source_cache_key(dynamo_hash, cargo_patches)
+    plugin_digest_cmd = ""
+    if router_plugin_crate is not None:
+        plugin_digest_cmd = _router_plugin_digest_command(router_plugin_crate)
+        cache_key += "-plugin-${DYN_PLUGIN_DIGEST}"
     # Replace each crate's dependency declaration tree-wide. Source replacement
     # (rather than [patch.crates-io]) forces Cargo to resolve the requested source
     # even when its version would not satisfy Dynamo's exact existing pin.
@@ -2295,6 +2353,8 @@ def _hash_cached_source_install(
     override_cmd = " && ".join(patch_commands)
     if override_cmd:
         override_cmd += " && "
+    if router_plugin_crate is not None:
+        override_cmd += _router_plugin_link_command()
     cache = f"{_DYNAMO_CACHE_ROOT}/{cache_key}"
     lock = f"{_DYNAMO_CACHE_ROOT}/.{cache_key}.lock"
     checkout_cmd = (
@@ -2305,6 +2365,7 @@ def _hash_cached_source_install(
     return (
         f"echo 'Installing dynamo from source ({dynamo_hash}, /configs cache)...' && "
         f"mkdir -p {_DYNAMO_CACHE_ROOT} && "
+        f"{plugin_digest_cmd}"
         # Subshell + flock-FD pattern: only the first frontend in a cold-cache
         # job builds; later frontends block on the lock then read .complete.
         f"( "
@@ -2556,6 +2617,19 @@ class DynamoConfig:
         return list(source.patches) if source is not None and source.git is not None and source.patches else None
 
     @property
+    def router_plugin_crate(self) -> str | None:
+        """Container path of the router plugin crate linked into a git source build.
+
+        A relative ``source.router_plugin_crate`` is under ``/configs`` (srtctl's
+        ``configs/`` directory, mounted in every container); an absolute one is used as is.
+        """
+        source = self.effective_source
+        if source is None or source.git is None or source.router_plugin_crate is None:
+            return None
+        crate = source.router_plugin_crate.strip()
+        return crate if crate.startswith("/") else f"/configs/{crate}"
+
+    @property
     def needs_source_install(self) -> bool:
         """Whether this config requires a source install (git clone + maturin)."""
         return self.top_of_tree or self.git_rev is not None
@@ -2628,7 +2702,12 @@ class DynamoConfig:
         git_rev = self.git_rev
         if git_rev is not None:
             assert self.source is not None and self.source.git is not None
-            return _hash_cached_source_install(git_rev, self.cargo_patches, repo_url=self.source.git)
+            return _hash_cached_source_install(
+                git_rev,
+                self.cargo_patches,
+                repo_url=self.source.git,
+                router_plugin_crate=self.router_plugin_crate,
+            )
 
         return _live_source_install_for_top_of_tree()
 
@@ -2673,10 +2752,14 @@ class FrontendConfig:
         nginx_session_affinity_header: Header hashed when affinity is on (default
             ``X-Dynamo-Session-ID``). Set ``X-Correlation-ID`` for clients (e.g. aiperf) that
             carry the session id in that header instead.
-        worker_selection: Inline Dynamo worker-selection policy configuration. srtctl
-            writes this mapping under the top-level ``worker_selection`` key in a
-            generated router policy YAML and passes it to the Dynamo frontend via
-            ``--router-policy-config``.
+        router_policy_config: Dynamo's ``--router-policy-config`` document, as a path or
+            inline. A string is a path to the YAML file: relative to srtctl's
+            ``configs/`` directory (mounted at ``/configs``), or an absolute path
+            inside the container. A mapping is the document itself
+            (``worker_selection``, ``request_classifier``, ``policy_classes`` /
+            ``default_policy_class``, ``models``, ``router``); srtctl writes it
+            unchanged to ``/logs/router_policy_config.yaml``. Either way the Dynamo
+            frontend is started with ``--router-policy-config`` and validates the file.
         epp_config: llm-d Endpoint Picker configuration (``EndpointPickerConfig``:
             ``plugins``, ``schedulingProfiles``, ...) for ``frontend.type: llm-d``.
             srtctl writes it to a file with the ``file-discovery`` plugin and
@@ -2702,7 +2785,7 @@ class FrontendConfig:
     nginx_session_affinity: bool = False
     nginx_session_affinity_header: str = "X-Dynamo-Session-ID"
     nginx_keepalive_timeout: str = "600s"
-    worker_selection: dict[str, Any] | None = None
+    router_policy_config: dict[str, Any] | str | None = None
     epp_config: dict[str, Any] | None = None
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
@@ -2908,7 +2991,7 @@ class SrtConfig:
         self._validate_roles()
         _ = self.backend  # bind the roles onto the engine now, so a bad role setting fails at load
         self._validate_role_backends()
-        self._validate_frontend_worker_selection()
+        self._validate_frontend_router_policy()
         self._validate_profiling()
         self._validate_observability()
         self._validate_telemetry()
@@ -3369,12 +3452,14 @@ class SrtConfig:
             ", ".join(mode_name for mode_name, _ in dp_modes),
         )
 
-    def _validate_frontend_worker_selection(self):
-        """Validate srtctl's inline Dynamo worker-selection shorthand."""
-        if self.frontend.worker_selection is None:
+    def _validate_frontend_router_policy(self):
+        """A Dynamo router policy config targets Dynamo, names a file, and is the only policy file."""
+        if self.frontend.router_policy_config is None:
             return
         if self.frontend.type != "dynamo":
-            raise ValidationError("frontend.worker_selection is only supported with frontend.type: dynamo")
+            raise ValidationError("frontend.router_policy_config is only supported with frontend.type: dynamo")
+        if isinstance(self.frontend.router_policy_config, str) and not self.frontend.router_policy_config.strip():
+            raise ValidationError("frontend.router_policy_config must be a non-empty path or a mapping")
 
         args = self.frontend.args or {}
         env = self.frontend.env or {}
@@ -3384,7 +3469,7 @@ class SrtConfig:
             or "DYN_ROUTER_POLICY_CONFIG" in self.environment
         ):
             raise ValidationError(
-                "frontend.worker_selection cannot be combined with frontend.args.router-policy-config "
+                "frontend.router_policy_config cannot be combined with frontend.args.router-policy-config "
                 "or DYN_ROUTER_POLICY_CONFIG in frontend.env/environment"
             )
 

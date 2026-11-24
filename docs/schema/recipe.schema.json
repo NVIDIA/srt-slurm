@@ -860,6 +860,18 @@
           "description": "Cargo dependency replacements applied tree-wide before the build.",
           "default": null
         },
+        "router_plugin_crate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Rust crate of custom router plugins (worker-selection policies, request classifiers) to link into the Dynamo frontend built from ``git``. A path under srtctl's ``configs/`` directory, or an absolute path inside the container. The crate exposes ``pub fn register(&mut RouterPluginRegistry)``; select its policy types under ``frontend.router_policy_config.worker_selection``. The build cache is keyed by the crate's contents, so an edited crate is rebuilt on the next job.",
+          "default": null
+        },
         "pypi": {
           "anyOf": [
             {
@@ -945,16 +957,19 @@
           "description": "Idle timeout for client and upstream keepalive connections in the generated nginx.conf (default \"600s\"). nginx's own default is 75s, which closes a session's connection during the long recorded think-time of an agentic replay; the client's next write on that pooled socket then fails with \"broken pipe\" / \"server disconnected\" and nothing is logged server-side.",
           "default": "600s"
         },
-        "worker_selection": {
+        "router_policy_config": {
           "anyOf": [
             {
               "type": "object"
             },
             {
+              "type": "string"
+            },
+            {
               "type": "null"
             }
           ],
-          "description": "Inline Dynamo worker-selection policy configuration. srtctl writes this mapping under the top-level ``worker_selection`` key in a generated router policy YAML and passes it to the Dynamo frontend via ``--router-policy-config``.",
+          "description": "Dynamo's ``--router-policy-config`` document, as a path or inline. A string is a path to the YAML file: relative to srtctl's ``configs/`` directory (mounted at ``/configs``), or an absolute path inside the container. A mapping is the document itself (``worker_selection``, ``request_classifier``, ``policy_classes`` / ``default_policy_class``, ``models``, ``router``); srtctl writes it unchanged to ``/logs/router_policy_config.yaml``. Either way the Dynamo frontend is started with ``--router-policy-config`` and validates the file.",
           "default": null
         },
         "epp_config": {

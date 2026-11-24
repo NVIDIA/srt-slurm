@@ -189,6 +189,44 @@ def test_dynamo_source_pinned_sha_and_fork_and_patches() -> None:
     assert patch_line in cmd
 
 
+def test_dynamo_source_router_plugin_crate_is_linked_and_keys_the_cache() -> None:
+    plain = DynamoConfig(source=DynamoSourceConfig(rev=SHA))
+    assert plain.router_plugin_crate is None
+    assert "DYN_PLUGIN" not in plain.get_install_commands()
+
+    config = DynamoConfig(source=DynamoSourceConfig(rev=SHA, router_plugin_crate="router-plugins/least-active"))
+    # A relative path is under srtctl's configs/ directory, mounted at /configs.
+    assert config.router_plugin_crate == "/configs/router-plugins/least-active"
+    cmd = config.get_install_commands()
+    assert "DYN_PLUGIN_SRC=/configs/router-plugins/least-active" in cmd
+    # The cache key carries a digest of the crate computed on the node, so an edit rebuilds.
+    assert f"/configs/dynamo-wheels/{SHA}-plugin-${{DYN_PLUGIN_DIGEST}}/.complete" in cmd
+    assert f"/configs/dynamo-wheels/{SHA}/.complete" not in cmd
+    # Dynamo's documented link step: the crate fills the bindings' catalog slot.
+    assert (
+        "cargo add --quiet --manifest-path lib/bindings/python/Cargo.toml --optional "
+        "--rename dynamo-worker-selection-policy-catalog --path lib/router-plugins/srtctl-plugin"
+    ) in cmd
+    # The plugin builds against the kv-router of the checkout being built.
+    assert 'dynamo-kv-router = { path = "../../router/kv-router" }' in cmd
+    assert (
+        cmd.index("DYN_PLUGIN_DIGEST=$(")
+        < cmd.index(f"git checkout {SHA}")
+        < cmd.index("cargo add --quiet")
+        < cmd.index("maturin build")
+    )
+
+    absolute = DynamoConfig(source=DynamoSourceConfig(rev=SHA, router_plugin_crate="/work/my-policy"))
+    assert absolute.router_plugin_crate == "/work/my-policy"
+
+
+def test_dynamo_source_router_plugin_crate_requires_a_git_source() -> None:
+    with pytest.raises(ValidationError, match="router_plugin_crate only apply to a git source"):
+        DynamoSourceConfig(pypi="1.4.2", router_plugin_crate="router-plugins/least-active")
+    with pytest.raises(ValidationError, match="non-empty path"):
+        DynamoSourceConfig(rev=SHA, router_plugin_crate=" ")
+
+
 def test_dynamo_source_pypi_and_wheel() -> None:
     assert DynamoConfig(source=DynamoSourceConfig(pypi="1.4.2")).pypi_version == "1.4.2"
     assert "ai-dynamo==1.4.2" in DynamoConfig(source=DynamoSourceConfig(pypi="1.4.2")).get_install_commands()

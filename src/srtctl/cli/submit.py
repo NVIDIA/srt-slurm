@@ -78,7 +78,7 @@ from srtctl.core.runtime import Nodes, resolve_local_model_mount, resolve_model_
 from srtctl.core.schema import SrtConfig, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
-from srtctl.frontends.dynamo import ROUTER_POLICY_CONFIG_CONTAINER_PATH
+from srtctl.frontends.dynamo import router_policy_config_path
 from srtctl.ports import FRONTEND_PUBLIC_PORT, MOONCAKE_MASTER_PORT
 from srtctl.runtime_scripts.dynamo_wheels import arch_from_binary, detect_target_arch
 from srtctl.status_server.server import add_arguments as add_status_server_arguments
@@ -656,6 +656,12 @@ def show_config_details(config: SrtConfig) -> None:
                 console.print(f"[dim]dynamo source sha:[/] {source.sha}", crop=False)
             else:
                 console.print("[dim]dynamo source sha:[/] resolved from rev at submit (srtctl apply)")
+            if config.dynamo.router_plugin_crate is not None:
+                console.print(
+                    f"[dim]dynamo router plugin crate:[/] {config.dynamo.router_plugin_crate} "
+                    "[dim](linked into the frontend build; cache keyed by its contents)[/]",
+                    crop=False,
+                )
         elif source is not None and source.pypi:
             console.print(f"[dim]dynamo source:[/] PyPI ai-dynamo=={source.pypi}")
         elif source is not None and source.wheel:
@@ -677,7 +683,7 @@ def show_config_details(config: SrtConfig) -> None:
         or config.telemetry.enabled
         or mooncake_cfg is not None
         or config.profiling.enabled
-        or config.frontend.worker_selection is not None
+        or config.frontend.router_policy_config is not None
     )
     if show_extensions:
         details = Table(title="Execution Extensions", show_lines=False, pad_edge=False)
@@ -816,13 +822,12 @@ def show_config_details(config: SrtConfig) -> None:
                     f"{', required' if cpu_power.required else ''})",
                 )
 
-        if config.frontend.worker_selection is not None:
-            details.add_row("frontend", "router_policy_config", f"{ROUTER_POLICY_CONFIG_CONTAINER_PATH} (auto)")
-            details.add_row(
-                "frontend",
-                "worker_selection",
-                yaml.safe_dump(config.frontend.worker_selection, sort_keys=False).rstrip(),
-            )
+        policy_config = config.frontend.router_policy_config
+        if isinstance(policy_config, dict):
+            details.add_row("frontend", "router_policy_config", f"{router_policy_config_path(policy_config)} (auto)")
+            details.add_row("frontend", "policy (inline)", yaml.safe_dump(policy_config, sort_keys=False).rstrip())
+        elif policy_config is not None:
+            details.add_row("frontend", "router_policy_config", router_policy_config_path(policy_config))
 
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")

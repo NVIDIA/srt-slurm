@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Example Dynamo router plugin crate for `dynamo.source.router_plugin_crate`
+# (docs/frontends.md, "Custom routing strategies"). Copy this directory, change the
+# package name and the policy in src/lib.rs, and point the recipe at the copy.
+
+[package]
+name = "srtctl-example-least-active"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+# The plugin API. This line lets `cargo check` and `cargo test` run here on their own;
+# keep `rev` at the commit in the recipe's `dynamo.source.rev`. In a job, srtctl replaces
+# the line with the kv-router of the Dynamo checkout it builds, so the two cannot drift.
+dynamo-kv-router = { git = "https://github.com/ai-dynamo/dynamo.git", rev = "08cfa4ff200168975ddb902f2d25ceb02be888fa" }
+serde = { version = "1", features = ["derive"] }

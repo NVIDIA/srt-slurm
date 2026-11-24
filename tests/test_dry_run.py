@@ -704,20 +704,45 @@ class TestDryRunExecutionExtensions:
         assert "Execution Extensions" in output
         assert "profiling" in output
 
-    def test_inline_worker_selection_translation_shown(self, capsys):
+    def test_router_plugin_crate_shown(self, capsys):
+        config = _make_config(
+            {
+                "dynamo": {
+                    "source": {
+                        "git": "https://github.com/ai-dynamo/dynamo",
+                        "rev": "08cfa4ff200168975ddb902f2d25ceb02be888fa",
+                        "router_plugin_crate": "router-plugins/least-active",
+                    }
+                },
+                "frontend": {"type": "dynamo"},
+            }
+        )
+
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "dynamo router plugin crate:" in output
+        assert "/configs/router-plugins/least-active" in output
+
+    def test_router_policy_config_path_shown(self, capsys):
+        config = _make_config({"frontend": {"type": "dynamo", "router_policy_config": "policy.yaml"}})
+
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "router_policy_config" in output
+        assert "/configs/policy.yaml" in output
+        assert "(auto)" not in output
+
+    def test_inline_router_policy_config_shown(self, capsys):
         config = _make_config(
             {
                 "frontend": {
                     "type": "dynamo",
-                    "worker_selection": {
-                        "prefill": "max-kv-overlap",
-                        "decode": "default",
-                        "instances": [
-                            {
-                                "name": "max-kv-overlap",
-                                "type": "dynamo-two-tier-cost-fn",
-                            }
-                        ],
+                    "router_policy_config": {
+                        "worker_selection": {
+                            "prefill": {"type": "dynamo-two-tier-cost-fn", "parameters": {"cache_threshold": 0.0}},
+                            "decode": "default",
+                        },
+                        "default_policy_class": "standard",
                     },
                 }
             }
@@ -729,7 +754,8 @@ class TestDryRunExecutionExtensions:
         assert "/logs/router_policy_config.yaml" in output
         assert "(auto)" in output
         assert "worker_selection" in output
-        assert "max-kv-overlap" in output
+        assert "dynamo-two-tier-cost-fn" in output
+        assert "default_policy_class" in output
 
     def test_custom_benchmark_details_shown(self, capsys):
         config = _make_config(

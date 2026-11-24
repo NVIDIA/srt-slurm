@@ -974,7 +974,7 @@ class TestNumaBind:
             environment={},
         )
         config = SimpleNamespace(
-            frontend=SimpleNamespace(type="dynamo", args=None, env=None, worker_selection=None, numa_bind=True),
+            frontend=SimpleNamespace(type="dynamo", args=None, env=None, router_policy_config=None, numa_bind=True),
             observability=ObservabilityConfig(),
             services=[],
             dynamo=SimpleNamespace(
@@ -1014,7 +1014,7 @@ def test_dynamo_frontend_is_a_named_step_with_a_drain_timeout():
         environment={},
     )
     config = SimpleNamespace(
-        frontend=SimpleNamespace(type="dynamo", args=None, env=None),
+        frontend=SimpleNamespace(type="dynamo", args=None, env=None, router_policy_config=None),
         observability=ObservabilityConfig(),
         services=[],
         dynamo=SimpleNamespace(install=False, get_install_commands=lambda: "", request_plane="tcp", event_plane=None),
@@ -1045,7 +1045,7 @@ def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zm
         environment={},
     )
     config = SimpleNamespace(
-        frontend=SimpleNamespace(type="dynamo", args=None, env=None, worker_selection=None),
+        frontend=SimpleNamespace(type="dynamo", args=None, env=None, router_policy_config=None),
         observability=ObservabilityConfig(),
         services=[],
         dynamo=SimpleNamespace(
@@ -1092,7 +1092,7 @@ class TestDynamoFrontendEventPlane:
         assert mock_srun.call_args.kwargs["env_to_set"]["DYN_EVENT_PLANE"] == event_plane
 
 
-def test_dynamo_frontend_materializes_inline_worker_selection(tmp_path):
+def test_dynamo_frontend_materializes_inline_router_policy_config(tmp_path):
     """Inline policy config becomes a mounted YAML file and frontend CLI argument."""
     frontend = DynamoFrontend()
     topology = SimpleNamespace(frontend_nodes=["node0"], frontend_port=8180)
@@ -1108,24 +1108,17 @@ def test_dynamo_frontend_materializes_inline_worker_selection(tmp_path):
         container_mounts={tmp_path: Path("/logs")},
         environment={},
     )
-    worker_selection = {
-        "prefill": "max-kv-overlap",
-        "decode": "default",
-        "instances": [
-            {
-                "name": "max-kv-overlap",
-                "type": "dynamo-two-tier-cost-fn",
-                "parameters": {
-                    "cache_threshold": 0.0,
-                    "balance_abs_threshold": 1_000_000_000,
-                    "balance_rel_threshold": 1_000_000_000.0,
-                },
-            }
-        ],
+    router_policy_config = {
+        "worker_selection": {
+            "prefill": {"type": "dynamo-two-tier-cost-fn", "parameters": {"cache_threshold": 0.0}},
+            "decode": "default",
+        },
+        "default_policy_class": "standard",
+        "policy_classes": [{"name": "standard", "quantum": 200}],
     }
     config = SimpleNamespace(
         frontend=SimpleNamespace(
-            type="dynamo", args={"router-mode": "kv"}, env=None, worker_selection=worker_selection
+            type="dynamo", args={"router-mode": "kv"}, env=None, router_policy_config=router_policy_config
         ),
         observability=ObservabilityConfig(),
         services=[],
@@ -1143,8 +1136,56 @@ def test_dynamo_frontend_materializes_inline_worker_selection(tmp_path):
         frontend.start_frontends(topology, runtime, config, MagicMock(), [])
 
     policy_path = tmp_path / "router_policy_config.yaml"
-    assert yaml.safe_load(policy_path.read_text()) == {"worker_selection": worker_selection}
+    # The document is written as given: no wrapping key, every section kept.
+    assert yaml.safe_load(policy_path.read_text()) == router_policy_config
     cmd = mock_srun.call_args.kwargs["command"]
     policy_arg = cmd.index("--router-policy-config")
     assert cmd[policy_arg + 1] == "/logs/router_policy_config.yaml"
     assert cmd[cmd.index("--router-mode") + 1] == "kv"
+
+
+def test_router_policy_config_path_resolution():
+    """One resolver: inline is the generated file, a relative path is under /configs, absolute is kept."""
+    from srtctl.frontends.dynamo import router_policy_config_path
+
+    assert router_policy_config_path(None) is None
+    assert (
+        router_policy_config_path({"worker_selection": {"aggregated": "default"}}) == "/logs/router_policy_config.yaml"
+    )
+    assert router_policy_config_path("router-policies/two-tier.yaml") == "/configs/router-policies/two-tier.yaml"
+    assert router_policy_config_path("/work/policy.yaml") == "/work/policy.yaml"
+
+
+def test_dynamo_frontend_passes_a_router_policy_config_path(tmp_path):
+    """A path is passed to the frontend and no file is generated."""
+    frontend = DynamoFrontend()
+    topology = SimpleNamespace(frontend_nodes=["node0"], frontend_port=8180)
+    runtime = SimpleNamespace(
+        log_dir=tmp_path,
+        infra_node_ip="10.0.0.9",
+        head_node_ip="10.0.0.8",
+        nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
+        container_image=Path("/container.sqsh"),
+        reuse_container=False,
+        container_prepare_timeout_seconds=1800.0,
+        srun_options={},
+        container_mounts={tmp_path: Path("/logs")},
+        environment={},
+    )
+    config = SimpleNamespace(
+        frontend=SimpleNamespace(
+            type="dynamo", args=None, env=None, router_policy_config="router-policies/two-tier.yaml"
+        ),
+        observability=ObservabilityConfig(),
+        services=[],
+        dynamo=SimpleNamespace(install=False, get_install_commands=lambda: "", request_plane="tcp", event_plane=None),
+        setup_script=None,
+    )
+
+    with patch("srtctl.frontends.dynamo.start_srun_process") as mock_srun:
+        mock_srun.return_value = MagicMock()
+        frontend.start_frontends(topology, runtime, config, MagicMock(), [])
+
+    cmd = mock_srun.call_args.kwargs["command"]
+    assert cmd[cmd.index("--router-policy-config") + 1] == "/configs/router-policies/two-tier.yaml"
+    assert not (tmp_path / "router_policy_config.yaml").exists()
