@@ -111,9 +111,11 @@ to the router. The supervisor (`tilert/pd_vllm/rs_front_sup.py`) keeps the
 router's `--port` as the client port, moves the router to `127.0.0.1` on the next
 port with `--rs-back-port 24000` (router process `k` reports to the front on
 `127.0.0.1:24000+k`), checks the sha256 of the packaged `tilert/pd_vllm/bin/pd_stream`,
-and serves the client port with it. Its log shows `pd_stream up on :<port>`; if the
-binary is missing or fails its check, it logs `FALLBACK` and relays the client port
-to the Python router. Those two loopback listeners are opened by the supervisor and
+and serves the client port with it. Its log shows `pd_stream up on :<port>`. If the
+binary is missing, fails its check, does not come up, or exits, the supervisor logs
+`rs_front_sup FALLBACK: <reason>` and relays the client port to the Python router;
+srtctl treats that line as a router failure and stops the run, so a
+`rust-front: true` run only reports numbers served by the Rust front. Those two loopback listeners are opened by the supervisor and
 not allocated by srtctl, so give the router its own node (`frontend.placement.node:
 dedicated`), as the recipe does. Older wheels have no `rs_front_sup` module.
 

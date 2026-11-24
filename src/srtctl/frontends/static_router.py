@@ -184,6 +184,10 @@ class StaticRouterFrontend(Frontend):
         """Launch one router process; split out for adapter-specific tests."""
         return start_srun_process(**kwargs)
 
+    def fatal_log_patterns(self) -> tuple[str, ...]:
+        """Router log lines that fail the run while its step is still up (``ManagedProcess.fatal_log_patterns``)."""
+        return ()
+
     def build_bash_preamble(self, config: Any) -> str | None:
         """Return adapter-specific shell setup to run before the router."""
         return None
@@ -365,6 +369,7 @@ class StaticRouterFrontend(Frontend):
                     critical=True,
                     terminate_timeout=FRONTEND_TERMINATE_TIMEOUT_SECONDS,
                     step_name=step_name,
+                    fatal_log_patterns=self.fatal_log_patterns(),
                 )
             )
         return processes
