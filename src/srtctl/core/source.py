@@ -132,6 +132,13 @@ class DynamoSourceConfig:
         sha: The commit ``rev`` resolved to; filled in by ``srtctl apply``.
         patches: Cargo dependency replacements applied tree-wide before the
             build.
+        router_plugin_crate: Rust crate of custom router plugins (worker-selection
+            policies, request classifiers) to link into the Dynamo frontend built
+            from ``git``. A path under srtctl's ``configs/`` directory, or an
+            absolute path inside the container. The crate exposes
+            ``pub fn register(&mut RouterPluginRegistry)``; select its policy types
+            with ``frontend.worker_selection``. The build cache is keyed by the
+            crate's contents, so an edited crate is rebuilt on the next job.
         pypi: Release version from PyPI.
         wheel: Staged nightly ``ai-dynamo`` version.
     """
@@ -142,6 +149,7 @@ class DynamoSourceConfig:
     rev: str | None = None
     sha: str | None = None
     patches: list[str] | None = None
+    router_plugin_crate: str | None = None
     pypi: str | None = None
     wheel: str | None = None
 
@@ -161,8 +169,10 @@ class DynamoSourceConfig:
             if self.rev is None:
                 raise ValidationError("dynamo.source.git requires rev (commit SHA, tag, or refs/pull/<n>/head)")
             validate_ref(self.rev, where="dynamo.source")
-        elif self.rev is not None or self.sha is not None or self.patches:
-            raise ValidationError("dynamo.source.rev, sha, and patches only apply to a git source")
+        elif self.rev is not None or self.sha is not None or self.patches or self.router_plugin_crate is not None:
+            raise ValidationError("dynamo.source.rev, sha, patches, and router_plugin_crate only apply to a git source")
+        if self.router_plugin_crate is not None and not self.router_plugin_crate.strip():
+            raise ValidationError("dynamo.source.router_plugin_crate must be a non-empty path")
         if self.sha is not None and not is_commit_sha(self.sha):
             raise ValidationError(f"dynamo.source.sha must be a commit SHA, got {self.sha!r}")
         for name in ("pypi", "wheel"):

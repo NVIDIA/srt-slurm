@@ -34,15 +34,13 @@ frontend:
   # Dynamo only: inline worker-selection policy config. srtctl writes the
   # router policy YAML and passes --router-policy-config automatically.
   worker_selection:
-    prefill: max-kv-overlap
+    prefill:
+      type: dynamo-two-tier-cost-fn
+      parameters:
+        cache_threshold: 0.0
+        balance_abs_threshold: 1000000000
+        balance_rel_threshold: 1000000000.0
     decode: default
-    instances:
-      - name: max-kv-overlap
-        type: dynamo-two-tier-cost-fn
-        parameters:
-          cache_threshold: 0.0
-          balance_abs_threshold: 1000000000
-          balance_rel_threshold: 1000000000.0
 
   # Environment variables for frontend processes
   env:
@@ -53,6 +51,8 @@ frontend:
 ```
 
 Fields: [FrontendConfig](schema-reference.md#frontendconfig), [PlacementConfig](schema-reference.md#placementconfig). `worker_selection` is written to `/logs/router_policy_config.yaml` and passed with `--router-policy-config`, so it cannot be combined with a policy-config argument or environment variable of your own.
+
+Each role (`aggregated`, `prefill`, `decode`, `encode`) names a policy type, either as a bare string or as a mapping with `type` and `parameters`. Dynamo 1.7 deprecated the older `instances:` list; it is scheduled for removal in 1.8. The policy types Dynamo ships (`dynamo-two-tier-cost-fn`, `dynamo-sticky-min-load`, `kvcr`, `least-loaded`, ...) need no rebuild; see Dynamo's [worker-selection policies](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/developer-guide/knowledge-base/modular-components/router/configuration-and-tuning.md#worker-selection-policies). To run a policy of your own, see [Custom routing strategies](#custom-routing-strategies).
 
 See [SGLang Router](sglang-router.md) for detailed architecture.
 
@@ -201,6 +201,7 @@ Fields: [DynamoConfig](schema-reference.md#dynamoconfig), [DynamoSourceConfig](s
 | `wheel` | An exact `ai-dynamo` nightly version installed from staged wheels; the matching `ai-dynamo-runtime` wheel is installed automatically |
 | `git` + `rev` | Clone and build with maturin. `git` defaults to the upstream repository when only `rev` is given, so a fork is `git: https://github.com/<you>/dynamo` |
 | `patches` | With `git`: Cargo dependency replacements applied tree-wide before the build. Each entry is a full `<crate> = <spec>` TOML line |
+| `router_plugin_crate` | With `git`: a Rust crate of router plugins linked into the frontend build. See [Custom routing strategies](#custom-routing-strategies) |
 | `sha` | Written by `srtctl apply`; the commit `rev` resolved to |
 
 **Notes**:
@@ -211,6 +212,54 @@ Fields: [DynamoConfig](schema-reference.md#dynamoconfig), [DynamoSourceConfig](s
 - `rev` must be immutable: a commit SHA, a tag such as `v1.4.2`, or `refs/pull/<n>/head` for an unmerged PR. `main`, `master`, and `HEAD` are rejected; pin the commit you mean.
 - `srtctl apply` resolves a non-commit `rev` with `git ls-remote`, writes the commit as `source.sha` into the submitted `config.yaml` (comments preserved, the recipe on disk is untouched), and echoes it as `pinned_sources` in `--json` output. The job builds that commit and the `/configs/dynamo-wheels` cache is keyed by it, so two runs of one recipe cannot silently build different code because the PR moved. If the login node cannot reach the remote, the submit continues with a warning and the compute node fetches the ref by name.
 - `srtctl dry-run` prints the resolved Dynamo source.
+
+### Custom routing strategies
+
+Dynamo's frontend picks a worker for each request with a worker-selection policy: a filter, one or more scorers, and a picker, written in Rust against `dynamo_kv_router::plugins` ([Write Custom Routing Strategies](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/developer-guide/knowledge-base/modular-components/router/custom-worker-selection.mdx)). A policy is compiled into the frontend, so trying one normally means a private Dynamo build. `dynamo.source.router_plugin_crate` does that build inside the job:
+
+```yaml
+dynamo:
+  source:
+    git: https://github.com/ai-dynamo/dynamo
+    rev: 08cfa4ff200168975ddb902f2d25ceb02be888fa
+    router_plugin_crate: router-plugins/least-active   # under configs/, or an absolute container path
+
+frontend:
+  type: dynamo
+  worker_selection:
+    aggregated:
+      type: srtctl-example-least-active                # a type the crate registers
+      parameters:
+        active_request_weight: 1.0
+```
+
+```mermaid
+flowchart LR
+    Crate["router_plugin_crate<br/>(configs/router-plugins/...)"] --> Copy["copied into the Dynamo checkout<br/>lib/router-plugins/srtctl-plugin"]
+    Copy --> Link["cargo add: fills the bindings'<br/>plugin catalog slot"]
+    Link --> Build["maturin build<br/>ai-dynamo-runtime wheel"]
+    Build --> Cache["/configs/dynamo-wheels/<br/>&lt;rev&gt;-plugin-&lt;crate digest&gt;"]
+    Cache --> Frontend["dynamo.frontend<br/>--router-policy-config"]
+    WS["frontend.worker_selection"] --> Frontend
+```
+
+The crate:
+
+- is one Rust library crate with `pub fn register(registry: &mut RouterPluginRegistry) -> Result<(), ...>` at its root, registering each policy type by name. That is the signature of Dynamo's plugin catalog, so the crate fills the catalog slot directly, and its policies are added beside the ones Dynamo ships.
+- depends on `dynamo-kv-router` in whatever way lets it compile where you write it: a `git` + `rev` dependency (as the example does, so `cargo check` and `cargo test` run in the crate directory on their own), or a `path` into a local Dynamo checkout as Dynamo's guide shows. In the job, srtctl replaces that one line in the crate's top-level `Cargo.toml` with the kv-router of the checkout it builds, because a plugin must be built against the same Dynamo as the frontend that links it. Other dependencies are used as written.
+- lives under srtctl's `configs/` directory (mounted at `/configs` in every container), or at an absolute container path that the recipe mounts with `extra_mount`.
+
+To write a strategy, copy [`configs/router-plugins/least-active`](../configs/router-plugins/least-active) (one scorer, one picker, one YAML parameter), change the package name, the policy type name and the logic, and point the recipe at the copy. [`examples/features/dynamo-router-plugin.yaml`](../examples/features/dynamo-router-plugin.yaml) runs it against two `dynamo.mocker` workers, so a job needs no model weights.
+
+To iterate, edit the crate and resubmit. The build cache directory is `/configs/dynamo-wheels/<rev>-plugin-<digest>`, where the digest covers every file in the crate except `target/` and `.git/` and is computed on the node when the job installs Dynamo. An edited crate therefore builds once, on the first job that sees it, and an unchanged crate reuses its wheel in about ten seconds. Changing only `frontend.worker_selection` parameters never rebuilds. Each crate version leaves one cache directory behind; delete old `*-plugin-*` directories when they add up.
+
+Limits:
+
+- A git source only (`source.git` + `rev`). The Dynamo at `rev` must have the plugin catalog slot ([ai-dynamo/dynamo#12536](https://github.com/ai-dynamo/dynamo/pull/12536)); the build stops with an error otherwise. The plugin API changed in Dynamo 1.7, so build against the `rev` you wrote the crate for.
+- Every rebuild is a full release build of the Python bindings (several minutes); nothing is reused between crate versions.
+- A compile error in the crate fails the Dynamo install, so the job fails at frontend start. Run `cargo check` in the crate first.
+- An unknown policy type or invalid `parameters` stops the frontend at startup.
+- Workers install the same wheel as the frontend; only the frontend uses the plugins.
 
 The v1 spelling of this (`dynamo.version`, `dynamo.hash`, `dynamo.top_of_tree`, `dynamo.wheel`, `dynamo.cargo_patches`) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
 

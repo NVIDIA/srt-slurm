@@ -413,6 +413,7 @@ Where Dynamo comes from. Exactly one of ``git``, ``pypi``, or ``wheel``.
 | `rev` | str \| None | `None` | Immutable ref in ``git``: commit SHA, tag, or ``refs/pull/<n>/head``. |
 | `sha` | str \| None | `None` | The commit ``rev`` resolved to; filled in by ``srtctl apply``. |
 | `patches` | list[str] \| None | `None` | Cargo dependency replacements applied tree-wide before the build. |
+| `router_plugin_crate` | str \| None | `None` | Rust crate of custom router plugins (worker-selection policies, request classifiers) to link into the Dynamo frontend built from ``git``. A path under srtctl's ``configs/`` directory, or an absolute path inside the container. The crate exposes ``pub fn register(&mut RouterPluginRegistry)``; select its policy types with ``frontend.worker_selection``. The build cache is keyed by the crate's contents, so an edited crate is rebuilt on the next job. |
 | `pypi` | str \| None | `None` | Release version from PyPI. |
 | `wheel` | str \| None | `None` | Staged nightly ``ai-dynamo`` version. |
 

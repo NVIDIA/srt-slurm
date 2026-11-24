@@ -656,6 +656,12 @@ def show_config_details(config: SrtConfig) -> None:
                 console.print(f"[dim]dynamo source sha:[/] {source.sha}", crop=False)
             else:
                 console.print("[dim]dynamo source sha:[/] resolved from rev at submit (srtctl apply)")
+            if config.dynamo.router_plugin_crate is not None:
+                console.print(
+                    f"[dim]dynamo router plugin crate:[/] {config.dynamo.router_plugin_crate} "
+                    "[dim](linked into the frontend build; cache keyed by its contents)[/]",
+                    crop=False,
+                )
         elif source is not None and source.pypi:
             console.print(f"[dim]dynamo source:[/] PyPI ai-dynamo=={source.pypi}")
         elif source is not None and source.wheel:

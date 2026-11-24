@@ -1,0 +1,229 @@
+# examples/features/dynamo-router-plugin.yaml
+# exit_code: 0
+# srun calls: 13
+
+## service_etcd
+nodelist: node-01
+output: <output>/logs/service_etcd.out
+container_image: sglang
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+use_bash_wrapper: True
+bash_preamble: |
+    rm -rf /tmp/etcd && mkdir -p /tmp/etcd
+command: |
+    /configs/etcd --data-dir /tmp/etcd --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://127.0.0.1:2379
+
+## service_otel-collector
+nodelist: node-01
+output: <output>/logs/service_otel-collector.out
+env_to_set:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: True
+command: |
+    configs/otelcol-contrib --config <output>/logs/otel-collector.yaml
+
+## agg_0_node-01
+nodelist: node-01
+output: <output>/logs/node-01_agg_w0.out
+container_image: sglang
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 0,1,2,3
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7500
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    HEAD_NODE_IP: 127.0.0.1
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-agg
+srun_export_env:
+    ENROOT_REMAP_ROOT: yes
+bash_preamble: |
+    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing dynamo from source (08cfa4ff200168975ddb902f2d25ceb02be888fa, /configs cache)...' && mkdir -p /configs/dynamo-wheels && DYN_PLUGIN_SRC=/configs/router-plugins/least-active && if [ ! -f "$DYN_PLUGIN_SRC/Cargo.toml" ]; then echo "ERROR: dynamo.source.router_plugin_crate: no Cargo.toml in $DYN_PLUGIN_SRC (a path under configs/, or an absolute path mounted in the container)" >&2; exit 1; fi && DYN_PLUGIN_DIGEST=$(cd "$DYN_PLUGIN_SRC" && find . -type f -not -path './target/*' -not -path './.git/*' -print0 | LC_ALL=C sort -z | xargs -0 sha1sum | sha1sum | cut -c1-12) && ( flock -x 201; if [ ! -f /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/.complete ]; then apt-get update -qq && apt-get install -y -qq libclang-dev curl git protobuf-compiler > /dev/null 2>&1 && if ! command -v cargo &>/dev/null; then curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && . $HOME/.cargo/env; fi && pip install --break-system-packages --force-reinstall --quiet maturin && DYN_BUILD_DIR=$(mktemp -d) && cd $DYN_BUILD_DIR && git clone https://github.com/ai-dynamo/dynamo dynamo && cd dynamo && git checkout 08cfa4ff200168975ddb902f2d25ceb02be888fa && if ! grep -q '^dynamo-worker-selection-policy-catalog[[:space:]]*=' lib/bindings/python/Cargo.toml; then echo 'ERROR: dynamo.source.router_plugin_crate needs a Dynamo with the plugin catalog slot (ai-dynamo/dynamo#12536 or newer)' >&2; exit 1; fi && mkdir -p lib/router-plugins/srtctl-plugin && tar -C "$DYN_PLUGIN_SRC" --exclude=./target --exclude=./.git -cf - . | tar -C lib/router-plugins/srtctl-plugin -xf - && sed -i -E 's|^dynamo-kv-router[[:space:]]*=.*|dynamo-kv-router = { path = "../../router/kv-router" }|' lib/router-plugins/srtctl-plugin/Cargo.toml && cargo add --quiet --manifest-path lib/bindings/python/Cargo.toml --optional --rename dynamo-worker-selection-policy-catalog --path lib/router-plugins/srtctl-plugin && cd lib/bindings/python/ && export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && rm -f /tmp/ai_dynamo_runtime*.whl && maturin build --release -o /tmp && mkdir -p /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST} && cp /tmp/ai_dynamo_runtime*.whl /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/ && cd $DYN_BUILD_DIR && tar --exclude='target' --exclude='.git' -czf /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/dynamo-src.tar.gz dynamo && touch /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/.complete && cd / && rm -rf $DYN_BUILD_DIR; fi ) 201>/configs/dynamo-wheels/.08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}.lock && pip install --break-system-packages --force-reinstall /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/ai_dynamo_runtime-*.whl && rm -rf /tmp/dynamo-src && mkdir -p /tmp/dynamo-src && tar -xzf /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/dynamo-src.tar.gz -C /tmp/dynamo-src && pip install --break-system-packages -e /tmp/dynamo-src/dynamo && echo 'Dynamo installed from source (08cfa4ff200168975ddb902f2d25ceb02be888fa)' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock" && ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    python3 -m dynamo.mocker --model-path /model --model-name model --engine-type vllm --speedup-ratio 100.0 --data-parallel-size 1 --num-gpu-blocks-override 16384 --max-num-seqs 256 --max-num-batched-tokens 8192
+
+## agg_1_node-01
+nodelist: node-01
+output: <output>/logs/node-01_agg_w1.out
+container_image: sglang
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    CUDA_VISIBLE_DEVICES: 4,5,6,7
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
+    DYN_LOG: info,dynamo_runtime::pipeline::network::ingress::push_handler=warn
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    DYN_SYSTEM_PORT: 7501
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    HEAD_NODE_IP: 127.0.0.1
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-agg
+srun_export_env:
+    ENROOT_REMAP_ROOT: yes
+bash_preamble: |
+    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing dynamo from source (08cfa4ff200168975ddb902f2d25ceb02be888fa, /configs cache)...' && mkdir -p /configs/dynamo-wheels && DYN_PLUGIN_SRC=/configs/router-plugins/least-active && if [ ! -f "$DYN_PLUGIN_SRC/Cargo.toml" ]; then echo "ERROR: dynamo.source.router_plugin_crate: no Cargo.toml in $DYN_PLUGIN_SRC (a path under configs/, or an absolute path mounted in the container)" >&2; exit 1; fi && DYN_PLUGIN_DIGEST=$(cd "$DYN_PLUGIN_SRC" && find . -type f -not -path './target/*' -not -path './.git/*' -print0 | LC_ALL=C sort -z | xargs -0 sha1sum | sha1sum | cut -c1-12) && ( flock -x 201; if [ ! -f /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/.complete ]; then apt-get update -qq && apt-get install -y -qq libclang-dev curl git protobuf-compiler > /dev/null 2>&1 && if ! command -v cargo &>/dev/null; then curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && . $HOME/.cargo/env; fi && pip install --break-system-packages --force-reinstall --quiet maturin && DYN_BUILD_DIR=$(mktemp -d) && cd $DYN_BUILD_DIR && git clone https://github.com/ai-dynamo/dynamo dynamo && cd dynamo && git checkout 08cfa4ff200168975ddb902f2d25ceb02be888fa && if ! grep -q '^dynamo-worker-selection-policy-catalog[[:space:]]*=' lib/bindings/python/Cargo.toml; then echo 'ERROR: dynamo.source.router_plugin_crate needs a Dynamo with the plugin catalog slot (ai-dynamo/dynamo#12536 or newer)' >&2; exit 1; fi && mkdir -p lib/router-plugins/srtctl-plugin && tar -C "$DYN_PLUGIN_SRC" --exclude=./target --exclude=./.git -cf - . | tar -C lib/router-plugins/srtctl-plugin -xf - && sed -i -E 's|^dynamo-kv-router[[:space:]]*=.*|dynamo-kv-router = { path = "../../router/kv-router" }|' lib/router-plugins/srtctl-plugin/Cargo.toml && cargo add --quiet --manifest-path lib/bindings/python/Cargo.toml --optional --rename dynamo-worker-selection-policy-catalog --path lib/router-plugins/srtctl-plugin && cd lib/bindings/python/ && export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && rm -f /tmp/ai_dynamo_runtime*.whl && maturin build --release -o /tmp && mkdir -p /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST} && cp /tmp/ai_dynamo_runtime*.whl /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/ && cd $DYN_BUILD_DIR && tar --exclude='target' --exclude='.git' -czf /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/dynamo-src.tar.gz dynamo && touch /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/.complete && cd / && rm -rf $DYN_BUILD_DIR; fi ) 201>/configs/dynamo-wheels/.08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}.lock && pip install --break-system-packages --force-reinstall /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/ai_dynamo_runtime-*.whl && rm -rf /tmp/dynamo-src && mkdir -p /tmp/dynamo-src && tar -xzf /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/dynamo-src.tar.gz -C /tmp/dynamo-src && pip install --break-system-packages -e /tmp/dynamo-src/dynamo && echo 'Dynamo installed from source (08cfa4ff200168975ddb902f2d25ceb02be888fa)' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock" && ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    python3 -m dynamo.mocker --model-path /model --model-name model --engine-type vllm --speedup-ratio 100.0 --data-parallel-size 1 --num-gpu-blocks-override 16384 --max-num-seqs 256 --max-num-batched-tokens 8192
+
+## frontend_0
+nodelist: node-01
+output: <output>/logs/node-01_frontend_0.out
+container_image: sglang
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_LIFECYCLE_TRACE_ENABLED: 1
+    DYN_REQUEST_PLANE: tcp
+    DYN_SKIP_SGLANG_LOG_FORMATTING: 1
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4317
+    OTEL_EXPORT_ENABLED: 1
+    OTEL_SERVICE_NAME: dynamo-frontend
+srun_export_env:
+    ENROOT_REMAP_ROOT: yes
+mpi: pmix
+bash_preamble: |
+    DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing dynamo from source (08cfa4ff200168975ddb902f2d25ceb02be888fa, /configs cache)...' && mkdir -p /configs/dynamo-wheels && DYN_PLUGIN_SRC=/configs/router-plugins/least-active && if [ ! -f "$DYN_PLUGIN_SRC/Cargo.toml" ]; then echo "ERROR: dynamo.source.router_plugin_crate: no Cargo.toml in $DYN_PLUGIN_SRC (a path under configs/, or an absolute path mounted in the container)" >&2; exit 1; fi && DYN_PLUGIN_DIGEST=$(cd "$DYN_PLUGIN_SRC" && find . -type f -not -path './target/*' -not -path './.git/*' -print0 | LC_ALL=C sort -z | xargs -0 sha1sum | sha1sum | cut -c1-12) && ( flock -x 201; if [ ! -f /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/.complete ]; then apt-get update -qq && apt-get install -y -qq libclang-dev curl git protobuf-compiler > /dev/null 2>&1 && if ! command -v cargo &>/dev/null; then curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && . $HOME/.cargo/env; fi && pip install --break-system-packages --force-reinstall --quiet maturin && DYN_BUILD_DIR=$(mktemp -d) && cd $DYN_BUILD_DIR && git clone https://github.com/ai-dynamo/dynamo dynamo && cd dynamo && git checkout 08cfa4ff200168975ddb902f2d25ceb02be888fa && if ! grep -q '^dynamo-worker-selection-policy-catalog[[:space:]]*=' lib/bindings/python/Cargo.toml; then echo 'ERROR: dynamo.source.router_plugin_crate needs a Dynamo with the plugin catalog slot (ai-dynamo/dynamo#12536 or newer)' >&2; exit 1; fi && mkdir -p lib/router-plugins/srtctl-plugin && tar -C "$DYN_PLUGIN_SRC" --exclude=./target --exclude=./.git -cf - . | tar -C lib/router-plugins/srtctl-plugin -xf - && sed -i -E 's|^dynamo-kv-router[[:space:]]*=.*|dynamo-kv-router = { path = "../../router/kv-router" }|' lib/router-plugins/srtctl-plugin/Cargo.toml && cargo add --quiet --manifest-path lib/bindings/python/Cargo.toml --optional --rename dynamo-worker-selection-policy-catalog --path lib/router-plugins/srtctl-plugin && cd lib/bindings/python/ && export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && rm -f /tmp/ai_dynamo_runtime*.whl && maturin build --release -o /tmp && mkdir -p /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST} && cp /tmp/ai_dynamo_runtime*.whl /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/ && cd $DYN_BUILD_DIR && tar --exclude='target' --exclude='.git' -czf /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/dynamo-src.tar.gz dynamo && touch /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/.complete && cd / && rm -rf $DYN_BUILD_DIR; fi ) 201>/configs/dynamo-wheels/.08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}.lock && pip install --break-system-packages --force-reinstall /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/ai_dynamo_runtime-*.whl && rm -rf /tmp/dynamo-src && mkdir -p /tmp/dynamo-src && tar -xzf /configs/dynamo-wheels/08cfa4ff200168975ddb902f2d25ceb02be888fa-plugin-${DYN_PLUGIN_DIGEST}/dynamo-src.tar.gz -C /tmp/dynamo-src && pip install --break-system-packages -e /tmp/dynamo-src/dynamo && echo 'Dynamo installed from source (08cfa4ff200168975ddb902f2d25ceb02be888fa)' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock"
+command: |
+    python3 -m dynamo.frontend --http-port=8000 --router-policy-config /logs/router_policy_config.yaml
+
+## service_dcgm-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_dcgm-exporter_node-01.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_dcgm-exporter_node-02.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_dcgm-exporter_node-03.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_node-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_node-exporter_node-01.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_node-exporter_node-02.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_node-exporter_node-03.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## tachometer
+nodelist: node-01
+output: <output>/logs/tachometer.out
+srun_export_env:
+    POLARS_MAX_THREADS: 4
+use_bash_wrapper: False
+command: |
+    tachometer-scraper --config <output>/logs/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120
+
+## benchmark
+nodelist: node-01
+output: <output>/logs/benchmark.out
+container_image: sglang
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    SRTCTL_FRONTEND_TYPE: dynamo
+    SRT_FRONTEND_HOST: 127.0.0.1
+    SRT_FRONTEND_PORT: 8000
+command: |
+    bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 128 128 4 inf /model model false 8 0 0 0.8 10 2 '' true random '' false

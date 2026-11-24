@@ -860,6 +860,18 @@
           "description": "Cargo dependency replacements applied tree-wide before the build.",
           "default": null
         },
+        "router_plugin_crate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Rust crate of custom router plugins (worker-selection policies, request classifiers) to link into the Dynamo frontend built from ``git``. A path under srtctl's ``configs/`` directory, or an absolute path inside the container. The crate exposes ``pub fn register(&mut RouterPluginRegistry)``; select its policy types with ``frontend.worker_selection``. The build cache is keyed by the crate's contents, so an edited crate is rebuilt on the next job.",
+          "default": null
+        },
         "pypi": {
           "anyOf": [
             {
