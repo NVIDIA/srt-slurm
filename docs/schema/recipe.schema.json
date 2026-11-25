@@ -642,6 +642,178 @@
       },
       "description": "Benchmark configuration."
     },
+    "ChaosConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChaosEventConfig"
+          },
+          "description": "Ordered list of fault events to execute during the benchmark.",
+          "default": []
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional RNG seed for deterministic ``select: random`` and ``rank: random`` selection.",
+          "default": null
+        },
+        "hot_metric": {
+          "type": "string",
+          "description": "Primary Prometheus metric scraped from candidate workers when resolving ``select: hottest``. Falls back to engine running-request gauges, then worker index order.",
+          "default": "dynamo_component_inflight_requests"
+        }
+      },
+      "description": "Concurrent fault injection timeline executed while the benchmark runs."
+    },
+    "ChaosEventConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "kill_worker",
+            "kill_process",
+            "stall_process",
+            "rolling_replace"
+          ],
+          "description": "Fault action to run: ``kill_worker`` (signal the worker step), ``kill_process`` (signal matched engine/rank subprocesses on the worker node), ``stall_process`` (SIGSTOP, verify ``/proc/<pid>/stat`` state ``T``, hold, then SIGCONT), or ``rolling_replace`` (replace all workers of ``role`` in sliding ``max_unavailable`` waves)."
+        },
+        "after_seconds": {
+          "type": "number",
+          "description": "Delay in seconds after the previous event (or benchmark start for the first event) before running this event.",
+          "default": 0.0
+        },
+        "role": {
+          "enum": [
+            "prefill",
+            "decode",
+            "agg"
+          ],
+          "description": "Worker role to target (``prefill``, ``decode``, or ``agg``).",
+          "default": "agg"
+        },
+        "select": {
+          "enum": [
+            "index",
+            "random",
+            "hottest",
+            "all"
+          ],
+          "description": "Target selection mode within ``role`` (``index``, ``random``, ``hottest``, or ``all``). Used by ``kill_worker``, ``kill_process``, and ``stall_process``.",
+          "default": "index"
+        },
+        "indices": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Zero-based worker indices within ``role`` used when ``select: index``."
+        },
+        "count": {
+          "type": "integer",
+          "description": "Number of workers to pick when ``select`` is ``hottest`` or ``random``.",
+          "default": 1
+        },
+        "target": {
+          "enum": [
+            "main",
+            "engine",
+            "worker"
+          ],
+          "description": "Semantic process target (``main``, ``engine``, or ``worker``) resolved from the role backend's ``fault_process_targets`` for ``kill_process`` and ``stall_process``. Ignored when ``process_name`` is set.",
+          "default": "worker"
+        },
+        "process_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicit cmdline substring matched on the worker node for ``kill_process`` or ``stall_process``, overriding ``target``.",
+          "default": null
+        },
+        "rank": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "enum": [
+                "random",
+                "all"
+              ]
+            }
+          ],
+          "description": "Which matched process rank (sorted by PID) to signal inside each targeted worker: a zero-based integer index, ``random``, or ``all``.",
+          "default": 0
+        },
+        "signal": {
+          "type": "string",
+          "description": "Signal sent by ``kill_worker`` or ``kill_process`` (e.g. ``KILL``, ``TERM``, ``SIGKILL``).",
+          "default": "KILL"
+        },
+        "duration_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Hold duration in seconds for ``stall_process`` before sending ``SIGCONT``. Omit to hold until the benchmark finishes and teardown resumes the process.",
+          "default": null
+        },
+        "respawn": {
+          "type": "boolean",
+          "description": "When true on ``kill_worker`` or ``kill_process``, hand the targeted endpoint to the worker supervisor so it relaunches in place even when ``roles.<role>.restart`` is ``never``.",
+          "default": false
+        },
+        "max_unavailable": {
+          "type": "integer",
+          "description": "Maximum number of worker endpoints taken down at once during ``rolling_replace``.",
+          "default": 1
+        },
+        "graceful": {
+          "type": "boolean",
+          "description": "When true on ``rolling_replace``, stop workers with ``SIGTERM`` instead of ``SIGKILL``.",
+          "default": true
+        },
+        "timeout_seconds": {
+          "type": "number",
+          "description": "Maximum time in seconds for ``rolling_replace`` to finish replacing and readying all workers of ``role``.",
+          "default": 600.0
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional label recorded in ``chaos_events.json``.",
+          "default": null
+        }
+      },
+      "description": "One scheduled fault injection event executed alongside the benchmark.",
+      "required": [
+        "type"
+      ]
+    },
     "CpuPowerConfig": {
       "type": "object",
       "additionalProperties": false,
@@ -2047,6 +2219,10 @@
           "$ref": "#/$defs/HostSetupConfig",
           "description": "Commands run on each node's bare host, outside the container, before any worker starts. Cluster-wide default lives in srtslurm.yaml as default_host_setup; a recipe that sets this block replaces that default."
         },
+        "chaos": {
+          "$ref": "#/$defs/ChaosConfig",
+          "description": "Concurrent fault injection timeline (kill/stall/rolling replace) run alongside the benchmark; recorded in `chaos_events.json`. See docs/chaos.md."
+        },
         "services": {
           "type": "array",
           "items": {
@@ -2271,6 +2447,10 @@
         "host_setup": {
           "$ref": "#/$defs/HostSetupConfig",
           "description": "Commands run on each node's bare host, outside the container, before any worker starts. Cluster-wide default lives in srtslurm.yaml as default_host_setup; a recipe that sets this block replaces that default."
+        },
+        "chaos": {
+          "$ref": "#/$defs/ChaosConfig",
+          "description": "Concurrent fault injection timeline (kill/stall/rolling replace) run alongside the benchmark; recorded in `chaos_events.json`. See docs/chaos.md."
         },
         "services": {
           "type": "array",

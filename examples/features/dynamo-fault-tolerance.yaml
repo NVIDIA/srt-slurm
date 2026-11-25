@@ -1,0 +1,106 @@
+# Dynamo fault tolerance, in-flight request migration, KV routing, and worker restart.
+#
+# Runs two TP1 SGLang workers behind the Dynamo frontend with:
+# - KV-aware routing (`router-mode: kv`) and worker KV-cache event publishing (`kv_events: true`)
+# - In-flight request migration (`migration-limit: 5`) so active requests migrate off a dying worker
+# - Automatic worker relaunch (`roles.agg.restart: on-failure`) via WorkerSupervisor
+# - Tachometer Prometheus collection (`observability.enabled: true`)
+# - Concurrent `chaos:` timeline exercising:
+#     1. `kill_worker` on the hottest worker (tests migration + failover + automatic respawn)
+#     2. `stall_process` on a random worker's scheduler (tests SIGSTOP/SIGCONT stall recovery)
+#     3. `kill_process` on rank 0 of a worker (tests subprocess crash detection + respawn)
+#     4. `rolling_replace` with `max_unavailable: 1` (tests graceful rolling replacement under load)
+#
+# Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-dynamo-fault-tolerance"
+
+slurm:
+  time_limit: "00:45:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+
+dynamo:
+  source:
+    pypi: "1.4.2"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: "kv"
+    migration-limit: 5
+
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    gpus: 1
+    kv_events: true
+    restart:
+      policy: on-failure
+      max_restarts: 6
+      backoff_seconds: 5
+      max_backoff_seconds: 30
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      context-length: 4096
+      disable-piecewise-cuda-graph: true
+
+observability:
+  enabled: true
+
+benchmark:
+  type: "sa-bench"
+  stream_output: true
+  isl: 256
+  osl: 128
+  concurrencies: "16"
+
+chaos:
+  seed: 42
+  events:
+    - name: "kill-hottest-worker"
+      after_seconds: 45
+      type: kill_worker
+      role: agg
+      select: hottest
+      signal: KILL
+      respawn: true
+    - name: "stall-scheduler"
+      after_seconds: 90
+      type: stall_process
+      role: agg
+      select: random
+      target: worker
+      rank: 0
+      duration_seconds: 15
+    - name: "kill-scheduler-rank0"
+      after_seconds: 45
+      type: kill_process
+      role: agg
+      select: hottest
+      target: worker
+      rank: 0
+      signal: KILL
+      respawn: true
+    - name: "rolling-replace-graceful"
+      after_seconds: 90
+      type: rolling_replace
+      role: agg
+      max_unavailable: 1
+      graceful: true
+      timeout_seconds: 300

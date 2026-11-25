@@ -477,11 +477,14 @@ class BenchmarkStageMixin:
         for proc in tachometer_procs:
             registry.add_process(proc)
 
-        # Run the benchmark script
+        # Run the benchmark script (and optional concurrent chaos timeline)
         benchmark_log = self.runtime.log_dir / "benchmark.out"
+        chaos_runner = self._start_chaos_runner(registry, stop_event)
         try:
             exit_code = self._run_benchmark_script(runner, benchmark_log, stop_event)
         finally:
+            if chaos_runner is not None:
+                chaos_runner.stop()
             if tachometer_procs:
                 cast("TelemetryStageMixin", self).stop_tachometer(tachometer_procs)
 
@@ -491,6 +494,44 @@ class BenchmarkStageMixin:
             logger.info("Benchmark completed successfully")
 
         return exit_code
+
+    def _start_chaos_runner(
+        self,
+        registry: "ProcessRegistry",
+        stop_event: threading.Event,
+    ):
+        """Start the concurrent chaos fault timeline if ``config.chaos`` has events."""
+        from collections import defaultdict
+
+        from srtctl.chaos import ChaosRunner
+        from srtctl.core.schema import ChaosConfig
+
+        chaos = getattr(self.config, "chaos", None)
+        if not isinstance(chaos, ChaosConfig) or not chaos.enabled:
+            return None
+
+        endpoint_groups_fn = getattr(self, "worker_endpoint_groups", None)
+        if endpoint_groups_fn is not None:
+            endpoint_groups = endpoint_groups_fn()
+        else:
+            grouped: dict[tuple[str, int, int], list[Process]] = defaultdict(list)
+            for process in self.backend_processes:
+                grouped[(process.endpoint_mode, process.endpoint_index, getattr(process, "engine_id", 0))].append(
+                    process
+                )
+            endpoint_groups = dict(grouped)
+
+        chaos_runner = ChaosRunner(
+            chaos=chaos,
+            config=self.config,
+            runtime=self.runtime,
+            registry=registry,
+            supervisor=getattr(self, "_supervisor", None),
+            endpoint_groups=endpoint_groups,
+            stop_event=stop_event,
+        )
+        chaos_runner.start()
+        return chaos_runner
 
     def _run_benchmark_script(
         self,

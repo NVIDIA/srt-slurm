@@ -34,6 +34,7 @@ Top-level keys of a recipe YAML.
 | `enable_config_dump` | bool | `True` | Accepted for compatibility; srtctl does not read it. Workers dump their config where the engine supports it. |
 | `setup_script` | str \| None | `None` | Custom setup script (runs before dynamo install and worker startup) e.g. "custom-setup.sh" -> runs /configs/custom-setup.sh |
 | `host_setup` | [HostSetupConfig](#hostsetupconfig) | `HostSetupConfig()` | Commands run on each node's bare host, outside the container, before any worker starts. Cluster-wide default lives in srtslurm.yaml as default_host_setup; a recipe that sets this block replaces that default. |
+| `chaos` | [ChaosConfig](#chaosconfig) | `ChaosConfig()` | Concurrent fault injection timeline (kill/stall/rolling replace) run alongside the benchmark; recorded in `chaos_events.json`. See docs/chaos.md. |
 | `services` | list[[ServiceConfig](#serviceconfig)] | `[]` | Long-running processes launched next to the job: generic sidecars (an experimental router built from a PR) and typed ones (a standalone Mooncake store per worker node). See docs/services.md. |
 | `post_eval` | [PostEvalConfig](#postevalconfig) | `PostEvalConfig()` | Post-benchmark / eval-only evaluation dispatch: extra env forwarded into the eval process and an optional command override. Replaces the downstream source patch that used to extend the passthrough list in do_sweep.py. |
 | `identity` | [IdentityConfig](#identityconfig) | `IdentityConfig()` | Virtual identity — declares what *should* be running (verified against fingerprint) |
@@ -323,6 +324,16 @@ Commands run on the bare host of each allocated node, outside the container.
 | `ignore_failure` | bool | `False` | When True, a failing node logs a warning instead of failing the job. |
 | `timeout_seconds` | int | `300` | Per-node wall-clock budget for commands and for teardown. |
 
+### ChaosConfig
+
+Concurrent fault injection timeline executed while the benchmark runs.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `events` | list[[ChaosEventConfig](#chaoseventconfig)] | `[]` | Ordered list of fault events to execute during the benchmark. |
+| `seed` | int \| None | `None` | Optional RNG seed for deterministic ``select: random`` and ``rank: random`` selection. |
+| `hot_metric` | str | `'dynamo_component_inflight_requests'` | Primary Prometheus metric scraped from candidate workers when resolving ``select: hottest``. Falls back to engine running-request gauges, then worker index order. |
+
 ### ServiceConfig
 
 One entry of the top-level ``services:`` list.
@@ -505,6 +516,29 @@ Host-side CPU power collection on every worker node.
 | `startup_timeout_seconds` | float | `30.0` | How long to wait for every node's collector to publish its ready marker before giving up on readiness. |
 | `required` | bool | `False` | Fail the job when the leg does not become ready or does not produce a valid publication. |
 | `storage_subdir` | str | `'cpu_power'` | Directory below the run log directory that holds the CPU samples and manifest. Must differ from ``telemetry.storage_subdir``. |
+
+### ChaosEventConfig
+
+One scheduled fault injection event executed alongside the benchmark.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `type` | one of `'kill_worker'`, `'kill_process'`, `'stall_process'`, `'rolling_replace'` | required | Fault action to run: ``kill_worker`` (signal the worker step), ``kill_process`` (signal matched engine/rank subprocesses on the worker node), ``stall_process`` (SIGSTOP, verify ``/proc/<pid>/stat`` state ``T``, hold, then SIGCONT), or ``rolling_replace`` (replace all workers of ``role`` in sliding ``max_unavailable`` waves). |
+| `after_seconds` | float | `0.0` | Delay in seconds after the previous event (or benchmark start for the first event) before running this event. |
+| `role` | one of `'prefill'`, `'decode'`, `'agg'` | `'agg'` | Worker role to target (``prefill``, ``decode``, or ``agg``). |
+| `select` | one of `'index'`, `'random'`, `'hottest'`, `'all'` | `'index'` | Target selection mode within ``role`` (``index``, ``random``, ``hottest``, or ``all``). Used by ``kill_worker``, ``kill_process``, and ``stall_process``. |
+| `indices` | list[int] | `<lambda>()` | Zero-based worker indices within ``role`` used when ``select: index``. |
+| `count` | int | `1` | Number of workers to pick when ``select`` is ``hottest`` or ``random``. |
+| `target` | one of `'main'`, `'engine'`, `'worker'` | `'worker'` | Semantic process target (``main``, ``engine``, or ``worker``) resolved from the role backend's ``fault_process_targets`` for ``kill_process`` and ``stall_process``. Ignored when ``process_name`` is set. |
+| `process_name` | str \| None | `None` | Explicit cmdline substring matched on the worker node for ``kill_process`` or ``stall_process``, overriding ``target``. |
+| `rank` | int \| one of `'random'`, `'all'` | `0` | Which matched process rank (sorted by PID) to signal inside each targeted worker: a zero-based integer index, ``random``, or ``all``. |
+| `signal` | str | `'KILL'` | Signal sent by ``kill_worker`` or ``kill_process`` (e.g. ``KILL``, ``TERM``, ``SIGKILL``). |
+| `duration_seconds` | float \| None | `None` | Hold duration in seconds for ``stall_process`` before sending ``SIGCONT``. Omit to hold until the benchmark finishes and teardown resumes the process. |
+| `respawn` | bool | `False` | When true on ``kill_worker`` or ``kill_process``, hand the targeted endpoint to the worker supervisor so it relaunches in place even when ``roles.<role>.restart`` is ``never``. |
+| `max_unavailable` | int | `1` | Maximum number of worker endpoints taken down at once during ``rolling_replace``. |
+| `graceful` | bool | `True` | When true on ``rolling_replace``, stop workers with ``SIGTERM`` instead of ``SIGKILL``. |
+| `timeout_seconds` | float | `600.0` | Maximum time in seconds for ``rolling_replace`` to finish replacing and readying all workers of ``role``. |
+| `name` | str \| None | `None` | Optional label recorded in ``chaos_events.json``. |
 
 ### SourceConfig
 

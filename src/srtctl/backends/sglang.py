@@ -138,6 +138,11 @@ class SGLangBackend(Backend):
         ProcessGroup("sglang_detokenizer", cmdline=("sglang::detokenizer",)),
         ProcessGroup("dynamo_sglang", cmdline=(r"dynamo\.sglang",)),
     )
+    fault_process_targets: ClassVar[Mapping[str, str]] = {
+        "main": "dynamo.sglang",
+        "engine": "sglang::scheduler",
+        "worker": "sglang::scheduler",
+    }
 
     # Mooncake KV store - launches mooncake_master on infra node and injects
     # MOONCAKE_MASTER env var on all workers automatically

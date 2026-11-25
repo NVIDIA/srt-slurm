@@ -291,6 +291,11 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
         ("srtctl.cli.mixins.benchmark_stage.start_srun_process", _fake_srun),
         ("srtctl.cli.mixins.postprocess_stage.start_srun_process", _fake_srun),
         ("srtctl.cli.mixins.service_stage.start_srun_process", _fake_srun),
+        ("srtctl.chaos.actions.start_srun_process", _fake_srun),
+        ("srtctl.chaos.actions.list_step_ids", lambda *args, **kwargs: None),
+        ("srtctl.chaos.actions.signal_step", lambda *args, **kwargs: False),
+        ("srtctl.chaos.targets.scrape_prometheus_text", lambda *args, **kwargs: None),
+        ("srtctl.chaos.runner.scrape_prometheus_text", lambda *args, **kwargs: None),
         # Node release before post-processing (srtslurm.yaml release_nodes_before_postprocess).
         ("srtctl.cli.mixins.postprocess_stage.get_batch_host", _fake_batch_host),
         ("srtctl.cli.mixins.postprocess_stage.shrink_job_allocation", _fake_shrink),
@@ -313,6 +318,7 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
         ("srtctl.frontends.static_router.get_hostname_ip", _fake_hostname_ip),
         ("srtctl.frontends.trtllm_serve.get_hostname_ip", _fake_hostname_ip),
         ("srtctl.cli.mixins.worker_stage.get_hostname_ip", _fake_hostname_ip),
+        ("srtctl.chaos.targets.get_hostname_ip", _fake_hostname_ip),
         ("srtctl.core.power.session.get_hostname_ip", _fake_hostname_ip),
         ("srtctl.core.power.cpu_session.get_hostname_ip", _fake_hostname_ip),
         # Port / model readiness checks.

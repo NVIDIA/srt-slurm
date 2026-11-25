@@ -435,6 +435,19 @@ class ProcessRegistry:
             if reason is not None:
                 self._failure_reasons[name] = reason
 
+    def set_critical(self, name: str, critical: bool) -> bool:
+        """Update ``ManagedProcess.critical`` for a single registered process under the registry lock.
+
+        Used before an intentional fault on a specific worker so that worker's
+        exit does not abort the job while surviving workers remain critical.
+        """
+        with self._lock:
+            proc = self._processes.get(name)
+            if proc is None:
+                return False
+            proc.critical = critical
+            return True
+
     @property
     def has_failures(self) -> bool:
         """Whether ``check_failures`` has recorded a critical failure, without scanning again.

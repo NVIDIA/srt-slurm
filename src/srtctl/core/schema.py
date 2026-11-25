@@ -378,6 +378,144 @@ class HostSetupConfig:
         return bool(self.commands or self.teardown)
 
 
+ChaosEventType = Literal["kill_worker", "kill_process", "stall_process", "rolling_replace"]
+ChaosSelectMode = Literal["index", "random", "hottest", "all"]
+ChaosProcessTarget = Literal["main", "engine", "worker"]
+
+
+@dataclass(frozen=True)
+class ChaosEventConfig:
+    """One scheduled fault injection event executed alongside the benchmark.
+
+    Attributes:
+        type: Fault action to run: ``kill_worker`` (signal the worker step),
+            ``kill_process`` (signal matched engine/rank subprocesses on the
+            worker node), ``stall_process`` (SIGSTOP, verify ``/proc/<pid>/stat``
+            state ``T``, hold, then SIGCONT), or ``rolling_replace`` (replace all
+            workers of ``role`` in sliding ``max_unavailable`` waves).
+        after_seconds: Delay in seconds after the previous event (or benchmark
+            start for the first event) before running this event.
+        role: Worker role to target (``prefill``, ``decode``, or ``agg``).
+        select: Target selection mode within ``role`` (``index``, ``random``,
+            ``hottest``, or ``all``). Used by ``kill_worker``, ``kill_process``,
+            and ``stall_process``.
+        indices: Zero-based worker indices within ``role`` used when
+            ``select: index``.
+        count: Number of workers to pick when ``select`` is ``hottest`` or
+            ``random``.
+        target: Semantic process target (``main``, ``engine``, or ``worker``)
+            resolved from the role backend's ``fault_process_targets`` for
+            ``kill_process`` and ``stall_process``. Ignored when ``process_name``
+            is set.
+        process_name: Explicit cmdline substring matched on the worker node for
+            ``kill_process`` or ``stall_process``, overriding ``target``.
+        rank: Which matched process rank (sorted by PID) to signal inside each
+            targeted worker: a zero-based integer index, ``random``, or ``all``.
+        signal: Signal sent by ``kill_worker`` or ``kill_process`` (e.g.
+            ``KILL``, ``TERM``, ``SIGKILL``).
+        duration_seconds: Hold duration in seconds for ``stall_process`` before
+            sending ``SIGCONT``. Omit to hold until the benchmark finishes and
+            teardown resumes the process.
+        respawn: When true on ``kill_worker`` or ``kill_process``, hand the
+            targeted endpoint to the worker supervisor so it relaunches in place
+            even when ``roles.<role>.restart`` is ``never``.
+        max_unavailable: Maximum number of worker endpoints taken down at once
+            during ``rolling_replace``.
+        graceful: When true on ``rolling_replace``, stop workers with ``SIGTERM``
+            instead of ``SIGKILL``.
+        timeout_seconds: Maximum time in seconds for ``rolling_replace`` to
+            finish replacing and readying all workers of ``role``.
+        name: Optional label recorded in ``chaos_events.json``.
+    """
+
+    type: ChaosEventType
+    after_seconds: float = 0.0
+    role: WorkerMode = "agg"
+    select: ChaosSelectMode = "index"
+    indices: list[int] = field(default_factory=lambda: [0])
+    count: int = 1
+    target: ChaosProcessTarget = "worker"
+    process_name: str | None = None
+    rank: int | Literal["random", "all"] = 0
+    signal: str = "KILL"
+    duration_seconds: float | None = None
+    respawn: bool = False
+    max_unavailable: int = 1
+    graceful: bool = True
+    timeout_seconds: float = 600.0
+    name: str | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def normalized_signal(self) -> str:
+        """Signal name without a leading ``SIG`` prefix (uppercase)."""
+        raw = self.signal.strip().upper()
+        return raw.removeprefix("SIG")
+
+    def __post_init__(self) -> None:
+        import signal as _signal
+
+        if isinstance(self.after_seconds, bool) or not math.isfinite(self.after_seconds) or self.after_seconds < 0:
+            raise ValidationError(f"chaos event after_seconds must be finite and >= 0, got {self.after_seconds!r}")
+        if self.count < 1:
+            raise ValidationError(f"chaos event count must be >= 1, got {self.count}")
+        if self.select == "index":
+            if not self.indices:
+                raise ValidationError("chaos event indices must be non-empty when select is 'index'")
+            for idx in self.indices:
+                if isinstance(idx, bool) or idx < 0:
+                    raise ValidationError(f"chaos event indices must be non-negative integers, got {idx!r}")
+        if isinstance(self.rank, bool) or (isinstance(self.rank, int) and self.rank < 0):
+            raise ValidationError(f"chaos event rank must be >= 0, 'random', or 'all', got {self.rank!r}")
+        if self.process_name is not None and not self.process_name.strip():
+            raise ValidationError("chaos event process_name must be non-empty when set")
+        sig = self.normalized_signal
+        if not sig or not hasattr(_signal, f"SIG{sig}"):
+            raise ValidationError(f"chaos event signal {self.signal!r} is not a recognized POSIX signal")
+        if self.duration_seconds is not None and not _is_finite_positive(self.duration_seconds):
+            raise ValidationError(
+                f"chaos event duration_seconds must be finite and > 0 when set, got {self.duration_seconds!r}"
+            )
+        if self.max_unavailable < 1:
+            raise ValidationError(f"chaos event max_unavailable must be >= 1, got {self.max_unavailable}")
+        if not _is_finite_positive(self.timeout_seconds):
+            raise ValidationError(f"chaos event timeout_seconds must be finite and > 0, got {self.timeout_seconds!r}")
+
+
+@dataclass(frozen=True)
+class ChaosConfig:
+    """Concurrent fault injection timeline executed while the benchmark runs.
+
+    Events run in order on a background thread once the deployment is healthy
+    and the benchmark starts. Each event is recorded with UTC timestamps and
+    target details in ``chaos_events.json`` inside the run's log directory.
+
+    Attributes:
+        events: Ordered list of fault events to execute during the benchmark.
+        seed: Optional RNG seed for deterministic ``select: random`` and
+            ``rank: random`` selection.
+        hot_metric: Primary Prometheus metric scraped from candidate workers
+            when resolving ``select: hottest``. Falls back to engine
+            running-request gauges, then worker index order.
+    """
+
+    events: list[ChaosEventConfig] = field(default_factory=list)
+    seed: int | None = None
+    hot_metric: str = "dynamo_component_inflight_requests"
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if not self.hot_metric.strip():
+            raise ValidationError("chaos.hot_metric must be non-empty")
+
+    @property
+    def enabled(self) -> bool:
+        """True when at least one chaos event is configured."""
+        return bool(self.events)
+
+
 @dataclass
 class ClusterConfig:
     """Cluster configuration from srtslurm.yaml."""
@@ -2951,6 +3089,10 @@ class SrtConfig:
     # default_host_setup; a recipe that sets this block replaces that default.
     host_setup: HostSetupConfig = field(default_factory=HostSetupConfig)
 
+    # Concurrent fault injection timeline (kill/stall/rolling replace) run
+    # alongside the benchmark; recorded in `chaos_events.json`. See docs/chaos.md.
+    chaos: ChaosConfig = field(default_factory=ChaosConfig)
+
     # Long-running processes launched next to the job: generic sidecars (an
     # experimental router built from a PR) and typed ones (a standalone Mooncake
     # store per worker node). See docs/services.md.
@@ -3003,6 +3145,7 @@ class SrtConfig:
         self._validate_dynamo_sidecar()
         self._validate_vllm_failover()
         self._validate_host_setup()
+        self._validate_chaos()
         self._validate_benchmark_type()
         self._validate_services_only()
         self._validate_services()
@@ -3345,6 +3488,40 @@ class SrtConfig:
                 "teardown will still run after the job, which is only what you want "
                 "if something outside this recipe set the node state"
             )
+
+    def _validate_chaos(self) -> None:
+        """Validate chaos fault-injection events against the recipe's active roles and backends."""
+        if not self.chaos.enabled:
+            return
+        if not self.roles:
+            raise ValidationError("chaos.events requires at least one worker role in roles:")
+        worker_counts: dict[str, int] = {
+            "prefill": self.topology.num_prefill,
+            "decode": self.topology.num_decode,
+            "agg": self.topology.num_agg,
+        }
+        for i, event in enumerate(self.chaos.events):
+            prefix = f"chaos.events[{i}]"
+            num_workers = worker_counts.get(event.role, 0)
+            if event.role not in self.roles or num_workers < 1:
+                active = ", ".join(sorted(r for r, c in worker_counts.items() if c > 0)) or "none"
+                raise ValidationError(
+                    f"{prefix}.role={event.role!r} has no workers in this recipe (active roles: {active})"
+                )
+            if event.type != "rolling_replace" and event.select == "index":
+                bad = [idx for idx in event.indices if idx >= num_workers]
+                if bad:
+                    raise ValidationError(
+                        f"{prefix}.indices={bad} out of range for role {event.role!r} "
+                        f"with {num_workers} worker(s) (valid: 0..{num_workers - 1})"
+                    )
+            if event.type in ("kill_process", "stall_process") and event.process_name is None:
+                role_backend = self.backend_for_role(event.role)
+                if not role_backend.fault_process_target(event.target):
+                    raise ValidationError(
+                        f"{prefix}.target={event.target!r} has no default process pattern for engine "
+                        f"{role_backend.type!r}; set {prefix}.process_name explicitly"
+                    )
 
     def _validate_vllm_router_connector(self) -> None:
         """Discovery and bootstrap connectors need the vLLM Router's transfer metadata."""

@@ -560,6 +560,50 @@ def show_config_details(config: SrtConfig) -> None:
                 "outlives this allocation and is inherited by the next job on these nodes."
             )
 
+    # --- Chaos fault injection (runs concurrently alongside the benchmark) ---
+    if config.chaos.enabled:
+        chaos_table = Table(title="Chaos Fault Injection", show_lines=False, pad_edge=False)
+        chaos_table.add_column("#", style="dim", width=3, justify="right")
+        chaos_table.add_column("After", style="cyan", width=8, justify="right")
+        chaos_table.add_column("Type", style="yellow", width=16)
+        chaos_table.add_column("Role", style="white", width=8)
+        chaos_table.add_column("Target / Options", style="white")
+        for idx, ev in enumerate(config.chaos.events):
+            if ev.type == "rolling_replace":
+                detail = (
+                    f"max_unavailable={ev.max_unavailable} "
+                    f"{'graceful' if ev.graceful else 'force'} timeout={ev.timeout_seconds:g}s"
+                )
+            else:
+                sel = (
+                    f"index={ev.indices}"
+                    if ev.select == "index"
+                    else f"{ev.select}({ev.count})"
+                    if ev.select in ("hottest", "random")
+                    else "all"
+                )
+                parts = [sel]
+                if ev.type in ("kill_process", "stall_process"):
+                    proc = ev.process_name or f"target={ev.target}"
+                    parts.append(f"{proc} rank={ev.rank}")
+                if ev.type in ("kill_worker", "kill_process"):
+                    parts.append(f"SIG{ev.normalized_signal}")
+                    if ev.respawn:
+                        parts.append("respawn")
+                elif ev.type == "stall_process":
+                    parts.append(
+                        f"duration={ev.duration_seconds:g}s" if ev.duration_seconds is not None else "hold-until-end"
+                    )
+                detail = " ".join(parts)
+            label = f" [{ev.name}]" if ev.name else ""
+            chaos_table.add_row(str(idx), f"+{ev.after_seconds:g}s", ev.type, ev.role, detail + label)
+        console.print(Panel(chaos_table, border_style="red"))
+        seed_note = f" seed={config.chaos.seed}" if config.chaos.seed is not None else ""
+        console.print(
+            f"[dim]chaos:[/] {len(config.chaos.events)} event(s) -> chaos_events.json "
+            f"(hot_metric={config.chaos.hot_metric}{seed_note})"
+        )
+
     # --- Node release before post-processing (srtslurm.yaml) ---
     if get_srtslurm_setting("release_nodes_before_postprocess", False):
         console.print(

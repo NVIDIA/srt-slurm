@@ -86,6 +86,7 @@ nav:
           - Mooncake KV Store: mooncake-kv-store.md
       - Config Overrides: overrides.md
       - Parameter Sweeps: sweeps.md
+      - Chaos Fault Injection: chaos.md
       - Workloads:
           - Native Sidecars: sidecars.md
           - TileRT: tilert.md

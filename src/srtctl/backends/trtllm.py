@@ -371,6 +371,11 @@ class TRTLLMBackend(Backend):
         ProcessGroup("dynamo_trtllm", cmdline=(r"dynamo\.trtllm",)),
         ProcessGroup("trtllm_serve", cmdline=("trtllm-serve",)),
     )
+    fault_process_targets: ClassVar[Mapping[str, str]] = {
+        "main": "dynamo.trtllm",
+        "engine": "tensorrt_llm.llmapi.mgmn_worker_node",
+        "worker": "tensorrt_llm.llmapi.mgmn_worker_node",
+    }
 
     def __post_init__(self) -> None:
         if self.numa_wrapper_policy is not None and not self.numa_cpu_bind:

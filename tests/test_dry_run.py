@@ -1579,3 +1579,46 @@ class TestRoleGpuIndices:
         show_config_details(config)
         output = " ".join(capsys.readouterr().out.split())
         assert "agg: gpu_indices=0,2 | 1,3 (CUDA_VISIBLE_DEVICES per worker; 2 worker(s) per node)" in output
+
+
+class TestChaosDryRun:
+    def test_chaos_events_appear_in_dry_run(self, capsys):
+        config = _make_config(
+            {
+                "engine": {"type": "mocker"},
+                "frontend": {"type": "dynamo", "enable_multiple_frontends": False},
+                "roles": {"agg": {"nodes": 1, "workers": 2}},
+                "chaos": {
+                    "seed": 7,
+                    "events": [
+                        {
+                            "name": "kill-hot",
+                            "after_seconds": 30,
+                            "type": "kill_worker",
+                            "role": "agg",
+                            "select": "hottest",
+                            "respawn": True,
+                        },
+                        {
+                            "after_seconds": 15,
+                            "type": "rolling_replace",
+                            "role": "agg",
+                            "max_unavailable": 1,
+                        },
+                    ],
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "Chaos Fault Injection" in output
+        assert "kill_worker" in output
+        assert "hottest(1)" in output
+        assert "rolling_replace" in output
+        assert "chaos_events.json" in output
+        assert "seed=7" in output
+
+    def test_chaos_panel_omitted_when_empty(self, capsys):
+        config = _make_config()
+        show_config_details(config)
+        assert "Chaos Fault Injection" not in capsys.readouterr().out

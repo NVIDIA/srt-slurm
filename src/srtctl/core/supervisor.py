@@ -120,6 +120,9 @@ class _EndpointState:
     # Steps of this endpoint sent SIGTERM that have not exited yet; the relaunch waits for them.
     stopping: list[ManagedProcess] = field(default_factory=list)
     settled: bool = False  # nothing more for the supervisor to do with this endpoint
+    # One-shot relaunch requested by chaos fault injection (honors exit code 0 and optional 0s backoff).
+    relaunch_once: bool = False
+    override_backoff_seconds: float | None = None
 
     @property
     def label(self) -> str:
@@ -211,6 +214,85 @@ class WorkerSupervisor:
                     policy.backoff_seconds,
                     policy.max_backoff_seconds,
                 )
+
+    def active_names(self, key: EndpointKey) -> list[str] | None:
+        """Current registry step names for ``key`` if supervised, else None."""
+        with self._lock:
+            state = self._endpoints.get(key)
+            return list(state.names) if state is not None else None
+
+    def ensure_relaunch(
+        self,
+        key: EndpointKey,
+        processes: list[Process],
+        names: list[str],
+        *,
+        backoff_seconds: float = 0.0,
+    ) -> int:
+        """Ensure the supervisor will relaunch ``key`` on its next exit and return its current restart count.
+
+        When ``key`` is already tracked under ``roles.<role>.restart``, this
+        keeps its existing state and guarantees room for one additional relaunch
+        (even on a clean exit code 0, e.g. graceful ``rolling_replace``). When
+        ``key`` is not yet tracked, it adopts the endpoint's live steps so the
+        relaunch reuses the same log rotation, ``_r<n>`` step naming, health
+        probing, and ``worker_restarts.json`` bookkeeping.
+        """
+        from dataclasses import replace
+
+        from srtctl.core.schema import RestartPolicy
+
+        with self._lock:
+            state = self._endpoints.get(key)
+            if state is None:
+                policy = RestartPolicy(
+                    policy="always",
+                    max_restarts=1,
+                    backoff_seconds=backoff_seconds,
+                    max_backoff_seconds=max(backoff_seconds, 1.0),
+                )
+                for name in names:
+                    proc = self.registry.get_process(name)
+                    if proc is not None:
+                        proc.supervised = True
+                state = _EndpointState(
+                    key=key,
+                    processes=list(processes),
+                    policy=policy,
+                    names=list(names),
+                    relaunch_once=True,
+                    override_backoff_seconds=backoff_seconds,
+                )
+                self._endpoints[key] = state
+                return 0
+
+            if state.policy.max_restarts <= state.restarts:
+                state.policy = replace(state.policy, max_restarts=state.restarts + 1)
+            for name in state.names:
+                proc = self.registry.get_process(name)
+                if proc is not None:
+                    proc.supervised = True
+            state.settled = False
+            state.relaunch_once = True
+            state.override_backoff_seconds = backoff_seconds
+            return state.restarts
+
+    def relaunch_status(self, key: EndpointKey, *, prev_restarts: int) -> tuple[bool, str | None]:
+        """Whether a relaunch past ``prev_restarts`` has finished (ready, relaunched, or failed)."""
+        with self._lock:
+            state = self._endpoints.get(key)
+            if state is None:
+                return True, "untracked"
+            if state.restarts <= prev_restarts:
+                if state.settled:
+                    return True, "exhausted"
+                return False, None
+            if state.due_at is not None or state.stopping:
+                return False, None
+            if state.ready_deadline is not None:
+                return False, None
+            outcome = state.pending.outcome if state.pending is not None else "relaunched"
+            return True, outcome
 
     # -------------------------------------------------------------- reporting
 
@@ -312,7 +394,8 @@ class WorkerSupervisor:
         exit_code = trigger.exit_code
         if fatal_line is not None and not exit_code:
             exit_code = 1  # a fatal marker is a failure whatever the stopped step returned
-        if not state.policy.restarts_on(exit_code):
+        requested = state.relaunch_once
+        if not requested and not state.policy.restarts_on(exit_code):
             # A clean exit under on-failure: not ours to relaunch. Hand the
             # endpoint back so the role's critical flag has the final say.
             logger.info(
@@ -371,7 +454,12 @@ class WorkerSupervisor:
             state.stopping = [proc for proc in running if proc.is_running]
 
         state.restarts += 1
-        delay = state.policy.backoff(state.restarts)
+        if state.override_backoff_seconds is not None:
+            delay = state.override_backoff_seconds
+        else:
+            delay = state.policy.backoff(state.restarts)
+        state.relaunch_once = False
+        state.override_backoff_seconds = None
         state.due_at = now + delay
         state.ready_deadline = None
         state.pending = RestartEvent(

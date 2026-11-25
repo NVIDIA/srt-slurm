@@ -1,0 +1,76 @@
+# Concurrent chaos fault injection alongside a benchmark on a Dynamo mocker cluster.
+#
+# Two aggregated workers behind Dynamo with `roles.agg.restart` enabled and a
+# `chaos:` timeline that kills the hottest worker, stalls a process, and runs a
+# rolling replacement while the benchmark runs. Events and timestamps land in
+# `logs/chaos_events.json`.
+#
+# Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-mocker-chaos"
+
+slurm:
+  time_limit: "00:20:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+
+dynamo:
+  source:
+    pypi: "1.4.2"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+
+engine:
+  type: mocker
+  engine_type: vllm
+  speedup_ratio: 100
+
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    restart:
+      policy: on-failure
+      max_restarts: 4
+      backoff_seconds: 5
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "8"
+
+chaos:
+  seed: 42
+  events:
+    - name: "kill-hottest"
+      after_seconds: 30
+      type: kill_worker
+      role: agg
+      select: hottest
+      signal: KILL
+      respawn: true
+    - name: "stall-worker"
+      after_seconds: 30
+      type: stall_process
+      role: agg
+      select: random
+      target: worker
+      duration_seconds: 15
+    - name: "rolling-replace"
+      after_seconds: 30
+      type: rolling_replace
+      role: agg
+      max_unavailable: 1
+      graceful: true
+      timeout_seconds: 300

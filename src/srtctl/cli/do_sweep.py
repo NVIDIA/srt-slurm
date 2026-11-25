@@ -822,6 +822,7 @@ class SweepOrchestrator(
         # The supervisor relaunches workers whose role has a restart policy; it
         # runs inside the monitor tick, ahead of the critical-failure check.
         supervisor = self.build_worker_supervisor(registry, stop_event)
+        self._supervisor = supervisor
         start_process_monitor(stop_event, registry, reconcile=supervisor.reconcile)
 
         exit_code = 1

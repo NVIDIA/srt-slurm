@@ -1,0 +1,530 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Unit and mock-orchestrator tests for concurrent chaos fault injection."""
+
+from __future__ import annotations
+
+import json
+import random
+import threading
+import time
+from pathlib import Path
+from subprocess import Popen
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+import yaml
+from marshmallow import ValidationError
+
+from srtctl.chaos import (
+    CHAOS_EVENTS_FILENAME,
+    ChaosRunner,
+    WorkerTarget,
+    parse_prometheus_metric,
+    resolve_worker_targets,
+)
+from srtctl.core.config import load_config
+from srtctl.core.processes import ManagedProcess, ProcessRegistry
+from srtctl.core.schema import ChaosConfig, ChaosEventConfig, SrtConfig
+from srtctl.core.supervisor import WorkerSupervisor
+from srtctl.core.topology import Process
+from srtctl.mock import MockOptions, run_mock_sweep
+
+
+def _base_recipe(**overrides) -> dict:
+    doc = {
+        "schema": 2,
+        "name": "chaos-unit-test",
+        "model": {"path": "/models/test", "container": "/containers/test.sqsh", "precision": "fp8"},
+        "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+        "frontend": {"type": "dynamo", "enable_multiple_frontends": False},
+        "engine": {"type": "mocker", "engine_type": "vllm", "speedup_ratio": 100},
+        "roles": {"agg": {"nodes": 1, "workers": 2}},
+        "benchmark": {"type": "custom", "command": "echo ok"},
+    }
+    doc.update(overrides)
+    return doc
+
+
+def _load_dict(doc: dict) -> SrtConfig:
+    return SrtConfig.Schema().load(doc)
+
+
+def _proc(mode: str = "agg", index: int = 0, node: str = "node0", sys_port: int = 9000) -> Process:
+    return Process(
+        node=node,
+        gpu_indices=frozenset({index}),
+        sys_port=sys_port + index,
+        http_port=8000 + index,
+        endpoint_mode=mode,  # type: ignore[arg-type]
+        endpoint_index=index,
+        node_rank=0,
+    )
+
+
+class _FakeStep:
+    def __init__(self, name: str, *, node: str = "node0", critical: bool = True):
+        self.code: int | None = None
+        popen = MagicMock(spec=Popen)
+        popen.pid = 5000 + abs(hash(name)) % 1000
+        popen.poll.side_effect = lambda: self.code
+        popen.wait.side_effect = self._wait
+        popen.terminate.side_effect = lambda: self.exit(-15)
+        popen.kill.side_effect = lambda: self.exit(-9)
+        self.popen = popen
+        self.managed = ManagedProcess(
+            name=name,
+            popen=popen,
+            node=node,
+            critical=critical,
+            step_name=name,
+            terminate_timeout=1.0,
+        )
+
+    def exit(self, code: int) -> None:
+        self.code = code
+
+    def _wait(self, timeout=None):
+        if self.code is None:
+            self.code = 0
+        return self.code
+
+
+class _FakeLauncher:
+    def __init__(self) -> None:
+        self.calls: list[tuple[tuple[str, int], int]] = []
+        self.steps: dict[str, _FakeStep] = {}
+
+    def relaunch_endpoint(self, endpoint_processes: list[Process], *, attempt: int) -> list[ManagedProcess]:
+        leader = endpoint_processes[0]
+        self.calls.append(((leader.endpoint_mode, leader.endpoint_index), attempt))
+        out = []
+        for process in endpoint_processes:
+            name = f"{process.endpoint_mode}_{process.endpoint_index}_{process.node}_r{attempt}"
+            step = _FakeStep(name, node=process.node)
+            self.steps[name] = step
+            out.append(step.managed)
+        return out
+
+    def worker_ready_probe(self, endpoint_processes: list[Process]) -> tuple[str, int] | None:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Schema validation
+# ---------------------------------------------------------------------------
+
+
+class TestChaosSchema:
+    def test_valid_chaos_events_load(self):
+        cfg = _load_dict(
+            _base_recipe(
+                chaos={
+                    "seed": 123,
+                    "events": [
+                        {
+                            "after_seconds": 10,
+                            "type": "kill_worker",
+                            "role": "agg",
+                            "select": "hottest",
+                            "respawn": True,
+                        },
+                        {
+                            "after_seconds": 5,
+                            "type": "kill_process",
+                            "role": "agg",
+                            "target": "worker",
+                            "rank": 1,
+                            "signal": "SIGKILL",
+                        },
+                        {
+                            "after_seconds": 5,
+                            "type": "stall_process",
+                            "role": "agg",
+                            "select": "random",
+                            "duration_seconds": 10,
+                        },
+                        {
+                            "after_seconds": 5,
+                            "type": "rolling_replace",
+                            "role": "agg",
+                            "max_unavailable": 1,
+                            "graceful": True,
+                        },
+                    ],
+                }
+            )
+        )
+        assert cfg.chaos.enabled is True
+        assert cfg.chaos.seed == 123
+        assert len(cfg.chaos.events) == 4
+        assert cfg.chaos.events[1].normalized_signal == "KILL"
+
+    def test_invalid_role_rejected(self):
+        with pytest.raises(ValidationError, match="has no workers"):
+            _load_dict(_base_recipe(chaos={"events": [{"type": "kill_worker", "role": "prefill"}]}))
+
+    def test_out_of_range_index_rejected(self):
+        with pytest.raises(ValidationError, match="out of range"):
+            _load_dict(_base_recipe(chaos={"events": [{"type": "kill_worker", "role": "agg", "indices": [2]}]}))
+
+    def test_invalid_signal_rejected(self):
+        with pytest.raises(ValidationError, match="not a recognized POSIX signal"):
+            _load_dict(_base_recipe(chaos={"events": [{"type": "kill_worker", "role": "agg", "signal": "BOGUS"}]}))
+
+    def test_negative_after_seconds_rejected(self):
+        with pytest.raises(ValidationError, match="after_seconds"):
+            _load_dict(_base_recipe(chaos={"events": [{"type": "kill_worker", "role": "agg", "after_seconds": -1}]}))
+
+    def test_unsupported_backend_target_requires_process_name(self):
+        doc = _base_recipe(
+            engine="tokenspeed",
+            frontend={"type": "dynamo", "enable_multiple_frontends": False},
+            roles={"agg": {"nodes": 1, "workers": 1, "gpus": 8}},
+            chaos={"events": [{"type": "stall_process", "role": "agg", "target": "worker"}]},
+        )
+        with pytest.raises(ValidationError, match="process_name"):
+            _load_dict(doc)
+
+        doc["chaos"]["events"][0]["process_name"] = "my_custom_worker"
+        cfg = _load_dict(doc)
+        assert cfg.chaos.events[0].process_name == "my_custom_worker"
+
+
+# ---------------------------------------------------------------------------
+# Target selection & Prometheus metric parsing
+# ---------------------------------------------------------------------------
+
+
+class TestTargetSelection:
+    def test_parse_prometheus_metric_sums_labeled_series(self):
+        text = (
+            "# HELP dynamo_component_inflight_requests Inflight\n"
+            "# TYPE dynamo_component_inflight_requests gauge\n"
+            'dynamo_component_inflight_requests{model="m",dp="0"} 4\n'
+            'dynamo_component_inflight_requests{model="m",dp="1"} 7.5\n'
+            "dynamo_component_inflight_requests_total 999\n"
+        )
+        assert parse_prometheus_metric(text, "dynamo_component_inflight_requests") == 11.5
+        assert parse_prometheus_metric(text, "missing_metric") is None
+
+    def test_hottest_picks_busiest_worker(self):
+        cfg = _load_dict(_base_recipe(roles={"agg": {"nodes": 1, "workers": 3}}))
+        runtime = SimpleNamespace(network_interface=None)
+        candidates = [
+            WorkerTarget(("agg", i, 0), "agg", i, (_proc("agg", i, f"node{i}"),), (f"agg_{i}_node{i}",))
+            for i in range(3)
+        ]
+        metrics_by_host = {
+            "10.0.0.0": "dynamo_component_inflight_requests 2\n",
+            "10.0.0.1": "dynamo_component_inflight_requests 18\n",
+            "10.0.0.2": "dynamo_component_inflight_requests 9\n",
+        }
+        event = ChaosEventConfig(type="kill_worker", role="agg", select="hottest", count=2)
+        with patch("srtctl.chaos.targets.get_hostname_ip", side_effect=lambda node, _iface=None: f"10.0.0.{node[-1]}"):
+            chosen, info = resolve_worker_targets(
+                event,
+                candidates,
+                config=cfg,
+                runtime=runtime,  # type: ignore[arg-type]
+                hot_metric="dynamo_component_inflight_requests",
+                rng=random.Random(0),
+                scraper=lambda url: next((txt for ip, txt in metrics_by_host.items() if ip in url), None),
+            )
+        assert [t.index for t in chosen] == [1, 2]
+        assert info["fallback"] is False
+        assert info["scores"]["agg_1"] == 18.0
+
+    def test_hottest_falls_back_to_index_order_when_metrics_absent(self):
+        cfg = _load_dict(_base_recipe())
+        runtime = SimpleNamespace(network_interface=None)
+        candidates = [
+            WorkerTarget(("agg", i, 0), "agg", i, (_proc("agg", i, f"node{i}"),), (f"agg_{i}_node{i}",))
+            for i in range(2)
+        ]
+        event = ChaosEventConfig(type="kill_worker", role="agg", select="hottest", count=1)
+        with patch("srtctl.chaos.targets.get_hostname_ip", return_value="10.0.0.1"):
+            chosen, info = resolve_worker_targets(
+                event,
+                candidates,
+                config=cfg,
+                runtime=runtime,  # type: ignore[arg-type]
+                hot_metric="dynamo_component_inflight_requests",
+                rng=random.Random(0),
+                scraper=lambda _url: None,
+            )
+        assert [t.index for t in chosen] == [0]
+        assert info["fallback"] is True
+
+    def test_random_selection_respects_seed(self):
+        cfg = _load_dict(_base_recipe(roles={"agg": {"nodes": 1, "workers": 4}}))
+        runtime = SimpleNamespace(network_interface=None)
+        candidates = [
+            WorkerTarget(("agg", i, 0), "agg", i, (_proc("agg", i, f"node{i}"),), (f"agg_{i}_node{i}",))
+            for i in range(4)
+        ]
+        event = ChaosEventConfig(type="kill_worker", role="agg", select="random", count=1)
+        a, _ = resolve_worker_targets(
+            event,
+            candidates,
+            config=cfg,
+            runtime=runtime,
+            hot_metric="m",
+            rng=random.Random(99),  # type: ignore[arg-type]
+        )
+        b, _ = resolve_worker_targets(
+            event,
+            candidates,
+            config=cfg,
+            runtime=runtime,
+            hot_metric="m",
+            rng=random.Random(99),  # type: ignore[arg-type]
+        )
+        assert a == b
+
+
+# ---------------------------------------------------------------------------
+# ProcessRegistry per-target critical + WorkerSupervisor integration
+# ---------------------------------------------------------------------------
+
+
+class TestFaultToleranceAndActions:
+    def test_kill_worker_marks_only_target_non_critical(self, tmp_path: Path):
+        cfg = _load_dict(_base_recipe())
+        runtime = SimpleNamespace(job_id="100", log_dir=tmp_path, network_interface=None)
+        registry = ProcessRegistry(job_id="100")
+        p0, p1 = _proc("agg", 0, "node0"), _proc("agg", 1, "node0")
+        s0, s1 = _FakeStep("agg_0_node0", node="node0"), _FakeStep("agg_1_node0", node="node0")
+        registry.add_process(s0.managed)
+        registry.add_process(s1.managed)
+
+        chaos = ChaosConfig(events=[ChaosEventConfig(type="kill_worker", role="agg", select="index", indices=[0])])
+        runner = ChaosRunner(
+            chaos=chaos,
+            config=cfg,
+            runtime=runtime,  # type: ignore[arg-type]
+            registry=registry,
+            supervisor=None,
+            endpoint_groups={("agg", 0, 0): [p0], ("agg", 1, 0): [p1]},
+            stop_event=threading.Event(),
+        )
+        with (
+            patch("srtctl.chaos.actions.list_step_ids", return_value=None),
+            patch("srtctl.chaos.actions.signal_step", return_value=False),
+        ):
+            runner.start()
+            runner.stop(timeout=5.0)
+
+        # Target exited without triggering a critical failure; surviving worker stays critical.
+        assert not s0.managed.is_running
+        assert s0.managed.critical is False
+        assert s1.managed.critical is True
+        assert registry.check_failures() is False
+
+        # An unintended crash on the surviving worker still fails the job.
+        s1.exit(137)
+        assert registry.check_failures() is True
+
+        recorded = json.loads((tmp_path / CHAOS_EVENTS_FILENAME).read_text())
+        assert len(recorded["events"]) == 1
+        assert recorded["events"][0]["status"] == "completed"
+        assert recorded["events"][0]["targets"] == ["agg_0"]
+
+    def test_kill_process_and_stall_process_with_teardown_resume(self, tmp_path: Path):
+        cfg = _load_dict(_base_recipe())
+        runtime = SimpleNamespace(job_id="101", log_dir=tmp_path, network_interface=None)
+        registry = ProcessRegistry(job_id="101")
+        p0 = _proc("agg", 0, "node0")
+        s0 = _FakeStep("agg_0_node0", node="node0")
+        registry.add_process(s0.managed)
+
+        calls: list[dict] = []
+
+        def fake_node_python(node, payload, *, log_dir, tag, het_group=None, timeout=30.0):
+            calls.append({"node": node, "tag": tag, "payload": payload})
+            if payload["signal"] == "STOP":
+                return {
+                    "matched": 2,
+                    "signalled": [{"pid": 777, "cmd": "dynamo.mocker"}],
+                    "verified_states": {"777": "T"},
+                    "errors": [],
+                }
+            if payload["signal"] == "CONT":
+                return {
+                    "matched": 1,
+                    "signalled": [{"pid": 777, "cmd": ""}],
+                    "verified_states": {"777": "S"},
+                    "errors": [],
+                }
+            return {
+                "matched": 2,
+                "signalled": [{"pid": 888, "cmd": "dynamo.mocker"}],
+                "verified_states": {},
+                "errors": [],
+            }
+
+        chaos = ChaosConfig(
+            events=[
+                ChaosEventConfig(type="stall_process", role="agg", target="worker", rank=1, duration_seconds=0.05),
+                ChaosEventConfig(type="kill_process", role="agg", target="worker", rank=1, signal="KILL"),
+            ]
+        )
+        runner = ChaosRunner(
+            chaos=chaos,
+            config=cfg,
+            runtime=runtime,  # type: ignore[arg-type]
+            registry=registry,
+            supervisor=None,
+            endpoint_groups={("agg", 0, 0): [p0]},
+            stop_event=threading.Event(),
+        )
+        with (
+            patch("srtctl.chaos.actions.list_step_ids", return_value={"agg_0_node0": "101.3"}),
+            patch("srtctl.chaos.actions.run_node_python", side_effect=fake_node_python),
+        ):
+            runner.start()
+            # Give the two fast events time to complete before stopping.
+            deadline = time.monotonic() + 5.0
+            while len(runner.records) < 2 or any(r.status == "running" for r in runner.records):
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+            runner.stop(timeout=5.0)
+
+        signals = [c["payload"]["signal"] for c in calls]
+        assert signals == ["STOP", "CONT", "KILL"]
+        assert calls[0]["payload"]["step_num"] == "3"
+        assert calls[0]["payload"]["rank"] == 1
+        assert all(r.status == "completed" for r in runner.records)
+
+    def test_rolling_replace_replaces_all_workers_via_supervisor(self, tmp_path: Path):
+        cfg = _load_dict(_base_recipe())
+        runtime = SimpleNamespace(job_id="102", log_dir=tmp_path, network_interface=None)
+        registry = ProcessRegistry(job_id="102")
+        stop = threading.Event()
+        launcher = _FakeLauncher()
+        supervisor = WorkerSupervisor(
+            registry=registry,
+            stop_event=stop,
+            launcher=launcher,
+            log_dir=tmp_path,
+            probe_interval=0.0,
+        )
+        p0, p1 = _proc("agg", 0, "node0"), _proc("agg", 1, "node0")
+        s0, s1 = _FakeStep("agg_0_node0", node="node0"), _FakeStep("agg_1_node0", node="node0")
+        registry.add_process(s0.managed)
+        registry.add_process(s1.managed)
+
+        # Drive supervisor.reconcile() in the background just like the process monitor does.
+        reconcile_done = threading.Event()
+
+        def reconcile_loop():
+            while not reconcile_done.is_set():
+                supervisor.reconcile()
+                time.sleep(0.02)
+
+        t = threading.Thread(target=reconcile_loop, daemon=True)
+        t.start()
+
+        chaos = ChaosConfig(
+            events=[
+                ChaosEventConfig(
+                    type="rolling_replace",
+                    role="agg",
+                    max_unavailable=1,
+                    graceful=True,
+                    timeout_seconds=10.0,
+                )
+            ]
+        )
+        runner = ChaosRunner(
+            chaos=chaos,
+            config=cfg,
+            runtime=runtime,  # type: ignore[arg-type]
+            registry=registry,
+            supervisor=supervisor,
+            endpoint_groups={("agg", 0, 0): [p0], ("agg", 1, 0): [p1]},
+            stop_event=stop,
+        )
+        try:
+            with (
+                patch("srtctl.chaos.actions.list_step_ids", return_value=None),
+                patch("srtctl.chaos.actions.signal_step", return_value=False),
+            ):
+                runner.start()
+                deadline = time.monotonic() + 5.0
+                while not runner.records or runner.records[0].status == "running":
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.05)
+                runner.stop(timeout=5.0)
+        finally:
+            reconcile_done.set()
+            t.join(timeout=2.0)
+
+        assert len(runner.records) == 1
+        rec = runner.records[0]
+        assert rec.status == "completed"
+        assert rec.details["total"] == 2
+        assert len(rec.details["replaced"]) == 2
+        assert rec.details["timed_out"] is False
+        assert sorted(k for k, _ in launcher.calls) == [("agg", 0), ("agg", 1)]
+        assert registry.get_process("agg_0_node0_r1") is not None
+        assert registry.get_process("agg_1_node0_r1") is not None
+
+
+# ---------------------------------------------------------------------------
+# End-to-end mock orchestrator acceptance test
+# ---------------------------------------------------------------------------
+
+
+def test_mock_sweep_runs_chaos_concurrently_and_writes_timeline(tmp_path: Path):
+    recipe_path = tmp_path / "chaos-recipe.yaml"
+    doc = _base_recipe(
+        model={"path": "hf:fake/mock-model", "container": "nvcr.io/fake:latest", "precision": "fp8"},
+        roles={"agg": {"nodes": 1, "workers": 2, "restart": {"policy": "on-failure", "backoff_seconds": 0}}},
+        chaos={
+            "seed": 1,
+            "events": [
+                {
+                    "name": "kill-agg-0",
+                    "after_seconds": 0.0,
+                    "type": "kill_worker",
+                    "role": "agg",
+                    "select": "index",
+                    "indices": [0],
+                    "respawn": True,
+                }
+            ],
+        },
+    )
+    recipe_path.write_text(yaml.safe_dump(doc, sort_keys=False))
+
+    # Validate load_config accepts the file cleanly.
+    loaded = load_config(recipe_path)
+    assert loaded.chaos.enabled is True
+
+    out_dir = tmp_path / "run_out"
+    rc = run_mock_sweep(
+        config_path=recipe_path,
+        output_dir=out_dir,
+        job_id="99901",
+        options=MockOptions(
+            child_duration_s=0.6,
+            phase_pause_s=0.0,
+            nodelist=("mock-node-01",),
+        ),
+    )
+    assert rc == 0
+
+    events_file = out_dir / "logs" / CHAOS_EVENTS_FILENAME
+    assert events_file.exists()
+    data = json.loads(events_file.read_text())
+    assert len(data["events"]) == 1
+    ev = data["events"][0]
+    assert ev["name"] == "kill-agg-0"
+    assert ev["status"] == "completed"
+    assert ev["targets"] == ["agg_0"]
+    assert ev["started_at_ns"] <= ev["ended_at_ns"]
