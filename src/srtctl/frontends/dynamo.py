@@ -145,6 +145,15 @@ class DynamoFrontend(DynamicFrontend):
     type: ClassVar[str] = "dynamo"
     # dynamo.<engine> workers register over the request plane; they bind no OpenAI port.
     worker_launch: ClassVar[Literal["dynamo", "direct"]] = "dynamo"
+    runs_dynamo: ClassVar[bool] = True
+    # Workers register over etcd (and NATS when a plane rides on it). ``--direct`` keeps discovery in-process.
+    uses_discovery_plane: ClassVar[bool] = True
+
+    def get_managed_frontend_args(
+        self, config: Any, backend: Any, backend_processes: list["Process"], runtime: "RuntimeContext"
+    ) -> list[str]:
+        """Frontend flags derived from the allocated topology, ahead of ``frontend.args``; none with discovery."""
+        return []
 
     def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:
         """Every rank runs the Dynamo system status server (health, metrics) on its system port.
@@ -181,6 +190,13 @@ class DynamoFrontend(DynamicFrontend):
         ``nats`` service to force one anyway. The collector is independent of
         the discovery planes and the observability preset.
         """
+        collector = EffectiveService(
+            ServiceConfig(name=OTEL_SERVICE_NAME, type="otel-collector"),
+            implicit=True,
+            reason="Dynamo lifecycle tracing (independent of observability.enabled)",
+        )
+        if not self.uses_discovery_plane:
+            return [collector]
         placement = infra_placement(config)
         implied = [
             EffectiveService(
@@ -188,11 +204,7 @@ class DynamoFrontend(DynamicFrontend):
                 implicit=True,
                 reason="frontend.type dynamo",
             ),
-            EffectiveService(
-                ServiceConfig(name=OTEL_SERVICE_NAME, type="otel-collector"),
-                implicit=True,
-                reason="Dynamo lifecycle tracing (independent of observability.enabled)",
-            ),
+            collector,
         ]
         nats_reasons = nats_implied_reasons(config)
         if nats_reasons:
@@ -244,10 +256,11 @@ class DynamoFrontend(DynamicFrontend):
         """
         logical_prefill, logical_decode, worker_desc = logical_health_expectations(config)
         if not isinstance(config.backend, VLLMBackend):
-            if processes is None or not config.dynamo.sidecar:
+            if processes is None or not (config.dynamo.sidecar or self.dials_native_grpc):
                 return logical_prefill, logical_decode, worker_desc
             n_prefill, n_decode = dynamo_sidecar_health_entries(config, processes)
-            return n_prefill, n_decode, f"{n_prefill}P + {n_decode}D Dynamo sidecars; logical workers: {worker_desc}"
+            kind = "Dynamo sidecars" if config.dynamo.sidecar else "directly dialed engines"
+            return n_prefill, n_decode, f"{n_prefill}P + {n_decode}D {kind}; logical workers: {worker_desc}"
         if config.topology.num_agg > 0:
             n_prefill = 0
             n_decode = vllm_health_entries(config, "aggregated", logical_decode, processes)
@@ -288,6 +301,7 @@ class DynamoFrontend(DynamicFrontend):
 
             frontend_log = runtime.log_dir / f"{node}_frontend_{idx}.out"
             cmd = ["python3", "-m", "dynamo.frontend", f"--http-port={topology.frontend_port}"]
+            cmd.extend(self.get_managed_frontend_args(config, backend, backend_processes, runtime))
             cmd.extend(self.get_frontend_args_list(frontend_args))
 
             automatic_nsys = getattr(config, "observability_nsys_enabled", False) is True
@@ -305,7 +319,7 @@ class DynamoFrontend(DynamicFrontend):
             cmd = numactl_prefix(config) + cmd
 
             env_to_set = {
-                **discovery_env(config, runtime),
+                **(discovery_env(config, runtime) if self.uses_discovery_plane else {}),
                 "DYN_REQUEST_PLANE": config.dynamo.request_plane,
                 "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
             }

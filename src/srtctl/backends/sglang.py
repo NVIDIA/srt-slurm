@@ -249,6 +249,7 @@ class SGLangBackend(Backend):
         health server with ``/metrics`` on ``--port`` (sgl-project/sglang d89a1b1ae3,
         ``rust_server/server.py:_port_offset`` and ``entrypoints/engine.py``). A node with listeners
         reserves one sidecar gRPC port per listener; the HTTP_PORTS stride already spaces its HTTP ports.
+        A frontend that dials the engines itself gets the same layout (``SrtConfig.engines_serve_native_grpc``).
         """
         from srtctl.core.topology import endpoints_to_processes, port_allocator_for
 
@@ -330,9 +331,9 @@ class SGLangBackend(Backend):
         frontend = get_frontend(frontend_type)
 
         sidecar_config = get_dynamo_sidecar_config(runtime)
-        if sidecar_config is not None:
-            if frontend.worker_launch != "dynamo":
-                raise ValueError("SGLang sidecar mode requires frontend.type: dynamo")
+        if sidecar_config is not None and frontend.worker_launch != "dynamo":
+            raise ValueError("SGLang sidecar mode requires frontend.type: dynamo")
+        if sidecar_config is not None or frontend.dials_native_grpc:
             return self._build_sidecar_command(
                 process=process,
                 endpoint_processes=endpoint_processes,
@@ -466,10 +467,14 @@ class SGLangBackend(Backend):
         process: "Process",
         endpoint_processes: list["Process"],
         runtime: "RuntimeContext",
-        sidecar_config: "DynamoConfig",
+        sidecar_config: "DynamoConfig | None",
         nsys_prefix: list[str] | None = None,
     ) -> list[str]:
-        """Build a lifecycle-coupled SGLang native-gRPC and sidecar launch."""
+        """Build a lifecycle-coupled SGLang native-gRPC and sidecar launch.
+
+        Without ``sidecar_config`` the frontend dials the engine's gRPC listener
+        itself, so the engine is launched alone with the same flags.
+        """
         from srtctl.core.slurm import get_hostname_ip
 
         mode = process.endpoint_mode
@@ -571,7 +576,7 @@ class SGLangBackend(Backend):
                 process.endpoint_index,
             )
         engine.extend(_config_to_cli_args(config))
-        if not runs_sidecar:
+        if not runs_sidecar or sidecar_config is None:
             return engine
 
         sidecar = (
@@ -593,6 +598,12 @@ class SGLangBackend(Backend):
             engine_name="SGLang",
             startup_timeout=sidecar_config.sidecar_startup_timeout,
         )
+
+    def router_worker_address(self, process: "Process", frontend_node: str | None = None) -> tuple[str, int] | None:
+        """A node's first native gRPC listener when the topology allocated one, else its HTTP port."""
+        if process.sidecar_grpc_port is not None:
+            return process.node, process.sidecar_grpc_port
+        return super().router_worker_address(process, frontend_node)
 
     def runs_dynamo_sidecar(self, process: "Process", endpoint_processes: list["Process"]) -> bool:
         """One sidecar per node that hosts Rust listeners; it serves all of the node's DP ranks as one worker."""
