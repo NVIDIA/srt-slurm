@@ -93,5 +93,15 @@ class SGLRouterFrontend(StaticRouterFrontend):
         return super().parse_health({"stats": stats}, expected_prefill, expected_decode)
 
     def build_bash_preamble(self, config: Any) -> str | None:
-        """Run the recipe setup script in the router's container, e.g. to fetch the binary."""
-        return setup_script_preamble(config)
+        """Expose a ``configs/sgl-router`` binary on ``PATH`` and run any recipe ``setup_script``.
+
+        Upstream ``lmsysorg/sgl-router`` is distroless (no ``/bin/sh``), so Pyxis/Enroot cannot
+        boot it directly. Extracting the binary into ``configs/sgl-router`` lets it run in the
+        model container without a custom image, while an image-installed binary on ``PATH`` still
+        wins.
+        """
+        parts = ['export PATH="$PATH:/configs"']
+        setup = setup_script_preamble(config)
+        if setup:
+            parts.append(setup)
+        return " && ".join(parts)

@@ -107,6 +107,15 @@ def test_launch_plan_starts_the_router_after_the_workers() -> None:
     assert len(serves) == 2 and "--disaggregation-bootstrap-port" in serves[0]
 
 
+def test_preamble_exposes_configs_dir_and_optional_setup_script() -> None:
+    frontend = SGLRouterFrontend()
+    assert frontend.build_bash_preamble(SimpleNamespace(setup_script=None)) == 'export PATH="$PATH:/configs"'
+    with_setup = frontend.build_bash_preamble(SimpleNamespace(setup_script="install.sh"))
+    assert with_setup is not None
+    assert with_setup.startswith('export PATH="$PATH:/configs" && ')
+    assert "install.sh" in with_setup
+
+
 def test_only_sglang_http_workers_are_accepted() -> None:
     with pytest.raises(ValidationError, match="sgl-router"):
         _srt_config(VLLMBackend(), {"agg": RoleConfig(nodes=1, workers=1, gpus=1)})

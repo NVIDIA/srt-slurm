@@ -66,7 +66,7 @@ containers:
   dynamo-vllm: /path/to/vllm-runtime.sqsh   # Dynamo vLLM runtime image (ships ai-dynamo and gpu_memory_service), for features/vllm-failover.yaml
   vllm-lmcache: /path/to/vllm-lmcache.sqsh  # vLLM image with LMCache installed, for features/lmcache-server.yaml and -disagg.yaml
   sglang-lmcache: /path/to/sglang-lmcache.sqsh  # SGLang image with LMCache installed, for features/lmcache-server-sglang.yaml
-  sgl-router: /path/to/sgl-router.sqsh      # SGLang's Rust router image (lmsysorg/sgl-router), for sglang/sgl-router-disagg.yaml (docs/sgl-router.md)
+  sgl-router: /path/to/sgl-router.sqsh      # Optional shell-capable sgl-router image (upstream lmsysorg/sgl-router is distroless; extract its binary to configs/sgl-router instead, see docs/sgl-router.md)
   smg: /path/to/smg.sqsh                    # Shepherd Model Gateway image (lightseekorg/smg), the router for the smg examples
   llm-d-vllm: /path/to/llm-d-vllm.sqsh      # vLLM image with epp, pd-sidecar and envoy on PATH, for the vllm/llm-d-* examples (docs/llm-d.md#images)
   llm-d-sglang: /path/to/llm-d-sglang.sqsh  # SGLang image with epp, pd-sidecar and envoy on PATH, for the sglang/llm-d-* examples (docs/llm-d.md#images)

@@ -47,7 +47,6 @@ roles:
       tensor-parallel-size: 1
       mem-fraction-static: 0.5
       context-length: 4096
-      disable-piecewise-cuda-graph: true
   decode:
     nodes: colocate
     workers: 1
@@ -59,7 +58,6 @@ roles:
       tensor-parallel-size: 1
       mem-fraction-static: 0.5
       context-length: 4096
-      disable-piecewise-cuda-graph: true
 
 benchmark:
   type: "sa-bench"

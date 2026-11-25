@@ -34,9 +34,13 @@ sgl-router --worker-urls <url> <url> ... --host 0.0.0.0 --port <port> \
   and the repo id for an `hf:` model, so the router does not download a
   tokenizer for `--model-id`. Set `tokenizer-path` or `no-tokenizer` in
   `frontend.args` to override.
-- The router runs in `frontend.container_image` when set (for example
-  `lmsysorg/sgl-router`), else in the model container, where a
-  `setup_script` can install the binary.
+- The router runs in `frontend.container_image` when set (must include `/bin/sh`
+  for Pyxis/Enroot), else in the model container with `/configs` appended to
+  `PATH`. Upstream `lmsysorg/sgl-router` is distroless (no `/bin/sh`) and fails
+  `enroot-switchroot` if launched directly as a Pyxis container; extract
+  `/usr/local/bin/sgl-router` from it into `configs/sgl-router` (or build from
+  source / layer a shell-capable image) to run inside the model container without
+  a separate image or `setup_script`.
 
 ## Readiness and metrics
 
@@ -67,7 +71,6 @@ roles; load-aware admission reads load reports, enabled on the engine with
 ```yaml
 frontend:
   type: sgl-router
-  container_image: sgl-router
   enable_multiple_frontends: false
   args:
     chat-routing: "reorg"

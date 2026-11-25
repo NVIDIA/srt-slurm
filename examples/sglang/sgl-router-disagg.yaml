@@ -4,10 +4,10 @@
 # places decode on the prefill node's spare GPUs). srtctl adds `--disaggregation-mode`
 # and the prefill bootstrap port. The router gets one flat `--worker-urls` list and
 # reads each engine's role and bootstrap port from its `/server_info`, so there is no
-# P/D flag. It runs from its own image (`frontend.container_image`), started once
-# every engine answers `/health`.
+# P/D flag. It runs in the model container using a `configs/sgl-router` binary (or
+# a shell-capable `frontend.container_image`), started once every engine answers `/health`.
 #
-# Aliases (`qwen3-0.6b`, `sglang`, `sgl-router`) resolve through srtslurm.yaml; see examples/README.md.
+# Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
 
 schema: 2
 name: "qwen3-0.6b-sglang-sgl-router-disagg"
@@ -25,7 +25,6 @@ resources:
   gpus_per_node: 8
 frontend:
   type: sgl-router
-  container_image: sgl-router
   enable_multiple_frontends: false
   args:
     chat-routing: "reorg"
@@ -43,7 +42,6 @@ roles:
       tensor-parallel-size: 1
       mem-fraction-static: 0.5
       context-length: 4096
-      disable-piecewise-cuda-graph: true
   decode:
     nodes: colocate
     workers: 1
@@ -55,7 +53,6 @@ roles:
       tensor-parallel-size: 1
       mem-fraction-static: 0.5
       context-length: 4096
-      disable-piecewise-cuda-graph: true
 
 benchmark:
   type: "sa-bench"

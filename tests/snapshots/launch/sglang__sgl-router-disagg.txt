@@ -23,7 +23,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17500 --enable-metrics --disaggregation-mode prefill --skip-server-warmup --disaggregation-bootstrap-port 7200 --context-length 4096 --disable-piecewise-cuda-graph --mem-fraction-static 0.5 --tensor-parallel-size 1
+    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17500 --enable-metrics --disaggregation-mode prefill --skip-server-warmup --disaggregation-bootstrap-port 7200 --context-length 4096 --mem-fraction-static 0.5 --tensor-parallel-size 1
 
 ## decode_0_node-02
 nodelist: node-02
@@ -46,17 +46,19 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17501 --enable-metrics --disaggregation-mode decode --skip-server-warmup --context-length 4096 --disable-piecewise-cuda-graph --mem-fraction-static 0.5 --tensor-parallel-size 1
+    python3 -m sglang.launch_server --model-path /model --served-model-name Qwen/Qwen3-0.6B --host 0.0.0.0 --port 6100 --nccl-port 17501 --enable-metrics --disaggregation-mode decode --skip-server-warmup --context-length 4096 --mem-fraction-static 0.5 --tensor-parallel-size 1
 
 ## sgl_router_0
 nodelist: node-01
 output: <output>/logs/node-01_router_0.out
-container_image: sgl-router
+container_image: sglang
 container_mounts:
     <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
     <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
     <model>: /model
     <output>/logs: /logs
+bash_preamble: |
+    export PATH="$PATH:/configs"
 command: |
     sgl-router --worker-urls http://127.0.0.1:6100 http://127.0.0.1:6100 --host 0.0.0.0 --port 8000 --model-id Qwen/Qwen3-0.6B --tokenizer-path /model/tokenizer.json --chat-routing reorg
 
