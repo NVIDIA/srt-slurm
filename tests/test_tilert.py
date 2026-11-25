@@ -6,7 +6,8 @@
 import json
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -231,7 +232,9 @@ def test_router_joins_every_prefill_url(tmp_path: Path) -> None:
         workers = frontend.collect_workers(config.backend, orchestrator.backend_processes)
     command = frontend.build_router_command(workers, "0.0.0.0", 8000, config.backend)
     prefills = [p for p in orchestrator.backend_processes if p.endpoint_mode == "prefill"]
-    assert _flag(command, "--vllm-url") == ",".join(f"http://{hosts[p.node]}:{p.http_port}" for p in prefills)
+    urls = ",".join(f"http://{hosts[p.node]}:{p.http_port}" for p in prefills)
+    assert _flag(command, "--vllm-url") == urls
+    assert command[:2] == ["env", f"TILERT_ROUTER_P_URLS={urls}"]
 
 
 def test_benchmark_model_matches_prefill_without_a_decode_alias(tmp_path: Path) -> None:
@@ -294,3 +297,109 @@ def test_router_setup_runs_before_launch_and_failure_stops_launch(tmp_path: Path
     )
     assert failed.returncode == 7
     assert failed.stdout == "installed\n"
+
+
+def test_rust_front_wraps_the_router_and_is_not_a_router_flag(tmp_path: Path) -> None:
+    data = _recipe()
+    data["frontend"].setdefault("args", {})["rust-front"] = True
+    config = _load(data)
+    orchestrator = _orchestrator(config, tmp_path, ("p0", "d0"))
+    frontend = TileRTRouterFrontend()
+    hosts = {"p0": "10.0.0.10", "d0": "10.0.0.11"}
+    with patch("srtctl.frontends.static_router.get_hostname_ip", side_effect=lambda node, _: hosts[node]):
+        workers = frontend.collect_workers(config.backend, orchestrator.backend_processes)
+    plain = frontend.build_router_command(workers, "0.0.0.0", 8000, config.backend)
+    assert plain[2:5] == ["python", "-m", "tilert.pd_vllm.pd_router"]
+    frontend.rust_front = True
+    command = frontend.build_router_command(workers, "0.0.0.0", 8000, config.backend)
+    command.extend(frontend.get_frontend_args_list(config.frontend.args))
+    assert command[2:8] == ["python", "-m", "tilert.pd_vllm.rs_front_sup", "python", "-m", "tilert.pd_vllm.pd_router"]
+    assert command[:2] == plain[:2]
+    assert command[5 : 3 + len(plain)] == plain[2:]
+    assert "--rust-front" not in command
+    assert _flag(command, "--port") == "8000"
+
+
+SUPERVISOR = ["python", "-m", "tilert.pd_vllm.rs_front_sup"]
+ROUTER = ["python", "-m", "tilert.pd_vllm.pd_router"]
+
+
+def _start_router(data: dict, tmp_path: Path) -> tuple[list[str], list]:
+    """The command `start_frontends` hands to srun for this recipe (`start_process` is the seam), and its processes."""
+    config = _load(data)
+    orchestrator = _orchestrator(config, tmp_path, ("p0", "d0"))
+    hosts = {"p0": "10.0.0.10", "d0": "10.0.0.11"}
+    with (
+        patch("srtctl.frontends.static_router.get_hostname_ip", side_effect=lambda node, _: hosts[node]),
+        patch("srtctl.frontends.static_router.wait_for_http_endpoints", return_value=True),
+        patch.object(TileRTRouterFrontend, "start_process", return_value=MagicMock()) as start,
+    ):
+        processes = TileRTRouterFrontend().start_frontends(
+            SimpleNamespace(frontend_nodes=["p0"], frontend_port=8000),
+            orchestrator.runtime,
+            config,
+            config.backend,
+            orchestrator.backend_processes,
+        )
+    return start.call_args.kwargs["command"], processes
+
+
+@pytest.mark.parametrize("args,wrapped", [({"rust-front": True}, True), ({"rust-front": False}, False), ({}, False)])
+def test_recipe_rust_front_selects_the_launched_router_command(tmp_path: Path, args, wrapped) -> None:
+    """The recipe key, not a hand-set attribute, decides whether the launched router runs under the supervisor."""
+    data = _recipe()
+    data["frontend"].setdefault("args", {}).update(args)
+    command, _ = _start_router(data, tmp_path)
+    assert command[0] == "env" and command[1].startswith("TILERT_ROUTER_P_URLS=http://10.0.0.10:")
+    expected = SUPERVISOR + ROUTER if wrapped else ROUTER
+    assert command[2 : 2 + len(expected)] == expected
+    assert "--rust-front" not in command
+    # rs_front_sup exits with "the router command has no --port" unless the wrapped command carries one.
+    assert command[command.index("--port") + 1] == "8000"
+
+
+@pytest.mark.parametrize("key", ["rust-front", "rust_front", "--rust-front"])
+@pytest.mark.parametrize("value", ["yes", "true", 1, 0, None])
+def test_rust_front_rejects_a_non_boolean_under_every_key_spelling(key, value) -> None:
+    """A non-boolean must not load under a spelling the launcher would then ignore."""
+    data = _recipe()
+    data["frontend"].setdefault("args", {})[key] = value
+    with pytest.raises(ValidationError, match="rust-front must be true or false"):
+        _load(data)
+
+
+@pytest.mark.parametrize("key", ["vllm-url", "vllm_url", "--vllm-url", "decode", "host", "port", "--port"])
+def test_frontend_args_cannot_override_a_router_argument_srtctl_manages(key) -> None:
+    """srtctl builds --vllm-url, --decode, --host and --port from the topology; a recipe value would be a second copy."""
+    data = _recipe()
+    data["frontend"].setdefault("args", {})[key] = "x"
+    with pytest.raises(ValidationError, match="cannot override srtctl-managed TileRT router argument"):
+        _load(data)
+
+
+def test_rust_front_spelled_with_an_underscore_is_not_sent_to_the_router(tmp_path: Path) -> None:
+    data = _recipe()
+    data["frontend"].setdefault("args", {})["rust_front"] = True
+    command, _ = _start_router(data, tmp_path)
+    assert "--rust-front" not in command
+    assert command[2:5] == SUPERVISOR
+
+
+@pytest.mark.parametrize("rust_front", [True, False])
+def test_rust_front_fallback_to_the_python_router_fails_the_run(tmp_path: Path, rust_front: bool) -> None:
+    """With the Rust front requested, the supervisor's FALLBACK line marks the running router failed."""
+    data = _recipe()
+    data["frontend"].setdefault("args", {})["rust-front"] = rust_front
+    _, (router,) = _start_router(data, tmp_path)
+    # Line shapes printed by the 0.2.0 supervisor (``<time> rs_front_sup <message>`` on stderr, in the router log).
+    router.log_file.write_text("1763000000.100 rs_front_sup pd_stream up on :8000\n")
+    assert router.scan_log_for_fatal_marker() is None
+    with router.log_file.open("a") as log:
+        log.write(
+            "1763000300.200 rs_front_sup FALLBACK: pd_stream exited with 1; "
+            "client port 8000 -> Python router :8001 (8 relay procs)\n"
+        )
+    marker = router.scan_log_for_fatal_marker()
+    assert (marker is not None) is rust_front
+    if marker is not None:
+        assert "FALLBACK: pd_stream exited with 1" in marker[1]

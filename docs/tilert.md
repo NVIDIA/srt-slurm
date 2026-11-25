@@ -7,6 +7,7 @@ Recipes:
 
 - [B200 / NIXL](https://github.com/NVIDIA/srt-slurm/blob/main/examples/tilert/glm5-disagg.yaml)
 - [MI355X / Mooncake](https://github.com/NVIDIA/srt-slurm/blob/main/examples/tilert/glm5-rocm-mooncake-disagg.yaml)
+- [GB300 / TileRT 0.2.0, DEP32 decode and the Rust front](https://github.com/NVIDIA/srt-slurm/blob/main/examples/tilert/dsv41flash-gb300-dep32-decode.yaml)
 
 The supported pairing is **vLLM prefill + TileRT decode + TileRT router**.
 Configuration loading rejects other engine/router combinations before Slurm
@@ -83,6 +84,43 @@ srtctl allocates one rendezvous port on the worker's first node and an HTTP port
 on every node. Only the first node is registered with and health-checked by the
 router. Unset, decode workers must fit on one node. Either way, a multi-node
 decode worker must use whole nodes. Both modes need TileRT 0.1.8 or later.
+
+## TileRT 0.2.0 router
+
+TileRT 0.2.0 is published as the
+[`tilert==0.2.0` wheel on PyPI](https://pypi.org/project/tilert/0.2.0/)
+(`tilert-0.2.0-cp312-cp312-manylinux_2_34_aarch64.whl`, sha256
+`53a7c1511308fc6932b8ab909222091ef301ca475346fb6a2f6fe4eced98e725`). Two things
+change for its router; the
+[GB300 DEP32 recipe](https://github.com/NVIDIA/srt-slurm/blob/main/examples/tilert/dsv41flash-gb300-dep32-decode.yaml)
+uses both.
+
+**Prefill workers.** `tilert/pd_vllm/pd_router.py` still takes `--vllm-url`, but
+sends each prefill straight to a worker through `tilert/pd_vllm/p_direct.py`,
+which reads the workers from `TILERT_ROUTER_P_URLS` and exits with
+`direct P routing needs TILERT_ROUTER_P_URLS` when it is unset. srtctl sets it on
+the router command to the same comma-separated list it passes as `--vllm-url`.
+TileRT 0.1.6 to 0.1.8 do not read the variable. The 0.2.0 router keeps a
+conversation on one worker for its prefix cache and picks one of two data-parallel
+ranks per worker (`X-data-parallel-rank: 0` or `1`), so every prefill worker must
+run `data-parallel-size: 2`.
+
+**Rust front.** `frontend.args.rust-front: true` (default `false`) runs the router
+command under `python -m tilert.pd_vllm.rs_front_sup` instead of passing a flag
+to the router. The supervisor (`tilert/pd_vllm/rs_front_sup.py`) keeps the
+router's `--port` as the client port, moves the router to `127.0.0.1` on the next
+port with `--rs-back-port 24000` (router process `k` reports to the front on
+`127.0.0.1:24000+k`), checks the sha256 of the packaged `tilert/pd_vllm/bin/pd_stream`,
+and serves the client port with it. Its log shows `pd_stream up on :<port>`. If the
+binary is missing, fails its check, does not come up, or exits, the supervisor logs
+`rs_front_sup FALLBACK: <reason>` and relays the client port to the Python router;
+srtctl treats that line as a router failure and stops the run, so a
+`rust-front: true` run only reports numbers served by the Rust front. Those two loopback listeners are opened by the supervisor and
+not allocated by srtctl, so give the router its own node (`frontend.placement.node:
+dedicated`), as the recipe does. Older wheels have no `rs_front_sup` module.
+
+With `parser: deepseek_v41` the 0.2.0 router imports vLLM's DeepSeek-V4.1 parser,
+so its image needs vLLM as well as TileRT (the prefill image works).
 
 ## Benchmarks
 
