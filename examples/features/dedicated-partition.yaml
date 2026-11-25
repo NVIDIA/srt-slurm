@@ -1,0 +1,54 @@
+# Dedicated frontend + benchmark client on the CPU-only partition `cpu`: the job asks
+# for the engine node only, and the frontend and client run in a companion job on `cpu`.
+# Clusters usually set `default_dedicated_partition` in srtslurm.yaml instead.
+# See docs/topology.md#dedicated-nodes-on-a-cpu-partition.
+
+schema: 2
+name: "qwen3-0.6b-dedicated-partition"
+
+slurm:
+  time_limit: "00:30:00"
+  dedicated_partition: "cpu"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+dynamo:
+  source:
+    pypi: "1.4.2"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: "kv"
+  placement:
+    node: dedicated
+
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      context-length: 4096
+      disable-piecewise-cuda-graph: true
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"
+  placement:
+    node: dedicated   # shares the frontend's node (colocate_with_frontend)

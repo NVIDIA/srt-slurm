@@ -39,6 +39,7 @@ from rich.text import Text
 
 from srtctl.backends import VLLMBackend, VLLMMooncakeKVStoreConfig
 from srtctl.backends.base import WorkerMode
+from srtctl.core.companion import submit_script_line
 from srtctl.core.config import (
     expand_engine_config_defaults,
     generate_override_configs,
@@ -1037,7 +1038,19 @@ def generate_minimal_sbatch_script(
     config_environment = config.dynamo.get_wheel_environment()
     config_environment.update(config.environment)
 
+    # The batch script submits the companion before its setup; see core/companion.py.
+    allocation = config.dedicated_allocation
+    companion_submit = None
+    if allocation is not None and het_components is None:
+        companion_submit = submit_script_line(
+            allocation,
+            job_name=f"{job_name}-dedicated",
+            account=config.slurm.account or os.environ.get("SLURM_ACCOUNT"),
+            time_limit=config.slurm.time_limit or "01:00:00",
+        )
+
     rendered = template.render(
+        companion_submit=companion_submit,
         job_name=job_name,
         total_nodes=total_nodes,
         het_components=het_components,
@@ -1133,18 +1146,11 @@ def _print_running_summary(config: SrtConfig, console: Console, *, serve_only: b
 def planned_total_nodes(config: SrtConfig) -> int:
     """Nodes a non-heterogeneous job asks Slurm for: engine roles, pools, plus one per
     dedicated role (etcd/nats, frontend, benchmark client), or one shared node when
-    ``benchmark.colocate_with_frontend`` folds the dedicated roles together."""
-    total_nodes = config.total_nodes
-    num_dedicated_roles = sum(
-        (
-            config.infra_dedicated_node,
-            config.frontend.placement.dedicated,
-            config.benchmark.placement.dedicated,
-        )
-    )
-    if num_dedicated_roles > 0:
-        total_nodes += 1 if config.benchmark.colocate_with_frontend else num_dedicated_roles
-    return total_nodes
+    ``benchmark.colocate_with_frontend`` folds the dedicated roles together. Dedicated
+    nodes on ``slurm.dedicated_partition`` come from the companion job instead."""
+    if config.dedicated_allocation is not None:
+        return config.total_nodes
+    return config.total_nodes + config.dedicated_node_count
 
 
 def render_placement(config: SrtConfig) -> dict[str, Any]:
@@ -1159,7 +1165,11 @@ def render_placement(config: SrtConfig) -> dict[str, Any]:
         infra_dedicated=config.infra_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
-    if het is None:
+    if het is None and config.dedicated_allocation is not None:
+        # The frontend and client run in the companion job, not at an index of this allocation.
+        total_nodes = planned_total_nodes(config)
+        indices: dict[str, int | None] = {"frontend_node_index": None, "client_node_index": None}
+    elif het is None:
         total_nodes = planned_total_nodes(config)
         head, client = Nodes.planned_role_indices(
             total_nodes,
@@ -1168,7 +1178,7 @@ def render_placement(config: SrtConfig) -> dict[str, Any]:
             etcd_nats_dedicated_node=config.infra_dedicated_node,
             colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
         )
-        indices: dict[str, int | None] = {"frontend_node_index": head, "client_node_index": client}
+        indices = {"frontend_node_index": head, "client_node_index": client}
     else:
         total_nodes = sum(c.nodes for c in het)
         indices = {"frontend_node_index": None, "client_node_index": None}

@@ -8,6 +8,7 @@ This module provides the single source of truth for all runtime values,
 replacing scattered bash variables and Jinja templating with typed Python.
 """
 
+import dataclasses
 import logging
 import os
 from collections.abc import Sequence
@@ -22,6 +23,7 @@ from .config import get_srtslurm_setting
 from .launcher import get_launcher
 from .slurm import (
     DEFAULT_CONTAINER_PREPARE_TIMEOUT_SECONDS,
+    get_companion_nodelist,
     get_hostname_ip,
     get_slurm_het_nodelists,
     get_slurm_nodelist,
@@ -55,6 +57,9 @@ class Nodes:
              optionally the dedicated infra node). Empty tuple when het=False.
         decode_group: Worker nodes that belong to het component 1 (decode).
              Empty tuple when het=False.
+        dedicated_group: Nodes of the companion job that holds the ``placement.node:
+             dedicated`` roles on ``slurm.dedicated_partition`` (component 1; every
+             other node is component 0, this job). Empty without a companion job.
     """
 
     head: str
@@ -65,6 +70,7 @@ class Nodes:
     prefill_group: tuple[str, ...] = ()
     decode_group: tuple[str, ...] = ()
     pools: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    dedicated_group: tuple[str, ...] = ()
 
     @property
     def compute(self) -> tuple[str, ...]:
@@ -74,6 +80,11 @@ class Nodes:
             seen.update(dict.fromkeys(nodes))
         return tuple(seen)
 
+    @property
+    def prefill_decode_split(self) -> bool:
+        """The workers come from per-side het components (``resources.het_jobs``), not from ``worker``."""
+        return bool(self.prefill_group or self.decode_group)
+
     def het_group_for(self, node: str) -> int | None:
         """Return the het component (0 or 1) a node belongs to, or None.
 
@@ -82,6 +93,8 @@ class Nodes:
         """
         if not self.het:
             return None
+        if self.dedicated_group:
+            return 1 if node in self.dedicated_group else 0
         if node in self.prefill_group:
             return 0
         if node in self.decode_group:
@@ -134,6 +147,9 @@ class Nodes:
                           without pools).
             pools: ``(service name, node count)`` pairs for services that own
                    nodes, carved after the engine worker nodes in this order.
+
+        With a companion job published (``slurm.dedicated_partition``, core/companion.py)
+        the dedicated roles take its nodes and this job holds the engine and pool nodes.
         """
         het_lists = get_slurm_het_nodelists()
         if het_lists is not None:
@@ -148,7 +164,12 @@ class Nodes:
         nodelist = get_slurm_nodelist()
         if not nodelist:
             raise RuntimeError("SLURM_NODELIST not set - are we running in SLURM?")
-        return cls.from_nodelist(
+        companion = get_companion_nodelist()
+        if companion:
+            # Put its nodes where from_nodelist reserves the dedicated roles: the client's last, the rest first.
+            front = len(companion) - (1 if client_dedicated_node else 0)
+            nodelist = [*companion[:front], *nodelist, *companion[front:]]
+        nodes = cls.from_nodelist(
             nodelist,
             frontend_dedicated_node=frontend_dedicated_node,
             client_dedicated_node=client_dedicated_node,
@@ -157,6 +178,7 @@ class Nodes:
             engine_nodes=engine_nodes,
             pools=pools,
         )
+        return dataclasses.replace(nodes, het=True, dedicated_group=tuple(companion)) if companion else nodes
 
     @classmethod
     def from_nodelist(

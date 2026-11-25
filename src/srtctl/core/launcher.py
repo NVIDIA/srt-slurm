@@ -188,8 +188,9 @@ class SlurmLauncher(Launcher):
     def launch(self, spec: LaunchSpec) -> subprocess.Popen:
         srun_cmd = ["srun"]
 
-        # Run in the same job context.
-        slurm_job_id = _slurm.get_slurm_job_id()
+        # Run in this job, or for the dedicated nodes in the companion job (core/companion.py).
+        target = _slurm.step_target(spec.het_group)
+        slurm_job_id = target.job_id
         if slurm_job_id:
             srun_cmd.extend(["--jobid", slurm_job_id])
 
@@ -216,8 +217,8 @@ class SlurmLauncher(Launcher):
             srun_cmd.extend(["--nodelist", ",".join(spec.nodelist)])
 
         # Route this srun to a specific component of a SLURM heterogeneous job.
-        if spec.het_group is not None:
-            srun_cmd.append(f"--het-group={spec.het_group}")
+        if target.het_group is not None:
+            srun_cmd.append(f"--het-group={target.het_group}")
 
         if spec.output:
             srun_cmd.extend(["--output", spec.output])
@@ -292,18 +293,20 @@ class SlurmLauncher(Launcher):
             srun_cmd,
             stdout=subprocess.PIPE if not spec.output else None,
             stderr=subprocess.STDOUT if not spec.output else None,
-            env=None,  # Inherit environment
+            env=target.env,  # None inherits the environment
         )
 
     def list_step_ids(
         self, job_id: str | None = None, *, unique_names: set[str] | None = None
     ) -> dict[str, str] | None:
-        job_id = job_id or _slurm.get_slurm_job_id()
-        if not job_id or shutil.which("squeue") is None:
+        # By default this job's steps and the companion job's (slurm.dedicated_partition), whose
+        # frontend and service steps need the same graceful SIGTERM; ids come back as <job>.<step>.
+        jobs = [job_id] if job_id else [j for j in (_slurm.get_slurm_job_id(), _slurm.get_companion_job_id()) if j]
+        if not jobs or shutil.which("squeue") is None:
             return None
         try:
             result = subprocess.run(
-                ["squeue", "--steps", f"--jobs={job_id}", "--noheader", "--format=%i %j"],
+                ["squeue", "--steps", f"--jobs={','.join(jobs)}", "--noheader", "--format=%i %j"],
                 capture_output=True,
                 text=True,
                 timeout=30,

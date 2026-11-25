@@ -237,6 +237,10 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         slurm["partition"] = cluster_config["default_partition"]
         logger.debug(f"Applied default partition: {slurm['partition']}")
 
+    if "dedicated_partition" not in slurm and cluster_config.get("default_dedicated_partition"):
+        slurm["dedicated_partition"] = cluster_config["default_dedicated_partition"]
+        logger.debug(f"Applied default dedicated_partition: {slurm['dedicated_partition']}")
+
     if "time_limit" not in slurm and cluster_config.get("default_time_limit"):
         slurm["time_limit"] = cluster_config["default_time_limit"]
         logger.debug(f"Applied default time_limit: {slurm['time_limit']}")
@@ -258,6 +262,12 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         sbatch_directives = config.setdefault("sbatch_directives", {})
         for key, value in default_sbatch_directives.items():
             sbatch_directives.setdefault(key, value)
+
+    default_dedicated = cluster_config.get("default_dedicated_sbatch_directives")
+    if isinstance(default_dedicated, dict):
+        dedicated_directives = config.setdefault("dedicated_sbatch_directives", {})
+        for key, value in default_dedicated.items():
+            dedicated_directives.setdefault(key, value)
         logger.debug("Applied default sbatch_directives: %s", default_sbatch_directives)
 
     # Apply cluster-level het-job default. Without this, a recipe with

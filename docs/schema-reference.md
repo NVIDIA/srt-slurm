@@ -31,6 +31,7 @@ Top-level keys of a recipe YAML.
 | `reuse_container` | bool | `False` | Reuse a named Pyxis container per image and root-remap mode on each node of this job, avoiding repeated root filesystem extraction into host RAM. Off by default. |
 | `srun_options` | dict[str, str] | `{}` | Extra srun options (`key: value` -> `--key=value`; empty value -> `--key`) for every job step. |
 | `sbatch_directives` | dict[str, str] | `{}` | Extra `#SBATCH --key=value` lines (empty value -> `--key`); wins over the cluster defaults. |
+| `dedicated_sbatch_directives` | dict[str, str] | `{}` | sbatch options for the `slurm.dedicated_partition` companion job instead of `sbatch_directives`, over its whole-node defaults (`exclusive`, `mem: 0`); e.g. `qos: cpu-short` where the default QOS requires GPUs. |
 | `enable_config_dump` | bool | `True` | Accepted for compatibility; srtctl does not read it. Workers dump their config where the engine supports it. |
 | `setup_script` | str \| None | `None` | Custom setup script (runs before dynamo install and worker startup) e.g. "custom-setup.sh" -> runs /configs/custom-setup.sh |
 | `host_setup` | [HostSetupConfig](#hostsetupconfig) | `HostSetupConfig()` | Commands run on each node's bare host, outside the container, before any worker starts. Cluster-wide default lives in srtslurm.yaml as default_host_setup; a recipe that sets this block replaces that default. |
@@ -95,6 +96,7 @@ SLURM job settings.
 |---|---|---|---|
 | `account` | str \| None | `None` | Slurm account. Unset uses `default_account` from srtslurm.yaml. |
 | `partition` | str \| None | `None` | Slurm partition. Unset uses `default_partition` from srtslurm.yaml. |
+| `dedicated_partition` | str \| None | `None` | Partition for the nodes `placement.node: dedicated` reserves (frontend, benchmark client, etcd/nats). When set and different from `partition`, those nodes come from a companion job on this partition, submitted when the main job starts, instead of GPU nodes of the main job. Unset uses `default_dedicated_partition` from srtslurm.yaml. |
 | `time_limit` | str \| None | `None` | Job time limit (HH:MM:SS). Unset uses `default_time_limit` from srtslurm.yaml. |
 
 ### RoleConfig
@@ -805,6 +807,7 @@ Top-level keys of `srtslurm.yaml`. Recipes inherit these defaults and resolve al
 | `cluster` | str \| None | `None` | Cluster name for status reporting |
 | `default_account` | str \| None | `None` | Slurm account for recipes that omit `slurm.account`. |
 | `default_partition` | str \| None | `None` | Slurm partition for recipes that omit `slurm.partition`. |
+| `default_dedicated_partition` | str \| None | `None` | Partition for the nodes `placement.node: dedicated` reserves (frontend, benchmark client, etcd/nats) when a recipe omits `slurm.dedicated_partition`. Usually a CPU-only partition, so those roles hold no GPU node. |
 | `default_time_limit` | str \| None | `None` | Job time limit (HH:MM:SS) for recipes that omit `slurm.time_limit`. |
 | `gpus_per_node` | int \| None | `None` | GPUs per node for recipes that omit `resources.gpus_per_node`. |
 | `default_gpu_type` | str \| None | `None` | Default for ``ResourceConfig.gpu_type`` when the recipe omits it. Lets one recipe move between clusters of different GPU types without an edit. |
@@ -816,6 +819,7 @@ Top-level keys of `srtslurm.yaml`. Recipes inherit these defaults and resolve al
 | `use_exclusive_sbatch_directive` | bool | `False` | Emit `#SBATCH --exclusive` to keep other jobs off the allocated nodes. |
 | `use_het_jobs` | bool | `False` | Default for ``ResourceConfig.het_jobs`` when the recipe doesn't set it. When True (and recipe doesn't override), the prefill side and decode side are submitted as two SLURM heterogeneous-job components, each with its own ``--segment``. Lets asymmetric layouts (e.g. prefill 12 + decode 10 nodes on GB200/GB300) preserve NVL72 affinity per side. |
 | `default_sbatch_directives` | dict[str, str] \| None | `None` | Extra `#SBATCH --key=value` lines added to every job; a recipe's `sbatch_directives` wins per key. |
+| `default_dedicated_sbatch_directives` | dict[str, str] \| None | `None` | sbatch options for the dedicated-partition companion job in place of `default_sbatch_directives`, e.g. `{qos: cpu-short}` where the default QOS requires GPUs; a recipe's `dedicated_sbatch_directives` wins per key. |
 | `default_health_check` | dict[str, int] \| None | `None` | `health_check` block (`max_attempts`, `interval_seconds`) used when a recipe has none. |
 | `default_reuse_container` | bool | `False` | Default for recipe `reuse_container`; explicit true or false in the recipe wins. |
 | `srtctl_root` | str \| None | `None` | srtctl checkout on the shared filesystem that compute nodes mount at /srtctl-src. Default: this checkout. |

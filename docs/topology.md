@@ -195,6 +195,28 @@ benchmark:
 
 The discovery plane (etcd, and NATS when a plane uses it) is placed through its services: an `etcd` or `nats` entry under [`services`](services.md) with `placement.node: dedicated`. See [Implicit Services](services.md#implicit-services).
 
+### Dedicated nodes on a CPU partition
+
+A dedicated node runs no engine worker, so on a GPU partition its GPUs sit idle. Set `slurm.dedicated_partition` (or `default_dedicated_partition` in `srtslurm.yaml`) to take those nodes from another partition, typically a CPU-only one:
+
+```yaml
+slurm:
+  partition: batch           # engine workers and service pools
+  dedicated_partition: cpu   # frontend, benchmark client, etcd/nats nodes
+```
+
+The job then asks Slurm only for the engine and pool nodes. The batch script submits a **companion job** on the dedicated partition before its setup; the orchestrator waits until it runs and launches the dedicated roles' steps in it with `srun --jobid`. Roles are carved as for a single job (one shared node with `benchmark.colocate_with_frontend`, else one per role). The companion takes whole nodes under `dedicated_sbatch_directives` (cluster default `default_dedicated_sbatch_directives`), not the recipe's GPU-sized `sbatch_directives`; its time limit is `slurm.time_limit`. A watchdog ends it once the main job leaves the queue. Its log is `logs/companion_<id>.log`.
+
+It is a second job rather than a heterogeneous-job component because Slurm checks a heterogeneous job's QOS limits against all its components summed, so a CPU QOS that caps GPUs at zero rejects a mixed GPU/CPU job. For the same reason the companion usually needs a CPU QOS:
+
+```yaml
+default_dedicated_partition: cpu
+default_dedicated_sbatch_directives:
+  qos: cpu-short
+```
+
+The CPU nodes must run the same image (same CPU architecture and shared filesystems) and reach the GPU nodes on `network_interface`. A CPU node can have far fewer cores than the GPU node it replaces; under heavy load, `benchmark.colocate_with_frontend: false` gives the client its own node. The setting is ignored with `resources.het_jobs`. See [`examples/features/dedicated-partition.yaml`](../examples/features/dedicated-partition.yaml).
+
 The v1 spelling of this (`frontend.orchestrator_placement`, `frontend.dedicated_node`, `benchmark.client_placement`, `benchmark.client_dedicated_node`) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
 
 ## resources
@@ -211,7 +233,7 @@ resources:
 
 Fields: [ResourceConfig](schema-reference.md#resourceconfig). `het_jobs: null` defers to the cluster's `use_het_jobs`; see [slurm-faq.md](slurm-faq.md).
 
-The total node count is the sum of every role's `nodes`, every service's `nodes` (a pool of whole nodes the service owns, see [pools.md](pools.md)), plus one for each `placement.node: dedicated` (frontend, benchmark client, the discovery plane through its services). Pools are carved after the engine roles' nodes, in declaration order. `srtctl dry-run` prints the resulting sbatch request and the node map.
+The total node count is the sum of every role's `nodes`, every service's `nodes` (a pool of whole nodes the service owns, see [pools.md](pools.md)), plus one for each `placement.node: dedicated` (frontend, benchmark client, the discovery plane through its services), which come from a companion job on `slurm.dedicated_partition` when it is set. Pools are carved after the engine roles' nodes, in declaration order. `srtctl dry-run` prints the resulting sbatch request and the node map.
 
 A services-only job has no engine roles at all: the services that own nodes declare `nodes` (see [pools.md](pools.md)), `frontend.type: none` skips the frontend layer and the worker-count health gate, and the `services:` readiness probes are the only gate before the benchmark step runs. This is the shape of a Ray cluster driving an RL trainer, or a client run against an endpoint the job does not own.
 

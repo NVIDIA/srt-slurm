@@ -40,6 +40,18 @@
       "description": "Slurm partition for recipes that omit `slurm.partition`.",
       "default": null
     },
+    "default_dedicated_partition": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Partition for the nodes `placement.node: dedicated` reserves (frontend, benchmark client, etcd/nats) when a recipe omits `slurm.dedicated_partition`. Usually a CPU-only partition, so those roles hold no GPU node.",
+      "default": null
+    },
     "default_time_limit": {
       "anyOf": [
         {
@@ -137,6 +149,21 @@
         }
       ],
       "description": "Extra `#SBATCH --key=value` lines added to every job; a recipe's `sbatch_directives` wins per key.",
+      "default": null
+    },
+    "default_dedicated_sbatch_directives": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "sbatch options for the dedicated-partition companion job in place of `default_sbatch_directives`, e.g. `{qos: cpu-short}` where the default QOS requires GPUs; a recipe's `dedicated_sbatch_directives` wins per key.",
       "default": null
     },
     "default_health_check": {

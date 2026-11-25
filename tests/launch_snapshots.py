@@ -195,7 +195,9 @@ def render_launch_plan(recipe: Path) -> str:
                     options = MockOptions(
                         child_duration_s=0.0,
                         phase_pause_s=0.0,
-                        nodelist=tuple(f"node-{i:02d}" for i in range(1, nodes + 3)),
+                        nodelist=tuple(
+                            f"node-{i:02d}" for i in range(1, nodes + (1 if config.dedicated_allocation else 3))
+                        ),
                         on_srun=calls.append,
                         end_manual_hold=True,
                     )
