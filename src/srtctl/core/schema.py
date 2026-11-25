@@ -3416,7 +3416,7 @@ class SrtConfig:
             raise ValidationError("vLLM sidecar mode requires engine.dp_launch_mode: per_node; per_gpu is unsupported")
 
     def _warn_python_worker(self) -> None:
-        """Suggest native sidecars for SGLang and vLLM behind the Dynamo frontend.
+        """Steer vLLM and SGLang jobs behind the Dynamo frontend to native sidecars.
 
         Skipped for engine.failover, which needs the Python worker (see _validate_vllm_failover).
         """
