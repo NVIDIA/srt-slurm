@@ -30,7 +30,7 @@ resources:
 
 dynamo:
   source:
-    pypi: "1.4.2"
+    pypi: "1.7.0"
 
 frontend:
   type: dynamo
@@ -81,7 +81,7 @@ chaos:
       signal: KILL
       respawn: true
     - name: "stall-scheduler"
-      after_seconds: 90
+      after_seconds: 150
       type: stall_process
       role: agg
       select: random
@@ -98,9 +98,9 @@ chaos:
       signal: KILL
       respawn: true
     - name: "rolling-replace-graceful"
-      after_seconds: 90
+      after_seconds: 150
       type: rolling_replace
       role: agg
       max_unavailable: 1
       graceful: true
-      timeout_seconds: 300
+      timeout_seconds: 360
