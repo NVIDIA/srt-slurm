@@ -57,10 +57,10 @@ class DynamoDirectFrontend(DynamoFrontend):
             raise ValueError(f"frontend.type: dynamo-direct manages frontend.args: {', '.join(conflicts)}")
         args = ["--direct", "--direct-backend", _DIRECT_BACKENDS[backend.type]]
         for process in backend_processes:
-            address = backend.router_worker_address(process)
-            if address is not None:
-                node, port = address
-                args.extend(["--engine-url", f"grpc://{get_hostname_ip(node, runtime.network_interface)}:{port}"])
+            # Allocated only on a node that hosts native gRPC listeners; the frontend discovers the node's others.
+            if process.sidecar_grpc_port is not None:
+                host = get_hostname_ip(process.node, runtime.network_interface)
+                args.extend(["--engine-url", f"grpc://{host}:{process.sidecar_grpc_port}"])
         return args
 
     def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:

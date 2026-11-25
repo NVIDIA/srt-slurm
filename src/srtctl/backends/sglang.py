@@ -599,12 +599,6 @@ class SGLangBackend(Backend):
             startup_timeout=sidecar_config.sidecar_startup_timeout,
         )
 
-    def router_worker_address(self, process: "Process", frontend_node: str | None = None) -> tuple[str, int] | None:
-        """A node's first native gRPC listener when the topology allocated one, else its HTTP port."""
-        if process.sidecar_grpc_port is not None:
-            return process.node, process.sidecar_grpc_port
-        return super().router_worker_address(process, frontend_node)
-
     def runs_dynamo_sidecar(self, process: "Process", endpoint_processes: list["Process"]) -> bool:
         """One sidecar per node that hosts Rust listeners; it serves all of the node's DP ranks as one worker."""
         nodes = list(dict.fromkeys(candidate.node for candidate in endpoint_processes))

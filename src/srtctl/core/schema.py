@@ -3492,7 +3492,7 @@ class SrtConfig:
         if self.frontend.epp_config is not None and (frontend is None or not frontend.accepts_epp_config):
             raise ValidationError(f"frontend.epp_config is not supported with frontend.type: {self.frontend.type}")
         if self.frontend.router_policy_config is not None and (frontend is None or not frontend.runs_dynamo):
-            raise ValidationError("frontend.router_policy_config is only supported with a Dynamo frontend")
+            raise ValidationError("frontend.router_policy_config is only supported with frontend.type: dynamo")
         if frontend is None:
             return
         required = frontend.required_backend
@@ -4030,8 +4030,7 @@ class SrtConfig:
     def engines_serve_native_grpc(self) -> bool:
         """Whether engines expose their native gRPC API: beside a Dynamo sidecar, or to a frontend that dials them.
 
-        The one answer for the port layout, the engine command and the worker
-        environment. A services-only job and a type the registry does not know
+        Decides the worker port layout. A services-only job and a type the registry does not know
         have no frontend to ask.
         """
         if self.dynamo.sidecar:

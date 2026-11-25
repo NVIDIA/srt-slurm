@@ -299,7 +299,9 @@ class WorkerStageMixin:
             # Installed plugins may replace native engine output types and
             # break the fixed Rust/Python MessagePack contract used by vllm-rs.
             environment.setdefault("VLLM_PLUGINS", "")
-        if self.config.engines_serve_native_grpc and backend.type == "sglang":
+        if backend.type == "sglang" and (
+            self.config.dynamo.sidecar or get_frontend(self.config.frontend.type).dials_native_grpc
+        ):
             # The sidecar (or a frontend that dials the engine itself) talks to SGLang's native gRPC server, a prebuilt Rust extension. In
             # images that run SGLang from a source checkout (the nightlies), the extension
             # loader's default "auto" mode ignores the bundled .so and tries to rebuild it
