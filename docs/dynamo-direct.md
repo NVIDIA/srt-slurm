@@ -10,7 +10,7 @@ the frontend as they do for registered workers.
 dynamo (sidecar: true)                         dynamo-direct
 engine --grpc-port P <- sidecar (same node)    engine --grpc-port P
            sidecar -> etcd <- dynamo.frontend            ^ gRPC
-                                               dynamo.frontend --direct --engine-url http://<ip>:P ...
+                                               dynamo.frontend --direct --engine-url grpc://<ip>:P ...
 ```
 
 Only `engine: sglang` is supported, with SGLang's Rust server (v0.5.23 or later).
@@ -20,7 +20,7 @@ Only `engine: sglang` is supported, with SGLang's Rust server (v0.5.23 or later)
 | Process | Command |
 | --- | --- |
 | Each engine node | `python3 -m sglang.launch_server ... --port <http> --grpc-port <grpc> --incremental-streaming-output`, the same engine command as [sidecar mode](sidecars.md) without the sidecar |
-| Frontend | `python3 -m dynamo.frontend --http-port=<port> --direct --direct-backend sglang --engine-url http://<ip>:<grpc> ...`, followed by `frontend.args` |
+| Frontend | `python3 -m dynamo.frontend --http-port=<port> --direct --direct-backend sglang --engine-url grpc://<ip>:<grpc> ...`, followed by `frontend.args` |
 
 - One `--engine-url` is passed per node that hosts native gRPC listeners, in
   topology order. Each engine reports its own role (aggregated, prefill or

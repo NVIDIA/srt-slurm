@@ -60,7 +60,7 @@ class DynamoDirectFrontend(DynamoFrontend):
             address = backend.router_worker_address(process)
             if address is not None:
                 node, port = address
-                args.extend(["--engine-url", f"http://{get_hostname_ip(node, runtime.network_interface)}:{port}"])
+                args.extend(["--engine-url", f"grpc://{get_hostname_ip(node, runtime.network_interface)}:{port}"])
         return args
 
     def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:

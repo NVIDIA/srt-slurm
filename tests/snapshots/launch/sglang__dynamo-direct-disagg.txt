@@ -87,7 +87,7 @@ mpi: pmix
 bash_preamble: |
     DYN_LOCK_DIR="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || echo "${HOME:-/root}")" && ( flock -x 200; if [ -f "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" ]; then echo 'dynamo install already completed in this environment, skipping'; else { echo 'Installing dynamo 1.4.2...' && pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime==1.4.2 ai-dynamo==1.4.2 && echo 'Dynamo 1.4.2 installed' ; } && touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"; fi ) 200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock"
 command: |
-    python3 -m dynamo.frontend --http-port=8000 --direct --direct-backend sglang --engine-url http://node-01:19000 --engine-url http://node-02:19001 --router-mode kv
+    python3 -m dynamo.frontend --http-port=8000 --direct --direct-backend sglang --engine-url grpc://node-01:19000 --engine-url grpc://node-02:19001 --router-mode kv
 
 ## service_dcgm-exporter_node-01
 nodelist: node-01

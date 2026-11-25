@@ -72,7 +72,7 @@ def test_launch_plan_runs_bare_engines_and_a_direct_frontend() -> None:
     launch = next(line.strip() for line in frontend.splitlines() if "dynamo.frontend" in line)
     assert launch == (
         "python3 -m dynamo.frontend --http-port=8000 --direct --direct-backend sglang "
-        f"--engine-url http://node-01:{grpc_ports[0]} --engine-url http://node-02:{grpc_ports[1]} --router-mode kv"
+        f"--engine-url grpc://node-01:{grpc_ports[0]} --engine-url grpc://node-02:{grpc_ports[1]} --router-mode kv"
     )
 
 
