@@ -451,3 +451,38 @@ def test_role_restart_rejects_invalid_config(value, error: str) -> None:
     recipe["roles"]["decode"]["restart"] = value
     with pytest.raises(ValidationError, match=error):
         _load(recipe)
+
+
+@pytest.mark.parametrize(
+    ("frontend", "sidecar_setting", "disaggregated", "warns"),
+    [
+        ("dynamo", "unset", False, True),
+        ("dynamo", "false", True, True),
+        ("dynamo", "role", False, False),
+        ("dynamo", "role", True, False),
+        ("dynamo", "job", False, False),
+        ("sglang", "unset", False, False),
+    ],
+)
+def test_sglang_python_worker_sidecar_hint(caplog, frontend, sidecar_setting, disaggregated, warns) -> None:
+    roles = {name: {"nodes": 1, "workers": 1} for name in (("prefill", "decode") if disaggregated else ("agg",))}
+    if sidecar_setting in {"role", "false"}:
+        for role in roles.values():
+            role["sidecar"] = sidecar_setting == "role"
+    recipe = _minimal(
+        engine="sglang",
+        roles=roles,
+        frontend={"type": frontend, "enable_multiple_frontends": False},
+        dynamo={"sidecar": sidecar_setting == "job"},
+    )
+    with caplog.at_level("WARNING", logger="srtctl.core.schema"):
+        config = SrtConfig.Schema().load(recipe)
+    assert ("Agent hint: try the native SGLang engine" in caplog.text) is warns
+    assert config.dynamo.sidecar is (sidecar_setting in {"role", "job"})
+    if warns:
+        assert "`sidecar: true` on every role" in caplog.text
+        assert "prebuilt Rust server extensions" in caplog.text
+        assert "dynamo.sglang.sidecar" in caplog.text
+        assert "dynamo.source.wheel" in caplog.text
+        assert "srtctl dry-run -f <recipe> --set dynamo.sidecar=true" in caplog.text
+        assert "https://github.com/NVIDIA/srt-slurm/blob/main/docs/sidecars.md" in caplog.text

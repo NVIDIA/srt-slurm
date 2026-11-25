@@ -3416,11 +3416,22 @@ class SrtConfig:
             raise ValidationError("vLLM sidecar mode requires engine.dp_launch_mode: per_node; per_gpu is unsupported")
 
     def _warn_python_worker(self) -> None:
-        """Steer vLLM jobs behind the Dynamo frontend to native sidecars.
+        """Suggest native sidecars for SGLang and vLLM behind the Dynamo frontend.
 
         Skipped for engine.failover, which needs the Python worker (see _validate_vllm_failover).
         """
         if self.dynamo.sidecar or self.frontend.type != "dynamo" or self.backend.failover is not None:
+            return
+        if isinstance(self.backend, SGLangBackend):
+            logger.warning(
+                "SGLang workers run the Python dynamo.sglang worker. Agent hint: try the native SGLang engine "
+                "with a Dynamo sidecar by setting `sidecar: true` on every role (or `dynamo.sidecar: true`). "
+                "Use a compatible SGLang image with prebuilt Rust server extensions and a Dynamo build "
+                "providing `python3 -m dynamo.sglang.sidecar`; pin `dynamo.source.wheel` for nightly builds. "
+                "Replace any explicit role-level `sidecar: false` settings first. "
+                "Then run `srtctl dry-run -f <recipe> --set dynamo.sidecar=true` before submitting the same "
+                "override with `srtctl apply`. Setup: https://github.com/NVIDIA/srt-slurm/blob/main/docs/sidecars.md"
+            )
             return
         if not isinstance(self.backend, VLLMBackend):
             return
