@@ -5,16 +5,13 @@
 
 from __future__ import annotations
 
-import contextlib
-import csv
-import json
 import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from srtctl.core.cpu_power import SAMPLES_HEADER
+from srtctl.core.node_samples import merge_node_csvs, read_node_markers, read_node_metadata
 from srtctl.core.power.contract import atomic_write_json
 from srtctl.core.power.session import SessionOutcome
 from srtctl.core.processes import ManagedProcess
@@ -60,20 +57,17 @@ class CpuPowerTelemetrySession:
         deadline = time.monotonic() + self.settings.startup_timeout_seconds
         expected = set(self.settings.nodes)
         while time.monotonic() < deadline:
-            ready = {path.name.removesuffix(".ready.json") for path in self.ready_dir.glob("*.ready.json")}
-            errors = list(self.ready_dir.glob("*.error.json"))
-            if expected <= ready:
-                self._ready_nodes = tuple(sorted(ready))
+            markers = read_node_markers(self.ready_dir)
+            if expected <= markers.ready:
+                self._ready_nodes = tuple(sorted(markers.ready))
                 self._write_manifest(status="running", reasons=(), row_count=0, observed_nodes=self._ready_nodes)
                 return True
-            if errors or any(process.exit_code not in (None, 0) for process in self._processes):
+            if markers.errors or any(process.exit_code not in (None, 0) for process in self._processes):
                 break
             time.sleep(0.1)
-        ready = {path.name.removesuffix(".ready.json") for path in self.ready_dir.glob("*.ready.json")}
-        self._ready_nodes = tuple(sorted(ready))
-        reason = (
-            "cpu_power_source_unavailable" if list(self.ready_dir.glob("*.error.json")) else "cpu_power_startup_timeout"
-        )
+        markers = read_node_markers(self.ready_dir)
+        self._ready_nodes = tuple(sorted(markers.ready))
+        reason = "cpu_power_source_unavailable" if markers.errors else "cpu_power_startup_timeout"
         self._write_manifest(status="failed", reasons=(reason,), row_count=0, observed_nodes=self._ready_nodes)
         return False
 
@@ -81,38 +75,21 @@ class CpuPowerTelemetrySession:
         prematurely_exited = [process.name for process in self._processes if not process.is_running]
         for process in self._processes:
             process.terminate()
-        rows: list[list[str]] = []
-        malformed = False
-        observed_nodes: set[str] = set()
-        for path in sorted(self.samples_dir.glob("*.csv")):
-            try:
-                with path.open(newline="", encoding="utf-8") as handle:
-                    reader = csv.reader(handle)
-                    if tuple(next(reader, ())) != SAMPLES_HEADER:
-                        malformed = True
-                        continue
-                    for row in reader:
-                        if len(row) != len(SAMPLES_HEADER):
-                            malformed = True
-                            continue
-                        rows.append(row)
-                        observed_nodes.add(row[3])
-            except (OSError, csv.Error, UnicodeDecodeError):
-                malformed = True
-        rows.sort(key=lambda row: (float(row[1]), row[3], row[5]))
-        with self.samples_path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(SAMPLES_HEADER)
-            writer.writerows(rows)
+        merged = merge_node_csvs(
+            self.samples_dir,
+            SAMPLES_HEADER,
+            self.samples_path,
+            sort_key=lambda row: (float(row[1]), row[3], row[5]),
+        )
         reasons: list[str] = []
         if interrupted:
             reasons.append("interrupted")
-        if malformed:
+        if merged.malformed:
             reasons.append("cpu_samples_malformed")
-        missing = sorted(set(self.settings.nodes) - observed_nodes)
+        missing = sorted(set(self.settings.nodes) - set(merged.observed_nodes))
         if missing:
             reasons.append("cpu_node_samples_missing")
-        if not rows:
+        if not merged.row_count:
             reasons.append("cpu_samples_empty")
         failed_processes = prematurely_exited
         if failed_processes:
@@ -122,8 +99,8 @@ class CpuPowerTelemetrySession:
         self._write_manifest(
             status=status,
             reasons=tuple(dict.fromkeys(reasons)),
-            row_count=len(rows),
-            observed_nodes=tuple(sorted(observed_nodes)),
+            row_count=merged.row_count,
+            observed_nodes=merged.observed_nodes,
             missing_nodes=tuple(missing),
             failed_processes=tuple(failed_processes),
         )
@@ -144,10 +121,6 @@ class CpuPowerTelemetrySession:
         missing_nodes: tuple[str, ...] = (),
         failed_processes: tuple[str, ...] = (),
     ) -> None:
-        metadata: dict[str, Any] = {}
-        for path in sorted(self.samples_dir.glob("*.metadata.json")):
-            with contextlib.suppress(OSError, json.JSONDecodeError):
-                metadata[path.name.removesuffix(".metadata.json")] = json.loads(path.read_text())
         atomic_write_json(
             self.manifest_path,
             {
@@ -165,7 +138,7 @@ class CpuPowerTelemetrySession:
                 "reason_codes": list(reasons),
                 "failed_processes": list(failed_processes),
                 "producer_git_commit": self.settings.producer_git_commit,
-                "node_metadata": metadata,
+                "node_metadata": read_node_metadata(self.samples_dir),
                 "updated_at_unix": time.time(),
             },
         )
