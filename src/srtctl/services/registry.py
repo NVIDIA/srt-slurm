@@ -164,6 +164,8 @@ class ServiceKind:
     # and may point at an already-running instance (``external``).
     supports_dedicated: ClassVar[bool] = False
     supports_external: ClassVar[bool] = False
+    # Kinds that accept ``host_native: true`` in recipes to run without a container.
+    supports_host_native: ClassVar[bool] = False
     # ``options`` keys this kind understands.
     option_keys: ClassVar[tuple[str, ...]] = ()
     # True when the kind assembles its own command in ``build_command`` (etcd, the
@@ -195,7 +197,7 @@ class ServiceKind:
 
     def host_native(self, service: ServiceConfig) -> bool:
         """True to run the command straight on the node, with no container (a static host binary)."""
-        return service.host_native
+        return False
 
     def prepare(self, service: ServiceConfig, runtime: RuntimeContext, config: SrtConfig) -> None:
         """Write anything the command needs into the run's log dir; called once per service, before launch."""

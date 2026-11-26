@@ -7,6 +7,7 @@ Benchmark stage mixin for SweepOrchestrator.
 Handles benchmark execution and profiling.
 """
 
+import functools
 import json
 import logging
 import re
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
     from srtctl.core.schema import SrtConfig
     from srtctl.core.topology import Endpoint, Process
     from srtctl.frontends import Frontend
+    from srtctl.services.config import ServiceConfig
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +127,10 @@ class BenchmarkStageMixin:
         """Frontend and nginx placement (FrontendStageMixin)."""
         raise NotImplementedError
 
+    def service_nodes(self, service: "ServiceConfig") -> list[str]:
+        """Physical nodes a service's placement selects (ServiceStageMixin)."""
+        raise NotImplementedError
+
     @property
     def frontend(self) -> "Frontend | None":
         """The frontend implementation for ``frontend.type``; ``None`` for a services-only job."""
@@ -142,6 +148,34 @@ class BenchmarkStageMixin:
             return self.runtime.nodes.head
         topology = self._compute_frontend_topology()
         return topology.nginx_node or topology.frontend_nodes[0]
+
+    @functools.cached_property
+    def _public_api_endpoint(self) -> tuple[str | None, str | None, int | None]:
+        """Resolved public frontend ``(node, ip, port)``; all None for ``frontend.type: none``."""
+        if self.config.frontend.type == FRONTEND_NONE:
+            return None, None, None
+        node = self._public_api_node()
+        ip = (
+            self.runtime.head_node_ip
+            if node == self.runtime.nodes.head
+            else get_hostname_ip(node, self.runtime.network_interface)
+        )
+        return node, ip, self.runtime.frontend_port
+
+    @functools.cached_property
+    def benchmark_runtime(self) -> "RuntimeContext":
+        """RuntimeContext routed to ``benchmark.target_service`` when set, else ``self.runtime``."""
+        if self.config.benchmark.target_service is None:
+            return self.runtime
+        resolved = self.config.resolve_benchmark_target_service()
+        if resolved is None:
+            return self.runtime
+        service, port = resolved
+        nodes = self.service_nodes(service)
+        if not nodes:
+            raise RuntimeError(f"benchmark.target_service {service.name!r} selected no nodes in this allocation")
+        host = get_hostname_ip(nodes[0], self.runtime.network_interface)
+        return replace(self.runtime, benchmark_target_host=host, benchmark_target_port=port)
 
     def _benchmark_node(self) -> str:
         """Node the benchmark client runs on (honors benchmark.placement.node).
@@ -331,15 +365,14 @@ class BenchmarkStageMixin:
         """
         from srtctl.services.implicit import effective_services
 
-        service_nodes = getattr(self, "service_nodes", None)
-        if service_nodes is None:
+        if type(self).service_nodes is BenchmarkStageMixin.service_nodes:
             return {}
         env: dict[str, str] = {}
         for entry in effective_services(self.config):
             service = entry.service
             if service.external:
                 continue
-            nodes = service_nodes(service)
+            nodes = self.service_nodes(service)
             if not nodes:
                 continue
             key = re.sub(r"[^A-Za-z0-9]", "_", service.name).upper()
@@ -351,21 +384,6 @@ class BenchmarkStageMixin:
             if service.effective_port is not None:
                 env[f"SRT_SERVICE_{key}_PORT"] = str(service.effective_port)
         return env
-
-    def _benchmark_target(self) -> tuple[str, int] | None:
-        """Resolved ``(ip, port)`` when ``benchmark.target_service`` is set, else None."""
-        target_name = getattr(getattr(self.config, "benchmark", None), "target_service", None)
-        if not isinstance(target_name, str):
-            return None
-        resolved = self.config.resolve_benchmark_target_service()
-        if resolved is None:
-            return None
-        service, port = resolved
-        service_nodes = getattr(self, "service_nodes", None)
-        nodes = service_nodes(service) if service_nodes is not None else []
-        if not nodes:
-            raise RuntimeError(f"benchmark.target_service {service.name!r} selected no nodes in this allocation")
-        return get_hostname_ip(nodes[0], self.runtime.network_interface), port
 
     def run_benchmark(
         self, registry: "ProcessRegistry", stop_event: threading.Event, reporter: StatusReporter | None = None
@@ -517,12 +535,7 @@ class BenchmarkStageMixin:
         stop_event: threading.Event,
     ) -> int:
         """Run the actual benchmark script."""
-        target = self._benchmark_target()
-        bench_runtime = (
-            replace(self.runtime, benchmark_target_host=target[0], benchmark_target_port=target[1])
-            if target is not None
-            else self.runtime
-        )
+        bench_runtime = self.benchmark_runtime
         cmd = runner.build_command(self.config, bench_runtime)
         env_to_set = self._get_benchmark_env(runner)
         env_to_set.update(runner.get_environment(self.config, bench_runtime))
@@ -917,13 +930,15 @@ class BenchmarkStageMixin:
         # command should target http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT.
         # When benchmark.target_service is set, redirect the benchmark endpoint to
         # that service (e.g. a gateway in front of the frontend).
-        resolved_target = self._benchmark_target()
-        if resolved_target is not None:
-            env["SRT_FRONTEND_HOST"] = resolved_target[0]
-            env["SRT_FRONTEND_PORT"] = str(resolved_target[1])
-        elif self.config.frontend.type != "none":
-            env["SRT_FRONTEND_HOST"] = get_hostname_ip(self._public_api_node(), self.runtime.network_interface)
-            env["SRT_FRONTEND_PORT"] = str(self.runtime.frontend_port)
+        bench_runtime = self.benchmark_runtime
+        if bench_runtime.benchmark_target_host is not None:
+            env["SRT_FRONTEND_HOST"] = bench_runtime.benchmark_target_host
+            env["SRT_FRONTEND_PORT"] = str(bench_runtime.benchmark_port)
+        else:
+            _fe_node, fe_ip, fe_port = self._public_api_endpoint
+            if fe_ip is not None and fe_port is not None:
+                env["SRT_FRONTEND_HOST"] = fe_ip
+                env["SRT_FRONTEND_PORT"] = str(fe_port)
 
         # Propagate top-level recipe environment to the bench step. Workers
         # already get this via worker_stage; benches need it too for things

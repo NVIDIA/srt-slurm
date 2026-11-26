@@ -107,7 +107,7 @@ class AgentPerfRunner(BenchmarkRunner):
         runtime: RuntimeContext,
     ) -> list[str]:
         b = config.benchmark
-        endpoint = self.target_endpoint(runtime)
+        endpoint = runtime.benchmark_endpoint
         model_name = config.served_model_name or config.model.path
 
         return [

@@ -1361,6 +1361,7 @@ class TestBenchmarkChildReaping:
                 return {}
 
         harness = Harness()
+        harness.config.benchmark.target_service = None
         harness.runtime.log_dir = tmp_path
         harness.runtime.srun_options = {}
         harness.runtime.nodes.het_group_for.return_value = None

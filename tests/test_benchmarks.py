@@ -453,7 +453,9 @@ class TestCustomBenchmarkRunner:
 
         stage = Stage()
         stage.config = SimpleNamespace(
-            benchmark=SimpleNamespace(type=benchmark_type, aiperf_package=None, placement=PlacementConfig()),
+            benchmark=SimpleNamespace(
+                type=benchmark_type, aiperf_package=None, placement=PlacementConfig(), target_service=None
+            ),
             backend=backend,
             backend_type=backend_type,
             dynamo=SimpleNamespace(sidecar=dynamo_sidecar),
@@ -465,6 +467,8 @@ class TestCustomBenchmarkRunner:
         stage.runtime = SimpleNamespace(
             environment=environment or {},
             frontend_port=8000,
+            head_node_ip="ip-head-node",
+            benchmark_target_host=None,
             network_interface="ibp1s0",
             nodes=SimpleNamespace(head="head-node"),
         )
@@ -1231,6 +1235,7 @@ class TestSGLangBenchRunner:
         runner = SGLangBenchRunner()
         runtime = MagicMock()
         runtime.frontend_port = 8000
+        runtime.benchmark_endpoint = "http://localhost:8000"
 
         config = SrtConfig(
             name="test",
@@ -1358,6 +1363,7 @@ class TestTraceReplayRunner:
         runner = TraceReplayRunner()
         runtime = MagicMock()
         runtime.frontend_port = 8000
+        runtime.benchmark_endpoint = "http://localhost:8000"
         runtime.is_hf_model = False
         runtime.worker_model_arg = "/model"
 
@@ -1615,6 +1621,7 @@ class TestAgentPerfRunner:
         runner = get_runner("agentperf")
         runtime = MagicMock()
         runtime.frontend_port = 8000
+        runtime.benchmark_endpoint = "http://localhost:8000"
         config = self._config(
             agentperf_client_dir="/agentperf-client",
             agentperf_config="/workload/agentperf.yaml",
@@ -1638,6 +1645,7 @@ class TestAgentPerfRunner:
         runner = get_runner("agentperf")
         runtime = MagicMock()
         runtime.frontend_port = 8000
+        runtime.benchmark_endpoint = "http://localhost:8000"
         config = self._config(
             agentperf_client_dir="/agentperf-client",
             agentperf_config="/workload/agentperf.yaml",
@@ -1711,6 +1719,7 @@ class TestLMEvalRunner:
         runner = LMEvalRunner()
         runtime = MagicMock()
         runtime.frontend_port = 8000
+        runtime.benchmark_endpoint = "http://localhost:8000"
 
         config = MagicMock()
         cmd = runner.build_command(config, runtime)
@@ -1761,6 +1770,7 @@ class TestGSM8KRunner:
         runner = get_runner("gsm8k")
         runtime = MagicMock()
         runtime.frontend_port = 8000
+        runtime.benchmark_endpoint = "http://localhost:8000"
 
         cmd = runner.build_command(self._sglang_config(), runtime)
         assert cmd == [
@@ -1783,6 +1793,8 @@ class TestGSM8KRunner:
         runner = get_runner("gsm8k")
         runtime = MagicMock()
         runtime.frontend_port = 8000
+        runtime.benchmark_host = "localhost"
+        runtime.benchmark_port = 8000
 
         cmd = runner.build_command(self._vllm_config(), runtime)
         assert cmd == [
@@ -1805,6 +1817,8 @@ class TestGSM8KRunner:
         runner = get_runner("gsm8k")
         runtime = MagicMock()
         runtime.frontend_port = 9001
+        runtime.benchmark_host = "localhost"
+        runtime.benchmark_port = 9001
 
         cmd = runner.build_command(
             self._vllm_config(num_examples=100, max_tokens=2048, num_shots=8, temperature=0.6, repeat=5),

@@ -120,7 +120,7 @@ services:
 `command`, `args`, `build_command`, `env` values, and `preamble` may use these placeholders: `{node}`, `{node_ip}`,
 `{node_id}` (position in the worker list), `{index}` (instance index within the service), `{role}`
 (the `placement.node` value), `{head_node}`, `{head_ip}`, `{infra_node}`, `{infra_ip}`,
-`{frontend_node}`, `{frontend_ip}`, `{frontend_port}` (when `frontend.type` is not `none`),
+`{frontend_node}`, `{frontend_ip}`, `{frontend_port}` (when `frontend.type` is not `none`; a `before_workers` service sees the planned frontend address before the frontend starts),
 `{master_port}`, `{metadata_port}`, `{gpus_per_node}`, and the service's own node set: `{pool_node}` /
 `{pool_ip}` (its first node), `{pool_nodes}` / `{pool_ips}` (every node, comma-separated, in order),
 `{pool_node_count}`. Only those names are substituted; other braces (JSON in an env value) are left alone.

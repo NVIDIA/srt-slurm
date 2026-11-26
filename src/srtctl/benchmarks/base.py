@@ -129,23 +129,6 @@ class BenchmarkRunner(ABC):
         """Get benchmark-specific environment variables."""
         return {}
 
-    @staticmethod
-    def target_host_port(runtime: RuntimeContext) -> tuple[str, int]:
-        """``(host, port)`` this benchmark sends requests to (target service when set, else local frontend)."""
-        raw_host = getattr(runtime, "benchmark_target_host", None)
-        raw_port = getattr(runtime, "benchmark_target_port", None)
-        host = raw_host if isinstance(raw_host, str) else "localhost"
-        port = raw_port if isinstance(raw_port, int) else runtime.frontend_port
-        return host, port
-
-    @classmethod
-    def target_endpoint(cls, runtime: RuntimeContext) -> str:
-        """Base HTTP URL this benchmark sends requests to (``http://<host>:<port>``)."""
-        from srtctl.core.ip_utils import url_host
-
-        host, port = cls.target_host_port(runtime)
-        return f"http://{url_host(host)}:{port}"
-
     def plan_prewarm(
         self,
         config: SrtConfig,

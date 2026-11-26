@@ -413,6 +413,8 @@ class ServiceConfig:
             raise ValidationError(f"{label}.command/args must not contain empty arguments")
         if self.build_command is not None and not self.build_command:
             raise ValidationError(f"{label}.build_command, if set, must be non-empty (omit it entirely instead)")
+        if self.host_native and not kind.supports_host_native:
+            raise ValidationError(f"{label}.host_native is only supported for generic services, not {self.type!r}")
         if self.host_native and self.container is not None:
             raise ValidationError(
                 f"{label}: host_native: true cannot be combined with container ({self.container!r}); drop one"

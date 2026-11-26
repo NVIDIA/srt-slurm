@@ -86,7 +86,7 @@ class SGLangBenchRunner(BenchmarkRunner):
         runtime: RuntimeContext,
     ) -> list[str]:
         b = config.benchmark
-        endpoint = self.target_endpoint(runtime)
+        endpoint = runtime.benchmark_endpoint
 
         # Format concurrencies as x-separated string if it's a list
         concurrencies = b.concurrencies

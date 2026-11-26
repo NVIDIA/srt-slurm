@@ -55,7 +55,7 @@ class LongBenchV2Runner(BenchmarkRunner):
         runtime: RuntimeContext,
     ) -> list[str]:
         b = config.benchmark
-        endpoint = self.target_endpoint(runtime)
+        endpoint = runtime.benchmark_endpoint
 
         # Build categories string if provided
         categories = ""

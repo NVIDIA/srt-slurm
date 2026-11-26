@@ -607,7 +607,7 @@
               "type": "null"
             }
           ],
-          "description": "Name of a services[] entry the benchmark client sends requests to instead of the frontend (e.g. a gateway).",
+          "description": "Name of a services[] entry the benchmark client sends requests to instead of the frontend (targets instance 0).",
           "default": null
         },
         "target_port": {

@@ -1,12 +1,12 @@
-# A host-native sandbox service paired with a gateway in front of the inference frontend.
+# A host-native sandbox service paired with a forwarding gateway in front of the inference frontend.
 #
 # Demonstrates:
 # - `host_native: true` on a generic service (runs on the bare host node without a container,
 #   for daemons that need host devices, sockets, or cgroups).
 # - `{frontend_ip}` and `{frontend_port}` placeholders so a gateway service points at the
 #   resolved frontend regardless of `frontend.placement.node`.
-# - `benchmark.target_service` so a built-in benchmark (or custom script reading
-#   `SRT_FRONTEND_HOST`/`SRT_FRONTEND_PORT`) drives the gateway instead of the raw frontend.
+# - `benchmark.target_service` so a built-in benchmark (and `SRT_FRONTEND_HOST`/`SRT_FRONTEND_PORT`)
+#   drives the gateway instead of the raw frontend.
 #
 # Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
 
@@ -55,8 +55,6 @@ services:
     start: after_frontend
     critical: true
     inherit_discovery_env: false
-    env:
-      SANDBOX_LISTEN: "127.0.0.1:18090"
     command:
       - python3
       - -m
@@ -78,21 +76,42 @@ services:
     inherit_discovery_env: false
     env:
       LLM_API_BASE: "http://{frontend_ip}:{frontend_port}"
-      SANDBOX_ENDPOINT: "http://127.0.0.1:18090"
-      GATEWAY_LISTEN: "0.0.0.0:18400"
+      GATEWAY_PORT: "18400"
     command:
       - python3
-      - -m
-      - http.server
-      - "18400"
+      - -c
+      - |
+        import http.server, os, urllib.error, urllib.request
+        upstream, count = os.environ["LLM_API_BASE"].rstrip("/"), 0
+        class Proxy(http.server.BaseHTTPRequestHandler):
+            def _forward(self):
+                global count
+                if self.path == "/healthz":
+                    self.send_response(200); self.end_headers(); self.wfile.write(b"ok"); return
+                if self.path == "/metrics":
+                    body = f"# TYPE gateway_requests_total counter\ngateway_requests_total {count}\n".encode()
+                    self.send_response(200); self.send_header("Content-Type", "text/plain"); self.end_headers(); self.wfile.write(body); return
+                count += 1
+                length = int(self.headers.get("Content-Length", "0"))
+                data = self.rfile.read(length) if length else None
+                hdrs = {k: v for k, v in self.headers.items() if k.lower() not in ("host", "content-length")}
+                req = urllib.request.Request(upstream + self.path, data=data, headers=hdrs, method=self.command)
+                try:
+                    with urllib.request.urlopen(req, timeout=300) as r:
+                        body = r.read(); self.send_response(r.status); self.send_header("Content-Type", r.headers.get("Content-Type", "application/json")); self.end_headers(); self.wfile.write(body)
+                except urllib.error.HTTPError as e:
+                    body = e.read(); self.send_response(e.code); self.end_headers(); self.wfile.write(body)
+            do_GET = do_POST = _forward
+            def log_message(self, *args): pass
+        http.server.ThreadingHTTPServer(("0.0.0.0", int(os.environ["GATEWAY_PORT"])), Proxy).serve_forever()
     readiness:
       http:
         port: 18400
-        path: /
+        path: /healthz
         status: 200
       timeout_seconds: 60
     metrics:
-      port: 19092
+      port: 18400
       path: /metrics
 
 benchmark:

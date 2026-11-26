@@ -52,7 +52,7 @@ class MMLURunner(BenchmarkRunner):
         runtime: RuntimeContext,
     ) -> list[str]:
         b = config.benchmark
-        endpoint = self.target_endpoint(runtime)
+        endpoint = runtime.benchmark_endpoint
 
         return [
             "bash",

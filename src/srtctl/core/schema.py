@@ -1296,7 +1296,7 @@ class BenchmarkConfig:
     container_image: str | None = None
     # Extra environment variables for the benchmark client (custom, agentperf).
     env: dict[str, str] = field(default_factory=dict)
-    # Name of a services[] entry the benchmark client sends requests to instead of the frontend (e.g. a gateway).
+    # Name of a services[] entry the benchmark client sends requests to instead of the frontend (targets instance 0).
     target_service: str | None = None
     # Port on target_service to send benchmark requests to; defaults to that service's tcp/http readiness port.
     target_port: int | None = None
@@ -3305,6 +3305,11 @@ class SrtConfig:
 
         for entry in effective_services(self):
             if entry.service.name == target_name and not entry.service.external:
+                if entry.service.effective_per == "worker":
+                    raise ValidationError(
+                        f"benchmark.target_service {target_name!r} uses placement.per: worker and has no single "
+                        "node endpoint"
+                    )
                 port = (
                     self.benchmark.target_port
                     if self.benchmark.target_port is not None
@@ -3312,8 +3317,8 @@ class SrtConfig:
                 )
                 if port is None:
                     raise ValidationError(
-                        f"benchmark.target_service {target_name!r} has no tcp/http readiness port; "
-                        "set benchmark.target_port"
+                        f"benchmark.target_service {target_name!r} has no tcp/http readiness port "
+                        "(e.g. it uses a log/file readiness probe or none); set benchmark.target_port"
                     )
                 return entry.service, port
         available = [entry.service.name for entry in effective_services(self) if not entry.service.external]
@@ -3330,7 +3335,7 @@ class SrtConfig:
             if b.target_service is None:
                 raise ValidationError("benchmark.target_port requires benchmark.target_service")
         if b.target_service is not None:
-            if not str(b.target_service).strip():
+            if not b.target_service.strip():
                 raise ValidationError("benchmark.target_service must be a non-empty service name")
             if b.type == "manual":
                 raise ValidationError("benchmark.target_service is only valid when benchmark.type is not 'manual'")

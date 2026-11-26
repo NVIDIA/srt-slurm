@@ -102,6 +102,11 @@ class ServiceStageMixin:
     endpoints: list[Endpoint]
     backend_processes: list[Process]
 
+    if TYPE_CHECKING:
+        # Provided by BenchmarkStageMixin on SweepOrchestrator.
+        @property
+        def _public_api_endpoint(self) -> tuple[str | None, str | None, int | None]: ...
+
     # -- node resolution ---------------------------------------------------------
 
     @property
@@ -261,18 +266,6 @@ class ServiceStageMixin:
             log=clone_log,
         )
         return checkout_root / source.path if source.path else checkout_root
-
-    def _service_frontend_endpoint(self) -> tuple[str | None, str | None, int | None]:
-        """Public frontend ``(node, ip, port)`` for service placeholders; all None for ``frontend.type: none``."""
-        if self.config.frontend.type == "none":
-            return None, None, None
-        public_api_node = getattr(self, "_public_api_node", None)
-        frontend_node = public_api_node() if public_api_node is not None else self.runtime.nodes.head
-        if frontend_node == self.runtime.nodes.head:
-            frontend_ip = self.runtime.head_node_ip
-        else:
-            frontend_ip = get_hostname_ip(frontend_node, self.runtime.network_interface)
-        return frontend_node, frontend_ip, self.runtime.frontend_port
 
     def _build_service_source(
         self,
@@ -488,7 +481,7 @@ class ServiceStageMixin:
         self._check_port_collisions([entry.service for entry in effective])
 
         worker_order = {node: i for i, node in enumerate(self.runtime.nodes.compute)}
-        frontend_node, frontend_ip, frontend_port = self._service_frontend_endpoint()
+        frontend_node, frontend_ip, frontend_port = self._public_api_endpoint
         started: list[ManagedProcess] = []
         try:
             for entry in phase:
