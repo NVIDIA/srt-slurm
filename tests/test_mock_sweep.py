@@ -208,7 +208,7 @@ def test_mock_worker_restart_preserves_role_launch_settings_and_records_exhausti
     output_dir = tmp_path / "outputs" / "42042"
     launches = []
 
-    def kill_and_reconcile(self, registry, stop_event, reporter):
+    def kill_and_reconcile(self, registry, stop_event, reporter, supervisor=None):
         reconcile = monitor.call_args.kwargs["reconcile"]
         original = registry.get_process("agg_0_mock-node-01")
         assert original is not None and original.supervised
@@ -279,7 +279,7 @@ def test_mock_failed_relaunch_after_a_clean_exit_tracks_and_stops_partial_worker
     config_path.write_text(yaml.safe_dump(config))
     output_dir = tmp_path / "outputs" / "42042"
 
-    def fail_and_reconcile(self, registry, stop_event, reporter):
+    def fail_and_reconcile(self, registry, stop_event, reporter, supervisor=None):
         reconcile = monitor.call_args.kwargs["reconcile"]
         for node in ("mock-node-01", "mock-node-02"):
             original = registry.get_process(f"agg_0_{node}")
@@ -333,7 +333,7 @@ def test_mock_direct_replacement_becomes_ready_on_its_public_port(tmp_path: Path
     config_path.write_text(yaml.safe_dump(config))
     output_dir = tmp_path / "outputs" / "42042"
 
-    def restart_and_probe(self, registry, stop_event, reporter):
+    def restart_and_probe(self, registry, stop_event, reporter, supervisor=None):
         reconcile = monitor.call_args.kwargs["reconcile"]
         reconcile.__self__.probe_interval = 0
         original = registry.get_process("agg_0_mock-node-01")
@@ -374,7 +374,7 @@ def test_mock_weight_cache_daemons_survive_an_engine_relaunch(tmp_path: Path) ->
     output_dir = tmp_path / "outputs" / "42042"
     launches = []
 
-    def restart_engine(self, registry, stop_event, reporter):
+    def restart_engine(self, registry, stop_event, reporter, supervisor=None):
         reconcile = monitor.call_args.kwargs["reconcile"]
         supervisor = reconcile.__self__
         clock = [0.0]

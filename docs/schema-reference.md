@@ -34,6 +34,7 @@ Top-level keys of a recipe YAML.
 | `enable_config_dump` | bool | `True` | Accepted for compatibility; srtctl does not read it. Workers dump their config where the engine supports it. |
 | `setup_script` | str \| None | `None` | Custom setup script (runs before dynamo install and worker startup) e.g. "custom-setup.sh" -> runs /configs/custom-setup.sh |
 | `host_setup` | [HostSetupConfig](#hostsetupconfig) | `HostSetupConfig()` | Commands run on each node's bare host, outside the container, before any worker starts. Cluster-wide default lives in srtslurm.yaml as default_host_setup; a recipe that sets this block replaces that default. |
+| `chaos` | [ChaosConfig](#chaosconfig) | `ChaosConfig()` | Concurrent fault injection timeline (kill/freeze/rolling_restart) run alongside the benchmark; recorded in `chaos_events.json`. See docs/chaos.md. |
 | `services` | list[[ServiceConfig](#serviceconfig)] | `[]` | Long-running processes launched next to the job: generic sidecars (an experimental router built from a PR) and typed ones (a standalone Mooncake store per worker node). See docs/services.md. |
 | `post_eval` | [PostEvalConfig](#postevalconfig) | `PostEvalConfig()` | Post-benchmark / eval-only evaluation dispatch: extra env forwarded into the eval process and an optional command override. Replaces the downstream source patch that used to extend the passthrough list in do_sweep.py. |
 | `identity` | [IdentityConfig](#identityconfig) | `IdentityConfig()` | Virtual identity — declares what *should* be running (verified against fingerprint) |
@@ -325,6 +326,19 @@ Commands run on the bare host of each allocated node, outside the container.
 | `ignore_failure` | bool | `False` | When True, a failing node logs a warning instead of failing the job. |
 | `timeout_seconds` | int | `300` | Per-node wall-clock budget for commands and for teardown. |
 
+### ChaosConfig
+
+Concurrent fault injection timeline executed while the benchmark runs.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `events` | list[[ChaosEventConfig](#chaoseventconfig)] | `[]` | Ordered list of fault events to execute during the benchmark. |
+| `schedule` | [ChaosScheduleConfig](#chaosscheduleconfig) \| None | `None` | Optional stochastic soak schedule (MTBF + minimum gap) that repeatedly injects faults until the benchmark finishes or ``max_events`` is reached. |
+| `leashed` | bool | `False` | Dry-run mode on a live cluster. Runs target selection, ``min_healthy`` checks, and on-node process discovery, logging what would be signalled into ``chaos_events.json`` with status ``leashed`` without sending any signals. |
+| `min_healthy` | int | `0` | Blast-radius guard: minimum number of workers in the targeted role that must remain healthy and running after a fault. Events that would drop healthy capacity below ``min_healthy`` are skipped (or, for ``rolling_restart``, deferred until enough workers are ready). ``0`` disables the guard. |
+| `seed` | int \| None | `None` | Optional RNG seed for deterministic ``workers: random``, ``rank: random``, and stochastic schedule draws. |
+| `hot_metric` | str | `'dynamo_component_inflight_requests'` | Primary Prometheus metric scraped from candidate workers when resolving ``workers: hottest``. Falls back to engine running-request gauges, then worker index order. |
+
 ### ServiceConfig
 
 One entry of the top-level ``services:`` list.
@@ -508,6 +522,48 @@ Host-side CPU power collection on every worker node.
 | `startup_timeout_seconds` | float | `30.0` | How long to wait for every node's collector to publish its ready marker before giving up on readiness. |
 | `required` | bool | `False` | Fail the job when the leg does not become ready or does not produce a valid publication. |
 | `storage_subdir` | str | `'cpu_power'` | Directory below the run log directory that holds the CPU samples and manifest. Must differ from ``telemetry.storage_subdir``. |
+
+### ChaosEventConfig
+
+One scheduled fault injection event executed alongside the benchmark.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `type` | one of `'kill'`, `'freeze'`, `'rolling_restart'` | required | Fault action to run: ``kill`` (signal the worker step, or a matched subprocess when ``process`` is set), ``freeze`` (SIGSTOP, verify ``/proc/<pid>/stat`` state ``T``, hold, then SIGCONT), or ``rolling_restart`` (restart every worker of ``role`` in sliding ``max_unavailable`` waves). |
+| `after_seconds` | float | `0.0` | Delay in seconds after the previous event (or benchmark start for the first event) before running this event. |
+| `role` | one of `'prefill'`, `'decode'`, `'agg'` | `'agg'` | Worker role to target (``prefill``, ``decode``, or ``agg``). |
+| `workers` | int \| list[int] \| str | `0` | Which worker endpoint(s) of ``role`` to target on ``kill`` or ``freeze``: a zero-based index (``0``), list of indices (``[0, 1]``), ``all``, ``hottest`` / ``hottest:<N>``, or ``random`` / ``random:<N>``. |
+| `process` | str \| None | `None` | Optional process selector on the worker node. Omit on ``kill`` to signal the whole worker step. Set to a semantic alias (``main``, ``engine``, or ``rank`` — resolved from the role backend's ``fault_process_targets``) or any literal cmdline substring to target subprocesses inside the worker. On ``freeze``, defaults to ``engine``. |
+| `rank` | int \| one of `'random'`, `'all'` | `0` | Which matched subprocess (sorted by PID) to signal inside each targeted worker when ``process`` is active: a zero-based integer index, ``random``, or ``all``. |
+| `signal` | str | `'KILL'` | Signal sent by ``kill`` (e.g. ``KILL``, ``TERM``, ``SIGKILL``). |
+| `duration_seconds` | float \| None | `None` | Hold duration in seconds for ``freeze`` before sending ``SIGCONT``. Omit to hold until the benchmark finishes and teardown resumes the process. |
+| `respawn` | bool | `False` | When true on ``kill``, hand the targeted endpoint to the worker supervisor so it relaunches in place even when ``roles.<role>.restart`` is ``never``. |
+| `wait_ready` | bool | `False` | When true on ``kill``, wait up to ``timeout_seconds`` for the worker supervisor's ``/health`` probe on the relaunched worker(s) before advancing to the next event. Requires ``respawn: true`` or ``roles.<role>.restart`` enabled. |
+| `max_unavailable` | int | `1` | Maximum number of worker endpoints taken down at once during ``rolling_restart``. |
+| `graceful` | bool | `True` | When true on ``rolling_restart``, stop workers with ``SIGTERM`` instead of ``SIGKILL``. |
+| `timeout_seconds` | float | `600.0` | Maximum time in seconds for ``rolling_restart`` or ``kill`` with ``wait_ready: true``. |
+| `name` | str \| None | `None` | Optional label recorded in ``chaos_events.json``. |
+
+### ChaosScheduleConfig
+
+Stochastic soak schedule (MTBF ``mean_interval_seconds`` with minimum gap ``min_interval_seconds``).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `mean_interval_seconds` | float | required | Mean time between faults in seconds (must be > 0). |
+| `min_interval_seconds` | float | `0.0` | Minimum enforced delay in seconds between consecutive faults (must satisfy ``0 <= min_interval_seconds <= mean_interval_seconds``). |
+| `initial_delay_seconds` | float | `0.0` | Warmup delay in seconds after benchmark start before the first scheduled fault. |
+| `max_events` | int \| None | `None` | Optional cap on total scheduled faults. Omit to run for the entire benchmark duration. |
+| `type` | one of `'kill'`, `'freeze'` | `'kill'` | Fault action fired each tick (``kill`` or ``freeze``). |
+| `role` | one of `'prefill'`, `'decode'`, `'agg'` | `'agg'` | Worker role to target (``prefill``, ``decode``, or ``agg``). |
+| `workers` | int \| list[int] \| str | `'random'` | Worker selector within ``role`` (default ``random``). |
+| `process` | str \| None | `None` | Optional process selector (``main``, ``engine``, ``rank``, or literal cmdline substring). On ``freeze``, defaults to ``engine``. |
+| `rank` | int \| one of `'random'`, `'all'` | `0` | Which matched subprocess rank to signal inside the targeted worker. |
+| `signal` | str | `'KILL'` | Signal sent when ``type`` is ``kill``. |
+| `duration_seconds` | float \| None | `None` | Hold duration in seconds when ``type`` is ``freeze``. |
+| `respawn` | bool | `True` | Hand killed endpoints to the worker supervisor for in-place relaunch (default true for soak schedules). |
+| `wait_ready` | bool | `False` | Wait for the relaunched worker's readiness probe before drawing the next interval. |
+| `timeout_seconds` | float | `600.0` | Maximum wait in seconds when ``wait_ready`` is true. |
 
 ### SourceConfig
 

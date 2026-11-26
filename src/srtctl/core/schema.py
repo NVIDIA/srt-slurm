@@ -19,6 +19,7 @@ import logging
 import math
 import os
 import shlex
+import signal
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import field
 from enum import Enum
@@ -376,6 +377,313 @@ class HostSetupConfig:
     def enabled(self) -> bool:
         """True when there is anything to run on the nodes."""
         return bool(self.commands or self.teardown)
+
+
+ChaosEventType = Literal["kill", "freeze", "rolling_restart"]
+CHAOS_PROCESS_ALIASES: frozenset[str] = frozenset({"main", "engine", "rank"})
+
+
+def parse_chaos_workers(
+    raw: int | list[int] | str,
+) -> tuple[Literal["index", "random", "hottest", "all"], tuple[int, ...], int]:
+    """Parse ``ChaosEventConfig.workers`` into ``(mode, indices, count)``.
+
+    Accepted forms:
+      - ``int`` (e.g. ``0``) or non-empty ``list[int]`` (e.g. ``[0, 1]``) -> ``("index", (...), 0)``
+      - ``"all"`` -> ``("all", (), 0)``
+      - ``"hottest"`` / ``"hottest:<N>"`` -> ``("hottest", (), N)``
+      - ``"random"`` / ``"random:<N>"`` -> ``("random", (), N)``
+    """
+    if isinstance(raw, bool):
+        raise ValidationError(
+            f"chaos event workers must be an index, index list, 'all', 'hottest[:N]', or 'random[:N]', got {raw!r}"
+        )
+    if isinstance(raw, int):
+        if raw < 0:
+            raise ValidationError(f"chaos event workers index must be >= 0, got {raw}")
+        return ("index", (raw,), 0)
+    if isinstance(raw, list):
+        if not raw:
+            raise ValidationError("chaos event workers list must be non-empty")
+        indices: list[int] = []
+        for idx in raw:
+            if isinstance(idx, bool) or not isinstance(idx, int) or idx < 0:
+                raise ValidationError(f"chaos event workers indices must be non-negative integers, got {idx!r}")
+            indices.append(idx)
+        return ("index", tuple(indices), 0)
+    if isinstance(raw, str):
+        val = raw.strip()
+        if val == "all":
+            return ("all", (), 0)
+        for prefix in ("hottest", "random"):
+            if val == prefix:
+                return (prefix, (), 1)
+            if val.startswith(f"{prefix}:"):
+                count_str = val.split(":", 1)[1]
+                try:
+                    count = int(count_str)
+                except ValueError:
+                    raise ValidationError(
+                        f"chaos event workers={raw!r} must have a positive integer count after ':'"
+                    ) from None
+                if count < 1:
+                    raise ValidationError(f"chaos event workers={raw!r} count must be >= 1")
+                return (prefix, (), count)
+    raise ValidationError(
+        f"chaos event workers={raw!r} is invalid; expected an index, list of indices, 'all', "
+        "'hottest[:N]', or 'random[:N]'"
+    )
+
+
+@dataclass(frozen=True)
+class ChaosEventConfig:
+    """One scheduled fault injection event executed alongside the benchmark.
+
+    Attributes:
+        type: Fault action to run: ``kill`` (signal the worker step, or a
+            matched subprocess when ``process`` is set), ``freeze`` (SIGSTOP,
+            verify ``/proc/<pid>/stat`` state ``T``, hold, then SIGCONT), or
+            ``rolling_restart`` (restart every worker of ``role`` in sliding
+            ``max_unavailable`` waves).
+        after_seconds: Delay in seconds after the previous event (or benchmark
+            start for the first event) before running this event.
+        role: Worker role to target (``prefill``, ``decode``, or ``agg``).
+        workers: Which worker endpoint(s) of ``role`` to target on ``kill`` or
+            ``freeze``: a zero-based index (``0``), list of indices (``[0, 1]``),
+            ``all``, ``hottest`` / ``hottest:<N>``, or ``random`` / ``random:<N>``.
+        process: Optional process selector on the worker node. Omit on ``kill``
+            to signal the whole worker step. Set to a semantic alias (``main``,
+            ``engine``, or ``rank`` — resolved from the role backend's
+            ``fault_process_targets``) or any literal cmdline substring to
+            target subprocesses inside the worker. On ``freeze``, defaults to
+            ``engine``.
+        rank: Which matched subprocess (sorted by PID) to signal inside each
+            targeted worker when ``process`` is active: a zero-based integer
+            index, ``random``, or ``all``.
+        signal: Signal sent by ``kill`` (e.g. ``KILL``, ``TERM``, ``SIGKILL``).
+        duration_seconds: Hold duration in seconds for ``freeze`` before
+            sending ``SIGCONT``. Omit to hold until the benchmark finishes and
+            teardown resumes the process.
+        respawn: When true on ``kill``, hand the targeted endpoint to the
+            worker supervisor so it relaunches in place even when
+            ``roles.<role>.restart`` is ``never``.
+        wait_ready: When true on ``kill``, wait up to ``timeout_seconds`` for
+            the worker supervisor's ``/health`` probe on the relaunched
+            worker(s) before advancing to the next event. Requires ``respawn:
+            true`` or ``roles.<role>.restart`` enabled.
+        max_unavailable: Maximum number of worker endpoints taken down at once
+            during ``rolling_restart``.
+        graceful: When true on ``rolling_restart``, stop workers with
+            ``SIGTERM`` instead of ``SIGKILL``.
+        timeout_seconds: Maximum time in seconds for ``rolling_restart`` or
+            ``kill`` with ``wait_ready: true``.
+        name: Optional label recorded in ``chaos_events.json``.
+    """
+
+    type: ChaosEventType
+    after_seconds: float = 0.0
+    role: WorkerMode = "agg"
+    workers: int | list[int] | str = 0
+    process: str | None = None
+    rank: int | Literal["random", "all"] = 0
+    signal: str = "KILL"
+    duration_seconds: float | None = None
+    respawn: bool = False
+    wait_ready: bool = False
+    max_unavailable: int = 1
+    graceful: bool = True
+    timeout_seconds: float = 600.0
+    name: str | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def normalized_signal(self) -> str:
+        """Signal name without a leading ``SIG`` prefix (uppercase)."""
+        raw = self.signal.strip().upper()
+        return raw.removeprefix("SIG")
+
+    @property
+    def effective_process(self) -> str | None:
+        """Process target for this event: ``process`` (defaulting to ``'engine'`` on ``freeze``)."""
+        if self.process is not None:
+            return self.process
+        return "engine" if self.type == "freeze" else None
+
+    def parse_workers(self) -> tuple[Literal["index", "random", "hottest", "all"], tuple[int, ...], int]:
+        """Return ``(mode, indices, count)`` for ``self.workers``."""
+        return parse_chaos_workers(self.workers)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.after_seconds, bool) or not math.isfinite(self.after_seconds) or self.after_seconds < 0:
+            raise ValidationError(f"chaos event after_seconds must be finite and >= 0, got {self.after_seconds!r}")
+        parse_chaos_workers(self.workers)
+        if isinstance(self.rank, bool) or (isinstance(self.rank, int) and self.rank < 0):
+            raise ValidationError(f"chaos event rank must be >= 0, 'random', or 'all', got {self.rank!r}")
+        if self.process is not None and not self.process.strip():
+            raise ValidationError("chaos event process must be non-empty when set")
+        sig = self.normalized_signal
+        if not sig or not hasattr(signal, f"SIG{sig}"):
+            raise ValidationError(f"chaos event signal {self.signal!r} is not a recognized POSIX signal")
+        if self.duration_seconds is not None and not _is_finite_positive(self.duration_seconds):
+            raise ValidationError(
+                f"chaos event duration_seconds must be finite and > 0 when set, got {self.duration_seconds!r}"
+            )
+        if self.max_unavailable < 1:
+            raise ValidationError(f"chaos event max_unavailable must be >= 1, got {self.max_unavailable}")
+        if not _is_finite_positive(self.timeout_seconds):
+            raise ValidationError(f"chaos event timeout_seconds must be finite and > 0, got {self.timeout_seconds!r}")
+
+
+@dataclass(frozen=True)
+class ChaosScheduleConfig:
+    """Stochastic soak schedule (MTBF ``mean_interval_seconds`` with minimum gap ``min_interval_seconds``).
+
+    Fires faults repeatedly until the benchmark exits (or ``max_events`` is
+    reached). Inter-event waits are drawn as ``min_interval_seconds +
+    Exp(1 / (mean_interval_seconds - min_interval_seconds))`` so the average
+    interval matches ``mean_interval_seconds`` while guaranteeing at least
+    ``min_interval_seconds`` between faults.
+
+    Attributes:
+        mean_interval_seconds: Mean time between faults in seconds (must be > 0).
+        min_interval_seconds: Minimum enforced delay in seconds between
+            consecutive faults (must satisfy ``0 <= min_interval_seconds <=
+            mean_interval_seconds``).
+        initial_delay_seconds: Warmup delay in seconds after benchmark start
+            before the first scheduled fault.
+        max_events: Optional cap on total scheduled faults. Omit to run for the
+            entire benchmark duration.
+        type: Fault action fired each tick (``kill`` or ``freeze``).
+        role: Worker role to target (``prefill``, ``decode``, or ``agg``).
+        workers: Worker selector within ``role`` (default ``random``).
+        process: Optional process selector (``main``, ``engine``, ``rank``, or
+            literal cmdline substring). On ``freeze``, defaults to ``engine``.
+        rank: Which matched subprocess rank to signal inside the targeted worker.
+        signal: Signal sent when ``type`` is ``kill``.
+        duration_seconds: Hold duration in seconds when ``type`` is ``freeze``.
+        respawn: Hand killed endpoints to the worker supervisor for in-place
+            relaunch (default true for soak schedules).
+        wait_ready: Wait for the relaunched worker's readiness probe before
+            drawing the next interval.
+        timeout_seconds: Maximum wait in seconds when ``wait_ready`` is true.
+    """
+
+    mean_interval_seconds: float
+    min_interval_seconds: float = 0.0
+    initial_delay_seconds: float = 0.0
+    max_events: int | None = None
+    type: Literal["kill", "freeze"] = "kill"
+    role: WorkerMode = "agg"
+    workers: int | list[int] | str = "random"
+    process: str | None = None
+    rank: int | Literal["random", "all"] = 0
+    signal: str = "KILL"
+    duration_seconds: float | None = None
+    respawn: bool = True
+    wait_ready: bool = False
+    timeout_seconds: float = 600.0
+
+    Schema: ClassVar[builtins.type[Schema]] = Schema
+
+    def to_event(self, *, name: str | None = None, after_seconds: float = 0.0) -> ChaosEventConfig:
+        """Materialize one ``ChaosEventConfig`` from this schedule template."""
+        return ChaosEventConfig(
+            type=self.type,
+            after_seconds=after_seconds,
+            role=self.role,
+            workers=self.workers,
+            process=self.process,
+            rank=self.rank,
+            signal=self.signal,
+            duration_seconds=self.duration_seconds,
+            respawn=self.respawn,
+            wait_ready=self.wait_ready,
+            timeout_seconds=self.timeout_seconds,
+            name=name,
+        )
+
+    def __post_init__(self) -> None:
+        if not _is_finite_positive(self.mean_interval_seconds):
+            raise ValidationError(
+                f"chaos.schedule.mean_interval_seconds must be finite and > 0, got {self.mean_interval_seconds!r}"
+            )
+        if (
+            isinstance(self.min_interval_seconds, bool)
+            or not math.isfinite(self.min_interval_seconds)
+            or self.min_interval_seconds < 0
+        ):
+            raise ValidationError(
+                f"chaos.schedule.min_interval_seconds must be finite and >= 0, got {self.min_interval_seconds!r}"
+            )
+        if self.min_interval_seconds > self.mean_interval_seconds:
+            raise ValidationError(
+                f"chaos.schedule.min_interval_seconds ({self.min_interval_seconds}) cannot exceed "
+                f"mean_interval_seconds ({self.mean_interval_seconds})"
+            )
+        if (
+            isinstance(self.initial_delay_seconds, bool)
+            or not math.isfinite(self.initial_delay_seconds)
+            or self.initial_delay_seconds < 0
+        ):
+            raise ValidationError(
+                f"chaos.schedule.initial_delay_seconds must be finite and >= 0, got {self.initial_delay_seconds!r}"
+            )
+        if self.max_events is not None and (isinstance(self.max_events, bool) or self.max_events < 1):
+            raise ValidationError(f"chaos.schedule.max_events must be >= 1 when set, got {self.max_events!r}")
+        # Validate action/targeting fields through the same event validator.
+        self.to_event()
+
+
+@dataclass(frozen=True)
+class ChaosConfig:
+    """Concurrent fault injection timeline executed while the benchmark runs.
+
+    Events (and an optional stochastic soak ``schedule``) run on a background
+    thread once the deployment is healthy and the benchmark starts. Each event
+    is recorded with UTC timestamps and target details in ``chaos_events.json``
+    inside the run's log directory.
+
+    Attributes:
+        events: Ordered list of fault events to execute during the benchmark.
+        schedule: Optional stochastic soak schedule (MTBF + minimum gap) that
+            repeatedly injects faults until the benchmark finishes or
+            ``max_events`` is reached.
+        leashed: Dry-run mode on a live cluster. Runs target selection,
+            ``min_healthy`` checks, and on-node process discovery, logging what
+            would be signalled into ``chaos_events.json`` with status
+            ``leashed`` without sending any signals.
+        min_healthy: Blast-radius guard: minimum number of workers in the
+            targeted role that must remain healthy and running after a fault.
+            Events that would drop healthy capacity below ``min_healthy`` are
+            skipped (or, for ``rolling_restart``, deferred until enough workers
+            are ready). ``0`` disables the guard.
+        seed: Optional RNG seed for deterministic ``workers: random``,
+            ``rank: random``, and stochastic schedule draws.
+        hot_metric: Primary Prometheus metric scraped from candidate workers
+            when resolving ``workers: hottest``. Falls back to engine
+            running-request gauges, then worker index order.
+    """
+
+    events: list[ChaosEventConfig] = field(default_factory=list)
+    schedule: ChaosScheduleConfig | None = None
+    leashed: bool = False
+    min_healthy: int = 0
+    seed: int | None = None
+    hot_metric: str = "dynamo_component_inflight_requests"
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if isinstance(self.min_healthy, bool) or self.min_healthy < 0:
+            raise ValidationError(f"chaos.min_healthy must be >= 0, got {self.min_healthy!r}")
+        if not self.hot_metric.strip():
+            raise ValidationError("chaos.hot_metric must be non-empty")
+
+    @property
+    def enabled(self) -> bool:
+        """True when at least one chaos event or a stochastic schedule is configured."""
+        return bool(self.events or self.schedule is not None)
 
 
 @dataclass
@@ -2955,6 +3263,10 @@ class SrtConfig:
     # default_host_setup; a recipe that sets this block replaces that default.
     host_setup: HostSetupConfig = field(default_factory=HostSetupConfig)
 
+    # Concurrent fault injection timeline (kill/freeze/rolling_restart) run
+    # alongside the benchmark; recorded in `chaos_events.json`. See docs/chaos.md.
+    chaos: ChaosConfig = field(default_factory=ChaosConfig)
+
     # Long-running processes launched next to the job: generic sidecars (an
     # experimental router built from a PR) and typed ones (a standalone Mooncake
     # store per worker node). See docs/services.md.
@@ -3007,6 +3319,7 @@ class SrtConfig:
         self._validate_dynamo_sidecar()
         self._validate_vllm_failover()
         self._validate_host_setup()
+        self._validate_chaos()
         self._validate_benchmark_type()
         self._validate_services_only()
         self._validate_services()
@@ -3395,6 +3708,73 @@ class SrtConfig:
                 "teardown will still run after the job, which is only what you want "
                 "if something outside this recipe set the node state"
             )
+
+    def _validate_chaos(self) -> None:
+        """Validate chaos fault-injection events and schedule against active roles and backends."""
+        if not self.chaos.enabled:
+            return
+        if not self.roles:
+            raise ValidationError("chaos requires at least one worker role in roles:")
+        if self.observability_nsys_enabled or self.profiling.is_nsys:
+            # Killed, frozen, or relaunched workers break nsys captures (unfinalized reports, missed
+            # capture-boundary acks, reused report paths), so chaos and nsys never run together.
+            raise ValidationError(
+                "chaos cannot run with nsys profiling; set observability.nsys.enabled: false "
+                "and do not use profiling.type: nsys/nsys-time"
+            )
+        worker_counts: dict[str, int] = {
+            "prefill": self.topology.num_prefill,
+            "decode": self.topology.num_decode,
+            "agg": self.topology.num_agg,
+        }
+        items: list[tuple[str, ChaosEventConfig]] = [
+            (f"chaos.events[{i}]", ev) for i, ev in enumerate(self.chaos.events)
+        ]
+        if self.chaos.schedule is not None:
+            items.append(("chaos.schedule", self.chaos.schedule.to_event()))
+        from srtctl.frontends import get_frontend
+
+        worker_launch = None if self.frontend.type == "none" else get_frontend(self.frontend.type).worker_launch
+        for prefix, event in items:
+            num_workers = worker_counts.get(event.role, 0)
+            if event.role not in self.roles or num_workers < 1:
+                active = ", ".join(sorted(r for r, c in worker_counts.items() if c > 0)) or "none"
+                raise ValidationError(
+                    f"{prefix}.role={event.role!r} has no workers in this recipe (active roles: {active})"
+                )
+            if self.chaos.min_healthy >= num_workers:
+                raise ValidationError(
+                    f"chaos.min_healthy={self.chaos.min_healthy} must be less than the {num_workers} worker(s) "
+                    f"in role {event.role!r} (referenced by {prefix})"
+                )
+            mode, indices, _ = event.parse_workers()
+            if event.type != "rolling_restart" and mode == "index":
+                bad = [idx for idx in indices if idx >= num_workers]
+                if bad:
+                    raise ValidationError(
+                        f"{prefix}.workers={bad} out of range for role {event.role!r} "
+                        f"with {num_workers} worker(s) (valid: 0..{num_workers - 1})"
+                    )
+            if event.wait_ready and event.type == "kill":
+                role_restarts = self.topology.worker_restart(event.role).enabled
+                if not event.respawn and not role_restarts:
+                    raise ValidationError(
+                        f"{prefix}.wait_ready=true requires respawn=true or roles.{event.role}.restart enabled"
+                    )
+            proc = event.effective_process
+            if proc == "main" and (worker_launch != "dynamo" or self.dynamo.sidecar):
+                raise ValidationError(
+                    f"{prefix}.process='main' names the Dynamo worker module, but this recipe runs the native engine "
+                    f"(frontend.type={self.frontend.type!r}, dynamo.sidecar={bool(self.dynamo.sidecar)}); "
+                    f"set {prefix}.process to an explicit cmdline substring"
+                )
+            if proc is not None and proc in CHAOS_PROCESS_ALIASES:
+                role_backend = self.backend_for_role(event.role)
+                if not role_backend.fault_process_target(proc):
+                    raise ValidationError(
+                        f"{prefix}.process={proc!r} has no default process pattern for engine "
+                        f"{role_backend.type!r}; set {prefix}.process to an explicit cmdline substring"
+                    )
 
     def _validate_vllm_router_connector(self) -> None:
         """Discovery and bootstrap connectors need the vLLM Router's transfer metadata."""

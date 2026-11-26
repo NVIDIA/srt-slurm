@@ -666,6 +666,321 @@
       },
       "description": "Benchmark configuration."
     },
+    "ChaosConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChaosEventConfig"
+          },
+          "description": "Ordered list of fault events to execute during the benchmark.",
+          "default": []
+        },
+        "schedule": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChaosScheduleConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional stochastic soak schedule (MTBF + minimum gap) that repeatedly injects faults until the benchmark finishes or ``max_events`` is reached.",
+          "default": null
+        },
+        "leashed": {
+          "type": "boolean",
+          "description": "Dry-run mode on a live cluster. Runs target selection, ``min_healthy`` checks, and on-node process discovery, logging what would be signalled into ``chaos_events.json`` with status ``leashed`` without sending any signals.",
+          "default": false
+        },
+        "min_healthy": {
+          "type": "integer",
+          "description": "Blast-radius guard: minimum number of workers in the targeted role that must remain healthy and running after a fault. Events that would drop healthy capacity below ``min_healthy`` are skipped (or, for ``rolling_restart``, deferred until enough workers are ready). ``0`` disables the guard.",
+          "default": 0
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional RNG seed for deterministic ``workers: random``, ``rank: random``, and stochastic schedule draws.",
+          "default": null
+        },
+        "hot_metric": {
+          "type": "string",
+          "description": "Primary Prometheus metric scraped from candidate workers when resolving ``workers: hottest``. Falls back to engine running-request gauges, then worker index order.",
+          "default": "dynamo_component_inflight_requests"
+        }
+      },
+      "description": "Concurrent fault injection timeline executed while the benchmark runs."
+    },
+    "ChaosEventConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "kill",
+            "freeze",
+            "rolling_restart"
+          ],
+          "description": "Fault action to run: ``kill`` (signal the worker step, or a matched subprocess when ``process`` is set), ``freeze`` (SIGSTOP, verify ``/proc/<pid>/stat`` state ``T``, hold, then SIGCONT), or ``rolling_restart`` (restart every worker of ``role`` in sliding ``max_unavailable`` waves)."
+        },
+        "after_seconds": {
+          "type": "number",
+          "description": "Delay in seconds after the previous event (or benchmark start for the first event) before running this event.",
+          "default": 0.0
+        },
+        "role": {
+          "enum": [
+            "prefill",
+            "decode",
+            "agg"
+          ],
+          "description": "Worker role to target (``prefill``, ``decode``, or ``agg``).",
+          "default": "agg"
+        },
+        "workers": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              }
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Which worker endpoint(s) of ``role`` to target on ``kill`` or ``freeze``: a zero-based index (``0``), list of indices (``[0, 1]``), ``all``, ``hottest`` / ``hottest:<N>``, or ``random`` / ``random:<N>``.",
+          "default": 0
+        },
+        "process": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional process selector on the worker node. Omit on ``kill`` to signal the whole worker step. Set to a semantic alias (``main``, ``engine``, or ``rank`` \u2014 resolved from the role backend's ``fault_process_targets``) or any literal cmdline substring to target subprocesses inside the worker. On ``freeze``, defaults to ``engine``.",
+          "default": null
+        },
+        "rank": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "enum": [
+                "random",
+                "all"
+              ]
+            }
+          ],
+          "description": "Which matched subprocess (sorted by PID) to signal inside each targeted worker when ``process`` is active: a zero-based integer index, ``random``, or ``all``.",
+          "default": 0
+        },
+        "signal": {
+          "type": "string",
+          "description": "Signal sent by ``kill`` (e.g. ``KILL``, ``TERM``, ``SIGKILL``).",
+          "default": "KILL"
+        },
+        "duration_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Hold duration in seconds for ``freeze`` before sending ``SIGCONT``. Omit to hold until the benchmark finishes and teardown resumes the process.",
+          "default": null
+        },
+        "respawn": {
+          "type": "boolean",
+          "description": "When true on ``kill``, hand the targeted endpoint to the worker supervisor so it relaunches in place even when ``roles.<role>.restart`` is ``never``.",
+          "default": false
+        },
+        "wait_ready": {
+          "type": "boolean",
+          "description": "When true on ``kill``, wait up to ``timeout_seconds`` for the worker supervisor's ``/health`` probe on the relaunched worker(s) before advancing to the next event. Requires ``respawn: true`` or ``roles.<role>.restart`` enabled.",
+          "default": false
+        },
+        "max_unavailable": {
+          "type": "integer",
+          "description": "Maximum number of worker endpoints taken down at once during ``rolling_restart``.",
+          "default": 1
+        },
+        "graceful": {
+          "type": "boolean",
+          "description": "When true on ``rolling_restart``, stop workers with ``SIGTERM`` instead of ``SIGKILL``.",
+          "default": true
+        },
+        "timeout_seconds": {
+          "type": "number",
+          "description": "Maximum time in seconds for ``rolling_restart`` or ``kill`` with ``wait_ready: true``.",
+          "default": 600.0
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional label recorded in ``chaos_events.json``.",
+          "default": null
+        }
+      },
+      "description": "One scheduled fault injection event executed alongside the benchmark.",
+      "required": [
+        "type"
+      ]
+    },
+    "ChaosScheduleConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mean_interval_seconds": {
+          "type": "number",
+          "description": "Mean time between faults in seconds (must be > 0)."
+        },
+        "min_interval_seconds": {
+          "type": "number",
+          "description": "Minimum enforced delay in seconds between consecutive faults (must satisfy ``0 <= min_interval_seconds <= mean_interval_seconds``).",
+          "default": 0.0
+        },
+        "initial_delay_seconds": {
+          "type": "number",
+          "description": "Warmup delay in seconds after benchmark start before the first scheduled fault.",
+          "default": 0.0
+        },
+        "max_events": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional cap on total scheduled faults. Omit to run for the entire benchmark duration.",
+          "default": null
+        },
+        "type": {
+          "enum": [
+            "kill",
+            "freeze"
+          ],
+          "description": "Fault action fired each tick (``kill`` or ``freeze``).",
+          "default": "kill"
+        },
+        "role": {
+          "enum": [
+            "prefill",
+            "decode",
+            "agg"
+          ],
+          "description": "Worker role to target (``prefill``, ``decode``, or ``agg``).",
+          "default": "agg"
+        },
+        "workers": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              }
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Worker selector within ``role`` (default ``random``).",
+          "default": "random"
+        },
+        "process": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional process selector (``main``, ``engine``, ``rank``, or literal cmdline substring). On ``freeze``, defaults to ``engine``.",
+          "default": null
+        },
+        "rank": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "enum": [
+                "random",
+                "all"
+              ]
+            }
+          ],
+          "description": "Which matched subprocess rank to signal inside the targeted worker.",
+          "default": 0
+        },
+        "signal": {
+          "type": "string",
+          "description": "Signal sent when ``type`` is ``kill``.",
+          "default": "KILL"
+        },
+        "duration_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Hold duration in seconds when ``type`` is ``freeze``.",
+          "default": null
+        },
+        "respawn": {
+          "type": "boolean",
+          "description": "Hand killed endpoints to the worker supervisor for in-place relaunch (default true for soak schedules).",
+          "default": true
+        },
+        "wait_ready": {
+          "type": "boolean",
+          "description": "Wait for the relaunched worker's readiness probe before drawing the next interval.",
+          "default": false
+        },
+        "timeout_seconds": {
+          "type": "number",
+          "description": "Maximum wait in seconds when ``wait_ready`` is true.",
+          "default": 600.0
+        }
+      },
+      "description": "Stochastic soak schedule (MTBF ``mean_interval_seconds`` with minimum gap ``min_interval_seconds``).",
+      "required": [
+        "mean_interval_seconds"
+      ]
+    },
     "CpuPowerConfig": {
       "type": "object",
       "additionalProperties": false,
@@ -2071,6 +2386,10 @@
           "$ref": "#/$defs/HostSetupConfig",
           "description": "Commands run on each node's bare host, outside the container, before any worker starts. Cluster-wide default lives in srtslurm.yaml as default_host_setup; a recipe that sets this block replaces that default."
         },
+        "chaos": {
+          "$ref": "#/$defs/ChaosConfig",
+          "description": "Concurrent fault injection timeline (kill/freeze/rolling_restart) run alongside the benchmark; recorded in `chaos_events.json`. See docs/chaos.md."
+        },
         "services": {
           "type": "array",
           "items": {
@@ -2295,6 +2614,10 @@
         "host_setup": {
           "$ref": "#/$defs/HostSetupConfig",
           "description": "Commands run on each node's bare host, outside the container, before any worker starts. Cluster-wide default lives in srtslurm.yaml as default_host_setup; a recipe that sets this block replaces that default."
+        },
+        "chaos": {
+          "$ref": "#/$defs/ChaosConfig",
+          "description": "Concurrent fault injection timeline (kill/freeze/rolling_restart) run alongside the benchmark; recorded in `chaos_events.json`. See docs/chaos.md."
         },
         "services": {
           "type": "array",

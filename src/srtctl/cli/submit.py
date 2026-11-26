@@ -560,6 +560,68 @@ def show_config_details(config: SrtConfig) -> None:
                 "outlives this allocation and is inherited by the next job on these nodes."
             )
 
+    # --- Chaos fault injection (runs concurrently alongside the benchmark) ---
+    if config.chaos.enabled:
+        chaos_table = Table(title="Chaos Fault Injection", show_lines=False, pad_edge=False)
+        chaos_table.add_column("#", style="dim", width=5, justify="right")
+        chaos_table.add_column("After", style="cyan", width=10, justify="right")
+        chaos_table.add_column("Type", style="yellow", width=16)
+        chaos_table.add_column("Role", style="white", width=8)
+        chaos_table.add_column("Target / Options", style="white")
+        for idx, ev in enumerate(config.chaos.events):
+            if ev.type == "rolling_restart":
+                detail = (
+                    f"max_unavailable={ev.max_unavailable} "
+                    f"{'graceful' if ev.graceful else 'force'} timeout={ev.timeout_seconds:g}s"
+                )
+            else:
+                parts = [f"workers={ev.workers}"]
+                proc = ev.effective_process
+                if proc is not None:
+                    parts.append(f"process={proc} rank={ev.rank}")
+                if ev.type == "kill":
+                    parts.append(f"SIG{ev.normalized_signal}")
+                    if ev.respawn:
+                        parts.append("respawn")
+                    if ev.wait_ready:
+                        parts.append("wait_ready")
+                elif ev.type == "freeze":
+                    parts.append(
+                        f"duration={ev.duration_seconds:g}s" if ev.duration_seconds is not None else "hold-until-end"
+                    )
+                detail = " ".join(parts)
+            label = f" [{ev.name}]" if ev.name else ""
+            chaos_table.add_row(str(idx), f"+{ev.after_seconds:g}s", ev.type, ev.role, detail + label)
+        if config.chaos.schedule is not None:
+            sched = config.chaos.schedule
+            sched_parts = [
+                f"mean={sched.mean_interval_seconds:g}s",
+                f"min={sched.min_interval_seconds:g}s",
+                f"workers={sched.workers}",
+            ]
+            if sched.max_events is not None:
+                sched_parts.append(f"max={sched.max_events}")
+            if sched.respawn and sched.type == "kill":
+                sched_parts.append("respawn")
+            if sched.wait_ready and sched.type == "kill":
+                sched_parts.append("wait_ready")
+            chaos_table.add_row(
+                "soak",
+                f"+{sched.initial_delay_seconds:g}s",
+                sched.type,
+                sched.role,
+                " ".join(sched_parts),
+            )
+        console.print(Panel(chaos_table, border_style="yellow" if config.chaos.leashed else "red"))
+        meta_parts = [f"hot_metric={config.chaos.hot_metric}"]
+        if config.chaos.leashed:
+            meta_parts.append("leashed=true (observe only; no signals sent)")
+        if config.chaos.min_healthy > 0:
+            meta_parts.append(f"min_healthy={config.chaos.min_healthy}")
+        if config.chaos.seed is not None:
+            meta_parts.append(f"seed={config.chaos.seed}")
+        console.print(f"[dim]chaos:[/] -> chaos_events.json ({' '.join(meta_parts)})")
+
     # --- Node release before post-processing (srtslurm.yaml) ---
     if get_srtslurm_setting("release_nodes_before_postprocess", False):
         console.print(

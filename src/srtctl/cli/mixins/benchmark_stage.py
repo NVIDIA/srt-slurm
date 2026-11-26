@@ -46,11 +46,14 @@ MANUAL_POLL_SECONDS = 5.0
 
 if TYPE_CHECKING:
     from srtctl.benchmarks.base import BenchmarkRunner
+    from srtctl.chaos import ChaosRunner
     from srtctl.cli.mixins.frontend_stage import FrontendTopology
     from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
+    from srtctl.cli.mixins.worker_stage import WorkerStageMixin
     from srtctl.core.processes import ManagedProcess, ProcessRegistry
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
+    from srtctl.core.supervisor import WorkerSupervisor
     from srtctl.core.topology import Endpoint, Process
     from srtctl.frontends import Frontend
     from srtctl.services.config import ServiceConfig
@@ -386,7 +389,11 @@ class BenchmarkStageMixin:
         return env
 
     def run_benchmark(
-        self, registry: "ProcessRegistry", stop_event: threading.Event, reporter: StatusReporter | None = None
+        self,
+        registry: "ProcessRegistry",
+        stop_event: threading.Event,
+        reporter: StatusReporter | None = None,
+        supervisor: "WorkerSupervisor | None" = None,
     ) -> int:
         """Run the benchmark."""
         serve_only = bool(getattr(self, "serve_only", False))
@@ -513,11 +520,14 @@ class BenchmarkStageMixin:
         for proc in tachometer_procs:
             registry.add_process(proc)
 
-        # Run the benchmark script
+        # Run the benchmark script (and optional concurrent chaos timeline)
         benchmark_log = self.runtime.log_dir / "benchmark.out"
+        chaos_runner = self._start_chaos_runner(registry, stop_event, supervisor)
         try:
             exit_code = self._run_benchmark_script(runner, benchmark_log, stop_event)
         finally:
+            if chaos_runner is not None:
+                chaos_runner.stop()
             if tachometer_procs:
                 cast("TelemetryStageMixin", self).stop_tachometer(tachometer_procs)
 
@@ -527,6 +537,29 @@ class BenchmarkStageMixin:
             logger.info("Benchmark completed successfully")
 
         return exit_code
+
+    def _start_chaos_runner(
+        self,
+        registry: "ProcessRegistry",
+        stop_event: threading.Event,
+        supervisor: "WorkerSupervisor | None",
+    ) -> "ChaosRunner | None":
+        """Start the concurrent chaos fault timeline if ``config.chaos`` has events."""
+        if not self.config.chaos.enabled:
+            return None
+        from srtctl.chaos import ChaosRunner
+
+        chaos_runner = ChaosRunner(
+            chaos=self.config.chaos,
+            config=self.config,
+            runtime=self.runtime,
+            registry=registry,
+            supervisor=supervisor,
+            endpoint_groups=cast("WorkerStageMixin", self).worker_endpoint_groups(),
+            stop_event=stop_event,
+        )
+        chaos_runner.start()
+        return chaos_runner
 
     def _run_benchmark_script(
         self,

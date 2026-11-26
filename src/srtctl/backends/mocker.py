@@ -93,6 +93,11 @@ class MockerBackend(Backend):
     roles: Mapping[str, RoleSettings] = field(default_factory=dict, metadata={"marshmallow_field": BoundRolesField()})
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
+    fault_process_targets: ClassVar[Mapping[str, str]] = {
+        "main": "dynamo.mocker",
+        "engine": "dynamo.mocker",
+        "rank": "dynamo.mocker",
+    }
 
     # =========================================================================
     # Backend Implementation

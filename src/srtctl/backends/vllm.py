@@ -407,6 +407,11 @@ class VLLMBackend(Backend):
         ),
         ProcessGroup("dynamo_vllm", cmdline=(r"dynamo\.vllm",)),
     )
+    fault_process_targets: ClassVar[Mapping[str, str]] = {
+        "main": "dynamo.vllm",
+        "engine": "VLLM::EngineCore",
+        "rank": "VLLM::Worker",
+    }
 
     # DP process layout. Per-node lets vLLM manage the node-local portion of a
     # DP x TP x PP topology in one CUDA namespace and derives cross-node TP/PP

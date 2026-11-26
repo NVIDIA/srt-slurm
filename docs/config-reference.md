@@ -15,6 +15,7 @@ Field-level facts (every key, type, default, and allowed value) are generated fr
 | Metrics and power | [Observability and Telemetry](observability.md) | `observability`, `telemetry` |
 | Container paths and env | [Paths, Mounts, and Environment](runtime-env.md) | `container_mounts`, `extra_mount`, `environment`, `setup_script`, `host_setup` |
 | Sidecars and infrastructure | [Services](services.md) | `services` |
+| Chaos fault injection | [Chaos Fault Injection](chaos.md) | `chaos` |
 | Many jobs from one file | [Parameter Sweeps](sweeps.md), [Config Overrides](overrides.md) | `sweep`, `base` / `override_*` |
 
 This page covers the remaining top-level keys (`schema`, `name`, `model`, `output`, `health_check`, `enable_config_dump`) and complete examples.

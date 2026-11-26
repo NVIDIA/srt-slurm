@@ -587,7 +587,7 @@ def test_mock_sweep_fakes_the_release_without_running_scontrol(tmp_path: Path, m
     slurm_calls: list[list[str]] = []
 
     def guarded_run(cmd, *args, **kwargs):
-        argv = [str(part) for part in (cmd if isinstance(cmd, (list, tuple)) else [cmd])]
+        argv = [str(part) for part in (cmd if isinstance(cmd, list | tuple) else [cmd])]
         if argv and Path(argv[0]).name == "scontrol" and "update" in argv:
             slurm_calls.append(argv)
             raise AssertionError(f"mock sweep ran a real scontrol update: {argv}")
@@ -976,7 +976,7 @@ def test_job_stopped_by_process_monitor_still_releases(tmp_path: Path, monkeypat
 
     seen: dict[str, Any] = {}
 
-    def critical_worker_dies(self, registry, stop_event, reporter=None) -> int:
+    def critical_worker_dies(self, registry, stop_event, reporter=None, supervisor=None) -> int:
         workers = [proc for name, proc in registry.get_all_processes().items() if name.startswith("agg_")]
         assert workers and all(proc.critical for proc in workers)
         workers[0].popen.kill()
@@ -1011,7 +1011,7 @@ def test_job_stopped_by_process_monitor_still_releases(tmp_path: Path, monkeypat
 def test_job_stopped_by_signal_skips_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sig) -> None:
     shrink = MagicMock(name="shrink_job_allocation")
 
-    def signalled(self, registry, stop_event, reporter=None) -> int:
+    def signalled(self, registry, stop_event, reporter=None, supervisor=None) -> int:
         # Delivered to this process, so the handler setup_signal_handlers installed is the one that runs.
         signal.raise_signal(sig)
         pytest.fail("the installed signal handler did not end the run")
