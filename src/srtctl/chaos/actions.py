@@ -610,6 +610,8 @@ def execute_freeze(
     stalled_now: list[StalledProcess] = []
     try:
         for target, matches, chosen, errors in plans:
+            if ctx.should_stop():
+                raise RuntimeError("benchmark teardown started before the freeze was applied")
             for sp in chosen:
                 ctx.register_stall(sp)
                 stalled_now.append(sp)

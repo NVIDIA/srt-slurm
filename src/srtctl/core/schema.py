@@ -3680,6 +3680,9 @@ class SrtConfig:
         from srtctl.frontends import get_frontend
 
         worker_launch = None if self.frontend.type == "none" else get_frontend(self.frontend.type).worker_launch
+        measured_nsys = (
+            self.observability_nsys_enabled and self.observability.nsys.capture_window == "measured_workload"
+        )
         for prefix, event in items:
             num_workers = worker_counts.get(event.role, 0)
             if event.role not in self.roles or num_workers < 1:
@@ -3706,11 +3709,11 @@ class SrtConfig:
                     raise ValidationError(
                         f"{prefix}.wait_ready=true requires respawn=true or roles.{event.role}.restart enabled"
                     )
-            if event.type in CHAOS_DESTRUCTIVE_TYPES and self.observability_nsys_enabled:
-                # A killed worker never acknowledges the nsys capture boundary, so the benchmark would hang.
+            if event.type in CHAOS_DESTRUCTIVE_TYPES and not self.chaos.leashed and measured_nsys:
+                # A killed worker never acknowledges the measured-workload capture boundary, so the benchmark hangs.
                 raise ValidationError(
-                    f"{prefix}.type={event.type!r} kills workers, which strands the observability.nsys capture; "
-                    "set observability.nsys.enabled: false"
+                    f"{prefix}.type={event.type!r} kills workers, which strands the observability.nsys "
+                    "measured_workload capture; set observability.nsys.enabled: false or chaos.leashed: true"
                 )
             proc = event.effective_process
             if proc == "main" and (worker_launch != "dynamo" or self.dynamo.sidecar):

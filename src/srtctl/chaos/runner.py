@@ -303,7 +303,12 @@ class ChaosRunner:
                     if self._ctx.wait(delay):
                         break
         finally:
-            # Untimed freezes stay paused until benchmark teardown; stop() resumes them.
+            # Untimed freezes stay paused until benchmark teardown. stop() resumes them, but a
+            # pause registered after its drain (join timed out mid-event) is resumed here.
+            if self._ctx.should_stop():
+                late = self._ctx.drain_active_stalls()
+                if late:
+                    resume_stalled_processes(late, self._ctx, tag="late")
             self._write()
 
     def _new_record(self, idx: int, event: ChaosEventConfig, status: str) -> ChaosEventRecord:

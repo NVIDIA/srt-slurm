@@ -139,6 +139,16 @@ class TestChaosSchema:
                 )
             )
 
+    def test_leashed_kill_allowed_with_observability_nsys(self):
+        cfg = _load_dict(
+            _base_recipe(
+                benchmark={"type": "sa-bench", "isl": 128, "osl": 128, "concurrencies": "4"},
+                observability={"enabled": True},
+                chaos={"leashed": True, "events": [{"type": "kill", "role": "agg"}]},
+            )
+        )
+        assert cfg.chaos.leashed is True
+
     def test_main_alias_rejected_for_native_workers(self):
         with pytest.raises(ValidationError, match="process='main'"):
             _load_dict(
@@ -572,6 +582,40 @@ class TestFaultToleranceAndActions:
 
         assert runner.records[0].status == "completed"
         assert stops == [("node0", [777, 778]), ("node1", [777, 778])]
+
+    def test_freeze_after_teardown_is_resumed(self, tmp_path: Path):
+        registry = ProcessRegistry(job_id="105")
+        registry.add_process(_FakeStep("agg_0_node0", node="node0").managed)
+        signals: list[str] = []
+        runner_box: list[ChaosRunner] = []
+
+        def fake(node, payload, **_kwargs):
+            if "pids" not in payload:
+                # Teardown runs (and drains stalls) while discovery is still in flight.
+                runner_box[0]._done_event.set()
+                runner_box[0]._ctx.drain_active_stalls()
+            else:
+                signals.append(payload["signal"])
+            return _fake_node_helper(payload, pids=(777,))
+
+        runner = self._runner(
+            tmp_path,
+            registry,
+            {("agg", 0, 0): [_proc("agg", 0, "node0")]},
+            [ChaosEventConfig(type="freeze", role="agg")],
+        )
+        runner_box.append(runner)
+        with (
+            patch("srtctl.chaos.actions.list_step_ids", return_value=None),
+            patch("srtctl.chaos.actions.run_node_python", side_effect=fake),
+        ):
+            runner.start()
+            assert runner._thread is not None
+            runner._thread.join(timeout=5.0)
+            runner.stop(timeout=5.0)
+
+        assert "STOP" not in signals
+        assert runner.records[0].status == "failed"
 
     def test_rolling_restart_stops_when_replacement_not_ready(self, tmp_path: Path):
         registry = ProcessRegistry(job_id="105")

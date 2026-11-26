@@ -70,7 +70,7 @@ sequenceDiagram
 - **`leashed: true` (live dry-run):** runs target selection, Prometheus `hottest` scraping, `min_healthy` checks, and on-node process discovery without sending any signal. Events are recorded in `chaos_events.json` with `status: "leashed"`.
 - **`min_healthy: N` (blast-radius guard):** refuses to fire a `kill` or `freeze` when fewer than `min_healthy` healthy workers of `role` would remain (recording `status: "skipped"` with `reason: "min_healthy_guard"`), and throttles `rolling_restart` waves so at least `min_healthy` workers stay up.
 - **`schedule:` (stochastic soak mode):** repeatedly injects `kill` or `freeze` faults until the benchmark exits (or `max_events` is reached), drawing inter-event delays with mean `mean_interval_seconds` and floor `min_interval_seconds` (`min + Exp(1 / (mean - min))`). `initial_delay_seconds` counts from benchmark start, so scripted `events` do not push the first soak fault back.
-- **`observability.nsys`:** `kill` and `rolling_restart` are rejected while the automatic nsys preset is on, because a killed worker never acknowledges the capture boundary and the benchmark would hang. Set `observability.nsys.enabled: false`.
+- **`observability.nsys`:** armed `kill` and `rolling_restart` events are rejected while the automatic nsys preset captures the measured workload (`capture_window: measured_workload`), because a killed worker never acknowledges the capture boundary and the benchmark would hang. Set `observability.nsys.enabled: false`, or use `leashed: true`.
 
 ## Example
 
