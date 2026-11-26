@@ -1,0 +1,122 @@
+# A host-native sandbox service paired with a forwarding gateway in front of the inference frontend.
+#
+# Demonstrates:
+# - `host_native: true` on a generic service (runs on the bare host node without a container,
+#   for daemons that need host devices, sockets, or cgroups).
+# - `{frontend_ip}` and `{frontend_port}` placeholders so a gateway service points at the
+#   resolved frontend regardless of `frontend.placement.node`.
+# - `benchmark.target_service` so a built-in benchmark (and `SRT_FRONTEND_HOST`/`SRT_FRONTEND_PORT`)
+#   drives the gateway instead of the raw frontend.
+#
+# Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-gateway-and-sandbox"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+
+frontend:
+  type: sglang-router
+  enable_multiple_frontends: false
+  args:
+    policy: "cache_aware"
+
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      context-length: 4096
+      disable-piecewise-cuda-graph: true
+
+services:
+  - name: sandbox-service
+    type: generic
+    host_native: true
+    placement:
+      node: head
+    start: after_frontend
+    critical: true
+    inherit_discovery_env: false
+    command:
+      - python3
+      - -m
+      - http.server
+      - "18090"
+      - --bind
+      - "127.0.0.1"
+    readiness:
+      log:
+        pattern: "Serving HTTP"
+      timeout_seconds: 60
+
+  - name: gateway
+    type: generic
+    placement:
+      node: head
+    start: after_frontend
+    critical: true
+    inherit_discovery_env: false
+    env:
+      LLM_API_BASE: "http://{frontend_ip}:{frontend_port}"
+      GATEWAY_PORT: "18400"
+    command:
+      - python3
+      - -c
+      - |
+        import http.server, os, urllib.error, urllib.request
+        upstream, count = os.environ["LLM_API_BASE"].rstrip("/"), 0
+        class Proxy(http.server.BaseHTTPRequestHandler):
+            def _forward(self):
+                global count
+                if self.path == "/healthz":
+                    self.send_response(200); self.end_headers(); self.wfile.write(b"ok"); return
+                if self.path == "/metrics":
+                    body = f"# TYPE gateway_requests_total counter\ngateway_requests_total {count}\n".encode()
+                    self.send_response(200); self.send_header("Content-Type", "text/plain"); self.end_headers(); self.wfile.write(body); return
+                count += 1
+                length = int(self.headers.get("Content-Length", "0"))
+                data = self.rfile.read(length) if length else None
+                hdrs = {k: v for k, v in self.headers.items() if k.lower() not in ("host", "content-length")}
+                req = urllib.request.Request(upstream + self.path, data=data, headers=hdrs, method=self.command)
+                try:
+                    with urllib.request.urlopen(req, timeout=300) as r:
+                        body = r.read(); self.send_response(r.status); self.send_header("Content-Type", r.headers.get("Content-Type", "application/json")); self.end_headers(); self.wfile.write(body)
+                except urllib.error.HTTPError as e:
+                    body = e.read(); self.send_response(e.code); self.end_headers(); self.wfile.write(body)
+            do_GET = do_POST = _forward
+            def log_message(self, *args): pass
+        http.server.ThreadingHTTPServer(("0.0.0.0", int(os.environ["GATEWAY_PORT"])), Proxy).serve_forever()
+    readiness:
+      http:
+        port: 18400
+        path: /healthz
+        status: 200
+      timeout_seconds: 60
+    metrics:
+      port: 18400
+      path: /metrics
+
+benchmark:
+  type: "sa-bench"
+  target_service: "gateway"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

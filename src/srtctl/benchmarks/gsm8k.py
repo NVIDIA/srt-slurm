@@ -90,12 +90,14 @@ class GSM8KRunner(BenchmarkRunner):
         return self._build_sglang_command(config, runtime)
 
     def _build_vllm_command(self, config: SrtConfig, runtime: RuntimeContext) -> list[str]:
+        from srtctl.core.ip_utils import url_host
+
         b = config.benchmark
         return [
             "bash",
             _VLLM_SCRIPT,
-            "http://localhost",
-            str(runtime.frontend_port),
+            f"http://{url_host(runtime.benchmark_host)}",
+            str(runtime.benchmark_port),
             config.served_model_name,
             str(b.num_examples or 1319),
             str(b.max_tokens or 256),
@@ -106,9 +108,7 @@ class GSM8KRunner(BenchmarkRunner):
 
     def _build_sglang_command(self, config: SrtConfig, runtime: RuntimeContext) -> list[str]:
         b = config.benchmark
-        # TODO: support overriding endpoint via config to target external servers;
-        # mmlu/gpqa/longbenchv2 share the same limitation today.
-        endpoint = f"http://localhost:{runtime.frontend_port}"
+        endpoint = runtime.benchmark_endpoint
 
         return [
             "bash",

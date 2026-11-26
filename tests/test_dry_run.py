@@ -1220,6 +1220,33 @@ class TestDryRunServices:
         assert "external: http://etcd.shared:2379 (not launched)" in output
         assert "implied by: frontend.type dynamo" not in output.split("nats")[0]
 
+    def test_host_native_service_and_benchmark_target_service_shown(self, capsys):
+        config = _make_config(
+            {
+                "frontend": {"type": "sglang-router"},
+                "services": [
+                    {"name": "sandbox-service", "command": ["/usr/bin/sandbox-service"], "host_native": True},
+                    {
+                        "name": "gateway",
+                        "command": ["gateway", "--upstream", "http://{frontend_ip}:{frontend_port}"],
+                        "readiness": {"http": {"port": 18400, "path": "/healthz"}},
+                    },
+                ],
+                "benchmark": {
+                    "type": "sa-bench",
+                    "target_service": "gateway",
+                    "isl": 128,
+                    "osl": 128,
+                    "concurrencies": "4",
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "container: <host-native>" in output
+        assert "target_service" in output
+        assert "gateway (:18400)" in output
+
 
 class TestDryRunPostEval:
     def test_post_eval_dispatch_shown(self, capsys):

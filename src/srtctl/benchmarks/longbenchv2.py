@@ -55,7 +55,7 @@ class LongBenchV2Runner(BenchmarkRunner):
         runtime: RuntimeContext,
     ) -> list[str]:
         b = config.benchmark
-        endpoint = f"http://localhost:{runtime.frontend_port}"
+        endpoint = runtime.benchmark_endpoint
 
         # Build categories string if provided
         categories = ""

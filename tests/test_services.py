@@ -1142,3 +1142,627 @@ def test_declared_lmcache_server_replaces_the_implied_one_under_any_name() -> No
         "services:\n  - name: lmcache-server\n    type: lmcache-server\n    enabled: false\n", engine=engine
     )
     assert _lmcache_entries(disabled) == []
+
+
+def test_host_native_service_rejects_container() -> None:
+    with pytest.raises(ValidationError, match="host_native: true cannot be combined with container"):
+        _load(
+            """
+frontend:
+  type: sglang-router
+services:
+  - name: sandbox-service
+    command: [/usr/bin/sandbox-service]
+    host_native: true
+    container: ubuntu:24.04
+"""
+        )
+
+
+def test_host_native_service_build_and_launch_run_without_container_and_propagate_env(tmp_path: Path) -> None:
+    config = _load(
+        """
+frontend:
+  type: sglang-router
+services:
+  - name: sandbox-service
+    command: [./bin/sandbox-service, --upstream, "http://{frontend_ip}:{frontend_port}"]
+    host_native: true
+    cpus_per_task: 8
+    cpu_bind: none
+    srun_options:
+      exclusive: ""
+    source:
+      git: https://example.com/sandbox.git
+      rev: 2ecbdfdf192c69c02c6d21e931d20d3b4a0bb64a
+    build_command: [bash, -lc, "make build NODE={node} FRONTEND={frontend_ip}:{frontend_port}"]
+    env:
+      CARGO_HOME: /scratch/.cargo
+      UPSTREAM_URL: "http://{frontend_ip}:{frontend_port}"
+"""
+    )
+    orchestrator = _orchestrator(config, tmp_path)
+    with patch(SRUN, return_value=_proc()) as srun, patch(HOST_IP, return_value="10.0.0.10"):
+        orchestrator.start_services("after_frontend")
+
+    assert len(srun.call_args_list) == 3  # clone, build, launch
+    _, build_call, launch_call = [call.kwargs for call in srun.call_args_list]
+
+    host_src = str(tmp_path / "services" / "sandbox-service" / "src")
+    # Build runs host-native with service env, srun_options, cpu settings, and host work_dir.
+    assert build_call["container_image"] is None
+    assert build_call["container_mounts"] is None
+    assert host_src in build_call["bash_preamble"]
+    assert "/logs/services/" not in build_call["bash_preamble"]
+    assert build_call["env_to_set"]["CARGO_HOME"] == "/scratch/.cargo"
+    assert build_call["env_to_set"]["UPSTREAM_URL"] == "http://10.0.0.10:8000"
+    assert build_call["cpus_per_task"] == 8
+    assert build_call["cpu_bind"] == "none"
+    assert build_call["srun_options"]["exclusive"] == ""
+    assert "NODE=node0" in build_call["command"][-1]
+    assert "FRONTEND=10.0.0.10:8000" in build_call["command"][-1]
+
+    # Launch also runs host-native, cds into host_src, and expands frontend placeholders.
+    assert launch_call["container_image"] is None
+    assert launch_call["container_mounts"] is None
+    assert host_src in launch_call["bash_preamble"]
+    assert launch_call["command"] == ["./bin/sandbox-service", "--upstream", "http://10.0.0.10:8000"]
+
+
+def test_frontend_placeholders_resolve_non_head_frontend_and_omit_for_frontend_none(tmp_path: Path) -> None:
+    config = _load(
+        """
+frontend:
+  type: sglang-router
+  enable_multiple_frontends: false
+  placement:
+    node: first_decode
+services:
+  - name: gateway
+    command: [gateway, --upstream, "http://{frontend_ip}:{frontend_port}", --fe-node, "{frontend_node}"]
+    env:
+      LLM_API_BASE: "http://{frontend_ip}:{frontend_port}"
+"""
+    )
+    orchestrator = _orchestrator(config, tmp_path)
+    ip_map = {"node0": "10.0.0.10", "node2": "10.0.0.12"}
+    with (
+        patch(SRUN, return_value=_proc()) as srun,
+        patch(HOST_IP, side_effect=lambda n, _iface=None: ip_map[n]),
+        patch("srtctl.cli.mixins.benchmark_stage.get_hostname_ip", side_effect=lambda n, _iface=None: ip_map[n]),
+    ):
+        orchestrator.start_services("after_frontend")
+
+    launch = srun.call_args.kwargs
+    assert launch["command"] == ["gateway", "--upstream", "http://10.0.0.12:8000", "--fe-node", "node2"]
+    assert launch["env_to_set"]["LLM_API_BASE"] == "http://10.0.0.12:8000"
+
+    # enable_multiple_frontends: true resolves to the nginx node (head node0).
+    multi_fe = _load(
+        """
+frontend:
+  type: sglang-router
+  enable_multiple_frontends: true
+  placement:
+    node: first_decode
+services:
+  - name: gateway
+    command: [gateway, --upstream, "http://{frontend_ip}:{frontend_port}", --fe-node, "{frontend_node}"]
+"""
+    )
+    multi_orch = _orchestrator(multi_fe, tmp_path)
+    with (
+        patch(SRUN, return_value=_proc()) as srun,
+        patch(HOST_IP, side_effect=lambda n, _iface=None: ip_map[n]),
+        patch("srtctl.cli.mixins.benchmark_stage.get_hostname_ip", side_effect=lambda n, _iface=None: ip_map[n]),
+    ):
+        multi_orch.start_services("after_frontend")
+    assert srun.call_args.kwargs["command"] == ["gateway", "--upstream", "http://10.0.0.10:8000", "--fe-node", "node0"]
+
+    # Direct frontend (frontend.type: sglang) resolves to the aggregate worker node (node1).
+    direct_cfg = SrtConfig.Schema().load(
+        yaml.safe_load(
+            """
+schema: 2
+name: direct-fe-placeholders
+model:
+  path: /model
+  container: /job.sqsh
+  precision: bf16
+resources:
+  gpu_type: b200
+  gpus_per_node: 8
+frontend:
+  type: sglang
+  enable_multiple_frontends: false
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 8
+services:
+  - name: gateway
+    command: [gateway, --upstream, "http://{frontend_ip}:{frontend_port}", --fe-node, "{frontend_node}"]
+observability:
+  tachometer:
+    enabled: false
+"""
+        )
+    )
+    direct_rt = RuntimeContext(
+        job_id="12345",
+        run_name="direct",
+        nodes=Nodes(head="node0", bench="node0", infra="node0", worker=("node1",)),
+        head_node_ip="10.0.0.10",
+        infra_node_ip="10.0.0.10",
+        log_dir=tmp_path,
+        model_path=Path("/model"),
+        container_image=Path("/job.sqsh"),
+        gpus_per_node=8,
+        network_interface="eth0",
+        container_mounts={},
+        environment={},
+    )
+    direct_orch = SweepOrchestrator(direct_cfg, direct_rt)
+    direct_ips = {"node0": "10.0.0.10", "node1": "10.0.0.11"}
+    with (
+        patch(SRUN, return_value=_proc()) as srun,
+        patch(HOST_IP, side_effect=lambda n, _iface=None: direct_ips[n]),
+        patch("srtctl.cli.mixins.benchmark_stage.get_hostname_ip", side_effect=lambda n, _iface=None: direct_ips[n]),
+    ):
+        direct_orch.start_services("after_frontend")
+    assert srun.call_args.kwargs["command"] == ["gateway", "--upstream", "http://10.0.0.11:8000", "--fe-node", "node1"]
+
+    # Services-only job (frontend.type: none) leaves unknown frontend placeholders untouched.
+    services_only = SrtConfig.Schema().load(
+        yaml.safe_load(
+            """
+schema: 2
+name: services-only-placeholders
+model:
+  path: /model
+  container: /job.sqsh
+  precision: bf16
+resources:
+  gpu_type: b200
+  gpus_per_node: 8
+frontend:
+  type: none
+engine: sglang
+services:
+  - name: worker
+    nodes: 1
+    command: [echo, "{frontend_ip}"]
+observability:
+  tachometer:
+    enabled: false
+"""
+        )
+    )
+    rt = RuntimeContext(
+        job_id="12345",
+        run_name="so",
+        nodes=Nodes(head="node0", bench="node0", infra="node0", worker=(), pools={"worker": ("node0",)}),
+        head_node_ip="10.0.0.10",
+        infra_node_ip="10.0.0.10",
+        log_dir=tmp_path,
+        model_path=Path("/model"),
+        container_image=Path("/job.sqsh"),
+        gpus_per_node=8,
+        network_interface="eth0",
+        container_mounts={},
+        environment={},
+    )
+    orch = SweepOrchestrator(services_only, rt)
+    with patch(SRUN, return_value=_proc()) as srun, patch(HOST_IP, return_value="10.0.0.10"):
+        orch.start_services("after_frontend")
+    assert srun.call_args.kwargs["command"] == ["echo", "{frontend_ip}"]
+
+
+def test_benchmark_target_service_validation() -> None:
+    base = DISAGG_HEAD.replace("benchmark:\n  type: manual\n", "")
+    # Unknown service rejected
+    with pytest.raises(ValidationError, match="benchmark.target_service 'missing' names no launched service"):
+        _load(
+            """
+frontend:
+  type: sglang-router
+benchmark:
+  type: custom
+  command: echo hi
+  target_service: missing
+""",
+            head=base,
+        )
+    # target_port without target_service rejected
+    with pytest.raises(ValidationError, match="benchmark.target_port requires benchmark.target_service"):
+        _load(
+            """
+frontend:
+  type: sglang-router
+benchmark:
+  type: custom
+  command: echo hi
+  target_port: 18400
+""",
+            head=base,
+        )
+    # target_service with manual rejected
+    with pytest.raises(
+        ValidationError, match="benchmark.target_service is only valid when benchmark.type is not 'manual'"
+    ):
+        _load(
+            """
+frontend:
+  type: sglang-router
+services:
+  - name: gateway
+    command: [gateway]
+    readiness:
+      port: 18400
+benchmark:
+  type: manual
+  target_service: gateway
+""",
+            head=base,
+        )
+    # target_service without readiness port requires target_port
+    with pytest.raises(ValidationError, match="has no tcp/http readiness port.*set benchmark.target_port"):
+        _load(
+            """
+frontend:
+  type: sglang-router
+services:
+  - name: gateway
+    command: [gateway]
+benchmark:
+  type: custom
+  command: echo hi
+  target_service: gateway
+""",
+            head=base,
+        )
+    # target_service naming an enabled: false service is rejected
+    with pytest.raises(ValidationError, match="benchmark.target_service 'gateway' names no launched service"):
+        _load(
+            """
+frontend:
+  type: sglang-router
+services:
+  - name: gateway
+    command: [gateway]
+    enabled: false
+    readiness:
+      port: 18400
+benchmark:
+  type: custom
+  command: echo hi
+  target_service: gateway
+""",
+            head=base,
+        )
+    # target_service naming a placement.per: worker service is rejected
+    with pytest.raises(ValidationError, match="uses placement.per: worker and has no single node endpoint"):
+        _load(
+            """
+frontend:
+  type: sglang-router
+services:
+  - name: sidecar
+    command: [sidecar]
+    placement:
+      node: decode
+      per: worker
+benchmark:
+  type: custom
+  command: echo hi
+  target_service: sidecar
+  target_port: 18400
+""",
+            head=base,
+        )
+    # host_native: true on typed kinds is rejected
+    for kind_yaml in (
+        "  - name: etcd\n    type: etcd\n    host_native: true\n",
+        "  - name: dcgm-exporter\n    type: dcgm-exporter\n    host_native: true\n",
+        "  - name: cluster\n    type: ray\n    nodes: 1\n    host_native: true\n",
+    ):
+        with pytest.raises(ValidationError, match="host_native is only supported for generic services"):
+            _load(f"frontend:\n  type: dynamo\nservices:\n{kind_yaml}")
+
+
+def test_host_native_failing_build_command_raises_with_build_log(tmp_path: Path) -> None:
+    config = _load(
+        """
+frontend:
+  type: sglang-router
+services:
+  - name: sandbox-service
+    command: [./bin/sandbox-service]
+    host_native: true
+    source:
+      git: https://example.com/sandbox.git
+      rev: 2ecbdfdf192c69c02c6d21e931d20d3b4a0bb64a
+    build_command: [bash, -c, "exit 2"]
+"""
+    )
+    orchestrator = _orchestrator(config, tmp_path)
+    procs = [_proc(0), _proc(2)]
+    with (
+        patch(SRUN, side_effect=procs) as srun,
+        patch(HOST_IP, return_value="10.0.0.10"),
+        pytest.raises(RuntimeError, match=r"services\[sandbox-service\] build_command failed \(exit 2\).*build\.out"),
+    ):
+        orchestrator.start_services("after_frontend")
+    assert len(srun.call_args_list) == 2
+    assert srun.call_args_list[1].kwargs["container_image"] is None
+
+
+def test_benchmark_target_port_override_pool_placement_frontend_none_and_post_eval(tmp_path: Path) -> None:
+    from srtctl.mock import MockOptions, run_mock_sweep
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    container = tmp_path / "job.sqsh"
+    container.write_text("")
+
+    # 1. target_service placed off head (dedicated pool) + explicit target_port override
+    off_head_recipe = tmp_path / "off-head.yaml"
+    off_head_recipe.write_text(
+        f"""
+schema: 2
+name: off-head-target
+model:
+  path: {model_dir}
+  container: {container}
+  precision: bf16
+resources:
+  gpu_type: h100
+  gpus_per_node: 8
+frontend:
+  type: sglang-router
+  enable_multiple_frontends: false
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 1
+observability:
+  tachometer:
+    enabled: false
+services:
+  - name: gateway
+    type: generic
+    nodes: 1
+    command: [gateway, --upstream, "http://{{frontend_ip}}:{{frontend_port}}"]
+    readiness:
+      log:
+        pattern: "listening"
+benchmark:
+  type: sa-bench
+  target_service: gateway
+  target_port: 19400
+  isl: 128
+  osl: 128
+  concurrencies: "4"
+"""
+    )
+    calls: list[dict] = []
+    rc = run_mock_sweep(
+        config_path=off_head_recipe,
+        output_dir=tmp_path / "out-off-head",
+        job_id="1003",
+        options=MockOptions(
+            nodelist=("node-01", "node-02"),
+            hostname_ips={"node-01": "10.0.0.1", "node-02": "10.0.0.2"},
+            child_duration_s=0.05,
+            phase_pause_s=0.0,
+            on_srun=calls.append,
+        ),
+    )
+    assert rc == 0
+    gw = next(s for s in calls if s.get("step_name") == "service_gateway")
+    assert gw["nodelist"] == ["node-02"]
+    assert gw["command"] == ["gateway", "--upstream", "http://10.0.0.1:8000"]
+    bench = next(s for s in calls if s.get("step_name") == "benchmark")
+    assert bench["env_to_set"]["SRT_FRONTEND_HOST"] == "10.0.0.2"
+    assert bench["env_to_set"]["SRT_FRONTEND_PORT"] == "19400"
+    assert "http://10.0.0.2:19400" in bench["command"]
+
+    # 2. frontend.type: none + benchmark.target_service end-to-end
+    services_only_recipe = tmp_path / "services-only-target.yaml"
+    services_only_recipe.write_text(
+        f"""
+schema: 2
+name: services-only-target
+model:
+  path: {model_dir}
+  container: {container}
+  precision: bf16
+resources:
+  gpu_type: h100
+  gpus_per_node: 8
+frontend:
+  type: none
+engine: sglang
+observability:
+  tachometer:
+    enabled: false
+services:
+  - name: gateway
+    type: generic
+    nodes: 1
+    command: [gateway]
+    readiness:
+      http:
+        port: 18400
+        path: /healthz
+benchmark:
+  type: custom
+  target_service: gateway
+  command: "echo $SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT"
+"""
+    )
+    so_calls: list[dict] = []
+    so_rc = run_mock_sweep(
+        config_path=services_only_recipe,
+        output_dir=tmp_path / "out-so",
+        job_id="1004",
+        options=MockOptions(
+            nodelist=("node-01",),
+            hostname_ips={"node-01": "10.0.0.5"},
+            child_duration_s=0.05,
+            phase_pause_s=0.0,
+            on_srun=so_calls.append,
+        ),
+    )
+    assert so_rc == 0
+    so_bench = next(s for s in so_calls if s.get("step_name") == "benchmark")
+    assert so_bench["env_to_set"]["SRT_FRONTEND_HOST"] == "10.0.0.5"
+    assert so_bench["env_to_set"]["SRT_FRONTEND_PORT"] == "18400"
+    assert so_bench["env_to_set"]["SRT_SERVICE_GATEWAY_PORT"] == "18400"
+
+    # 3. _run_post_eval routes {endpoint}, lm-eval, and wait_for_port through benchmark.target_service
+    eval_cfg = SrtConfig.Schema().load(
+        yaml.safe_load(
+            off_head_recipe.read_text() + "\npost_eval:\n  command: [python3, eval.py, --endpoint, '{endpoint}']\n"
+        )
+    )
+    eval_rt = RuntimeContext(
+        job_id="1005",
+        run_name="eval-target",
+        nodes=Nodes(
+            head="node-01", bench="node-01", infra="node-01", worker=("node-01",), pools={"gateway": ("node-02",)}
+        ),
+        head_node_ip="10.0.0.1",
+        infra_node_ip="10.0.0.1",
+        log_dir=tmp_path / "eval-logs",
+        model_path=model_dir,
+        container_image=container,
+        gpus_per_node=8,
+        network_interface="eth0",
+        container_mounts={},
+        environment={},
+    )
+    (tmp_path / "eval-logs").mkdir()
+    eval_orch = SweepOrchestrator(eval_cfg, eval_rt)
+    eval_proc = _proc(0)
+    eval_proc.poll.return_value = 0
+    ip_map = {"node-01": "10.0.0.1", "node-02": "10.0.0.2"}
+    with (
+        patch("srtctl.cli.mixins.benchmark_stage.get_hostname_ip", side_effect=lambda n, _iface=None: ip_map[n]),
+        patch("srtctl.cli.do_sweep.wait_for_port", return_value=True) as wait_port,
+        patch("srtctl.cli.do_sweep.start_srun_process", return_value=eval_proc) as eval_srun,
+    ):
+        assert eval_orch._run_post_eval(threading.Event()) == 0
+    wait_port.assert_called_once_with("10.0.0.2", 19400, timeout=30)
+    assert eval_srun.call_args.kwargs["command"] == ["python3", "eval.py", "--endpoint", "http://10.0.0.2:19400"]
+
+
+def test_benchmark_target_service_routes_builtin_and_custom_runners(tmp_path: Path) -> None:
+    from srtctl.mock import MockOptions, run_mock_sweep
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    container = tmp_path / "job.sqsh"
+    container.write_text("")
+    recipe = tmp_path / "gateway-bench.yaml"
+    recipe.write_text(
+        f"""
+schema: 2
+name: gateway-target-test
+model:
+  path: {model_dir}
+  container: {container}
+  precision: bf16
+resources:
+  gpu_type: h100
+  gpus_per_node: 8
+frontend:
+  type: sglang-router
+  enable_multiple_frontends: false
+engine: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 1
+observability:
+  tachometer:
+    enabled: false
+services:
+  - name: sandbox-service
+    type: generic
+    host_native: true
+    command: [/usr/bin/sandbox-service]
+    readiness:
+      log:
+        pattern: "ready"
+  - name: gateway
+    type: generic
+    command: [gateway, --upstream, "http://{{frontend_ip}}:{{frontend_port}}"]
+    readiness:
+      http:
+        port: 18400
+        path: /healthz
+benchmark:
+  type: sa-bench
+  target_service: gateway
+  isl: 128
+  osl: 128
+  concurrencies: "4"
+"""
+    )
+    calls: list[dict] = []
+    exit_code = run_mock_sweep(
+        config_path=recipe,
+        output_dir=tmp_path / "out",
+        job_id="1001",
+        options=MockOptions(
+            nodelist=("node-01",),
+            child_duration_s=0.05,
+            phase_pause_s=0.0,
+            on_srun=calls.append,
+        ),
+    )
+    assert exit_code == 0
+
+    sandbox_step = next(s for s in calls if s.get("step_name") == "service_sandbox-service")
+    assert sandbox_step["container_image"] is None
+    assert sandbox_step["container_mounts"] is None
+
+    gw_step = next(s for s in calls if s.get("step_name") == "service_gateway")
+    assert gw_step["command"] == ["gateway", "--upstream", "http://127.0.0.1:8000"]
+
+    bench_step = next(s for s in calls if s.get("step_name") == "benchmark")
+    assert bench_step["env_to_set"]["SRT_FRONTEND_HOST"] == "127.0.0.1"
+    assert bench_step["env_to_set"]["SRT_FRONTEND_PORT"] == "18400"
+    assert "http://127.0.0.1:18400" in bench_step["command"]
+
+    # Custom benchmark also gets SRT_SERVICE_GATEWAY_PORT and redirected SRT_FRONTEND_PORT.
+    custom_recipe = tmp_path / "gateway-custom.yaml"
+    custom_recipe.write_text(
+        recipe.read_text().replace(
+            'benchmark:\n  type: sa-bench\n  target_service: gateway\n  isl: 128\n  osl: 128\n  concurrencies: "4"',
+            'benchmark:\n  type: custom\n  target_service: gateway\n  command: "echo $SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT $SRT_SERVICE_GATEWAY_PORT"',
+        )
+    )
+    custom_calls: list[dict] = []
+    custom_exit = run_mock_sweep(
+        config_path=custom_recipe,
+        output_dir=tmp_path / "out-custom",
+        job_id="1002",
+        options=MockOptions(
+            nodelist=("node-01",),
+            child_duration_s=0.05,
+            phase_pause_s=0.0,
+            on_srun=custom_calls.append,
+        ),
+    )
+    assert custom_exit == 0
+    custom_bench = next(s for s in custom_calls if s.get("step_name") == "benchmark")
+    assert custom_bench["env_to_set"]["SRT_FRONTEND_HOST"] == "127.0.0.1"
+    assert custom_bench["env_to_set"]["SRT_FRONTEND_PORT"] == "18400"
+    assert custom_bench["env_to_set"]["SRT_SERVICE_GATEWAY_PORT"] == "18400"

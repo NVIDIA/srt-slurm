@@ -446,6 +446,9 @@ class RuntimeContext:
     frontend_port: int = FRONTEND_PUBLIC_PORT
     # Listener node from the frontend topology, supplied to worker command builders.
     frontend_node: str | None = None
+    # Override benchmark endpoint when benchmark.target_service routes requests through a service.
+    benchmark_target_host: str | None = None
+    benchmark_target_port: int | None = None
 
     # Optional lustre->node-local model staging (see model.stage_dir)
     stage_dir: str | None = None
@@ -457,6 +460,23 @@ class RuntimeContext:
     dynamo: "DynamoConfig | None" = None
     # srtslurm.yaml release_nodes_before_postprocess: shrink the job to the batch host before post-processing.
     release_nodes_before_postprocess: bool = False
+
+    @property
+    def benchmark_host(self) -> str:
+        """Host the benchmark client targets: the target service's IP when set, else ``localhost``."""
+        return self.benchmark_target_host or "localhost"
+
+    @property
+    def benchmark_port(self) -> int:
+        """Port the benchmark client targets: the target service's port when set, else ``frontend_port``."""
+        return self.benchmark_target_port if self.benchmark_target_port is not None else self.frontend_port
+
+    @property
+    def benchmark_endpoint(self) -> str:
+        """Base HTTP URL for benchmark runners (``http://<host>:<port>``)."""
+        from srtctl.core.ip_utils import url_host
+
+        return f"http://{url_host(self.benchmark_host)}:{self.benchmark_port}"
 
     @property
     def container_log_dir(self) -> Path:

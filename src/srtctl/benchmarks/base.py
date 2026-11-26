@@ -65,6 +65,8 @@ SHARED_BENCHMARK_FIELDS: frozenset[str] = frozenset(
         "aiperf_package",
         "aiperf_args",
         "concurrencies",
+        "target_service",
+        "target_port",
     }
 )
 

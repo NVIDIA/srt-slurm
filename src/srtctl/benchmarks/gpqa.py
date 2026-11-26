@@ -52,7 +52,7 @@ class GPQARunner(BenchmarkRunner):
         runtime: RuntimeContext,
     ) -> list[str]:
         b = config.benchmark
-        endpoint = f"http://localhost:{runtime.frontend_port}"
+        endpoint = runtime.benchmark_endpoint
 
         return [
             "bash",

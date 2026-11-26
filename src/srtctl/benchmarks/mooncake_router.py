@@ -90,7 +90,7 @@ class MooncakeRouterRunner(AIPerfBenchmarkRunner):
         runtime: RuntimeContext,
     ) -> list[str]:
         b = config.benchmark
-        endpoint = f"http://localhost:{runtime.frontend_port}"
+        endpoint = runtime.benchmark_endpoint
 
         # Get model name - try served_model_name first, then model path
         model_name = config.served_model_name or config.model.path

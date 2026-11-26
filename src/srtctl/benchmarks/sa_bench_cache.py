@@ -64,6 +64,10 @@ class _PrewarmRuntime:
     # prewarming. The real default keeps the rendered command honest.
     frontend_port: int = FRONTEND_PUBLIC_PORT
 
+    @property
+    def benchmark_endpoint(self) -> str:
+        return f"http://localhost:{self.frontend_port}"
+
 
 @dataclass(frozen=True)
 class CacheInputsPlan:

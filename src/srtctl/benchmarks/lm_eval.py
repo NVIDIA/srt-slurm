@@ -47,7 +47,7 @@ class LMEvalRunner(BenchmarkRunner):
         config: SrtConfig,
         runtime: RuntimeContext,
     ) -> list[str]:
-        endpoint = f"http://localhost:{runtime.frontend_port}"
+        endpoint = runtime.benchmark_endpoint
         # Always use the container mount path, not the host path.
         # INFMAX_WORKSPACE env var contains the host path (used for mount setup
         # in runtime.py), but inside the container it's at /infmax-workspace.

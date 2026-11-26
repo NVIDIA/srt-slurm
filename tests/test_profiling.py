@@ -1163,7 +1163,7 @@ class TestProfilingIntegration:
         from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, RoleConfig, SrtConfig
 
         runner = get_runner("sglang-bench")
-        runtime = SimpleNamespace(frontend_port=8000)
+        runtime = SimpleNamespace(frontend_port=8000, benchmark_endpoint="http://localhost:8000")
 
         config = SrtConfig(
             name="test",

@@ -703,6 +703,7 @@ class SweepOrchestrator(
         # The eval harness uses a local HTTP endpoint, so run it beside the
         # resolved public endpoint (router, nginx or direct worker).
         eval_node = self._public_api_node()
+        bench_runtime = self.benchmark_runtime
 
         # In eval-only mode the benchmark health check was skipped, so do the
         # full model-ready wait here.  In post-benchmark mode a quick port
@@ -713,7 +714,9 @@ class SweepOrchestrator(
                 logger.error("Server did not become healthy for eval")
                 return 1
         else:
-            if not wait_for_port(eval_node, FRONTEND_PUBLIC_PORT, timeout=30):
+            probe_host = bench_runtime.benchmark_target_host or eval_node
+            probe_port = bench_runtime.benchmark_port
+            if not wait_for_port(probe_host, probe_port, timeout=30):
                 logger.error("Server health check failed before eval - skipping")
                 return 1
 
@@ -722,7 +725,7 @@ class SweepOrchestrator(
             # Recipe-provided dispatch (post_eval.command), with the same placeholders
             # the lm-eval runner fills in itself.
             placeholders = {
-                "{endpoint}": f"http://localhost:{self.runtime.frontend_port}",
+                "{endpoint}": bench_runtime.benchmark_endpoint,
                 "{infmax_workspace}": "/infmax-workspace",
             }
             cmd = list(self.config.post_eval.command)
@@ -734,7 +737,7 @@ class SweepOrchestrator(
             except ValueError as e:
                 logger.error("lm-eval runner not available: %s", e)
                 return 1
-            cmd = runner.build_command(self.config, self.runtime)
+            cmd = runner.build_command(self.config, bench_runtime)
 
         logger.info("Eval node: %s", eval_node)
         logger.info("Eval command: %s", " ".join(cmd))
@@ -881,7 +884,8 @@ class SweepOrchestrator(
                 registry.add_process(proc)
 
             # Stage 3b: sidecar services (start: after_frontend, the default),
-            # once workers and the frontend are healthy and before telemetry.
+            # launched right after the frontend process starts (overlapping model
+            # load before the worker-count health gate and telemetry).
             self.start_services("after_frontend", registry)
 
             if self.config.telemetry.enabled:

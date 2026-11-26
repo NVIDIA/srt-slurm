@@ -598,6 +598,30 @@
           "description": "Extra environment variables for the benchmark client (custom, agentperf).",
           "default": {}
         },
+        "target_service": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Name of a services[] entry the benchmark client sends requests to instead of the frontend (targets instance 0).",
+          "default": null
+        },
+        "target_port": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Port on target_service to send benchmark requests to; defaults to that service's tcp/http readiness port.",
+          "default": null
+        },
         "aiperf_package": {
           "anyOf": [
             {
@@ -2867,6 +2891,11 @@
           ],
           "description": "Container image or ``srtslurm.yaml`` alias. Defaults to the kind's fallback image, then the job container.",
           "default": null
+        },
+        "host_native": {
+          "type": "boolean",
+          "description": "Run the service (and its ``build_command``, if any) directly on the bare host node without a container image or container mounts. Cannot be combined with ``container``.",
+          "default": false
         },
         "env": {
           "type": "object",

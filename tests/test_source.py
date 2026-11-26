@@ -78,6 +78,23 @@ def test_resolve_rev_prefers_peeled_tag_and_handles_pr_refs() -> None:
         assert resolve_rev(UPSTREAM, "refs/pull/14000/head") == commit
 
 
+def test_resolve_rev_preserves_ssh_and_home_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    commit = "3" * 40
+    monkeypatch.setenv("HOME", "/home/tester")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock")
+    monkeypatch.setenv("UNRELATED_SECRET", "do-not-pass")
+    with patch(
+        "srtctl.core.source.subprocess.run",
+        return_value=_ls_remote(f"{commit}\trefs/tags/v1.0.0\n"),
+    ) as run:
+        assert resolve_rev("git@github.com:org/repo.git", "v1.0.0") == commit
+    env = run.call_args.kwargs["env"]
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    assert env["HOME"] == "/home/tester"
+    assert env["SSH_AUTH_SOCK"] == "/tmp/ssh-agent.sock"
+    assert "UNRELATED_SECRET" not in env
+
+
 def test_resolve_rev_failures_raise() -> None:
     with (
         patch("srtctl.core.source.subprocess.run", return_value=_ls_remote("", returncode=128)),

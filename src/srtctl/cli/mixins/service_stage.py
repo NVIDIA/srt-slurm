@@ -28,8 +28,8 @@ through ``scancel --signal`` and they get to flush state before exit.
 
 Phases, in run order: ``start_services("infra")`` (the discovery plane),
 ``start_services("before_workers")`` (after infra, before any worker),
-``start_services("after_frontend")`` (once workers and the frontend are
-healthy). See ``docs/services.md``.
+``start_services("after_frontend")`` (after the frontend process starts,
+before the worker-count health gate and telemetry). See ``docs/services.md``.
 """
 
 from __future__ import annotations
@@ -101,6 +101,11 @@ class ServiceStageMixin:
     runtime: RuntimeContext
     endpoints: list[Endpoint]
     backend_processes: list[Process]
+
+    if TYPE_CHECKING:
+        # Provided by BenchmarkStageMixin on SweepOrchestrator.
+        @property
+        def _public_api_endpoint(self) -> tuple[str | None, str | None, int | None]: ...
 
     # -- node resolution ---------------------------------------------------------
 
@@ -263,26 +268,41 @@ class ServiceStageMixin:
         return checkout_root / source.path if source.path else checkout_root
 
     def _build_service_source(
-        self, service: ServiceConfig, node: str, work_dir: Path, registry: ProcessRegistry | None
+        self,
+        service: ServiceConfig,
+        ctx: ServiceLaunchContext,
+        work_dir: Path,
+        registry: ProcessRegistry | None,
     ) -> None:
         if not service.build_command:
             return
+        kind = get_service_kind(service.type)
+        host_native = kind.host_native(service)
+        template = ctx.template_vars()
+        build_command = [render_placeholders(part, template) for part in service.build_command]
+        env = self._service_environment(service, ctx)
+        build_dir = str(work_dir) if host_native else self._container_path(work_dir)
         build_log = self.runtime.log_dir / f"service_{service.name}.build.out"
-        logger.info("Building service %s: %s", service.name, shlex.join(service.build_command))
+        logger.info("Building service %s: %s", service.name, shlex.join(build_command))
         popen = start_srun_process(
-            command=list(service.build_command),
-            nodelist=[node],
+            command=build_command,
+            nodelist=[ctx.node],
             output=str(build_log),
-            container_image=self._service_container(service),
+            container_image=None if host_native else self._service_container(service),
             reuse_container=self.runtime.reuse_container,
             container_prepare_timeout_seconds=self.runtime.container_prepare_timeout_seconds,
-            container_mounts=self.runtime.container_mounts,
-            srun_options=self.runtime.srun_options,
-            het_group=self.runtime.nodes.het_group_for(node),
-            bash_preamble=_await_and_cd(self._container_path(work_dir)),
+            container_mounts=None if host_native else self.runtime.container_mounts,
+            env_to_set=env if kind.use_bash_wrapper else None,
+            srun_export_env=None if kind.use_bash_wrapper else env,
+            cpus_per_task=service.cpus_per_task,
+            cpu_bind=service.cpu_bind,
+            srun_options={**self.runtime.srun_options, **service.srun_options},
+            het_group=self.runtime.nodes.het_group_for(ctx.node),
+            bash_preamble=_await_and_cd(build_dir),
+            use_bash_wrapper=kind.use_bash_wrapper,
         )
         step = ManagedProcess(
-            name=f"service_{service.name}.build", popen=popen, log_file=build_log, node=node, critical=False
+            name=f"service_{service.name}.build", popen=popen, log_file=build_log, node=ctx.node, critical=False
         )
         self._run_step(
             step,
@@ -320,11 +340,13 @@ class ServiceStageMixin:
         self, service: ServiceConfig, ctx: ServiceLaunchContext, work_dir: Path | None, instances: int
     ) -> ManagedProcess:
         kind = get_service_kind(service.type)
+        # Host-native kinds (static binaries, bare-host daemons) run on the bare node: no image, no mounts.
+        host_native = kind.host_native(service)
         template = ctx.template_vars()
         command = [render_placeholders(part, template) for part in kind.build_command(service, ctx)]
         preamble_parts: list[str] = []
         if work_dir is not None:
-            preamble_parts.append(_await_and_cd(self._container_path(work_dir)))
+            preamble_parts.append(_await_and_cd(str(work_dir) if host_native else self._container_path(work_dir)))
         kind_preamble = kind.preamble(service, ctx)
         if kind_preamble:
             preamble_parts.append(render_placeholders(kind_preamble, template))
@@ -352,8 +374,6 @@ class ServiceStageMixin:
             # placement.per: worker means the worker's device view: the same pinning the
             # worker stage applies to the engines, so "device k" is the same GPU in both.
             env["CUDA_VISIBLE_DEVICES"] = ctx.process.cuda_visible_devices
-        # Host-native kinds (a static Go exporter) run on the bare node: no image, no mounts.
-        host_native = kind.host_native(service)
         attached = f" for {ctx.process.endpoint_mode} worker {ctx.process.endpoint_index}" if ctx.process else ""
         logger.info(
             "Starting service %s (%s) on %s%s: %s", service.name, service.type, ctx.node, attached, shlex.join(command)
@@ -461,6 +481,7 @@ class ServiceStageMixin:
         self._check_port_collisions([entry.service for entry in effective])
 
         worker_order = {node: i for i, node in enumerate(self.runtime.nodes.compute)}
+        frontend_node, frontend_ip, frontend_port = self._public_api_endpoint
         started: list[ManagedProcess] = []
         try:
             for entry in phase:
@@ -481,12 +502,7 @@ class ServiceStageMixin:
                     logger.warning("services[%s]: %s; skipping", service.name, skip)
                     continue
                 kind.prepare(service, self.runtime, self.config)
-                work_dir = self._clone_service_source(service, nodes[0], registry)
-                if work_dir is not None:
-                    self._build_service_source(service, nodes[0], work_dir, registry)
 
-                node_ips = tuple(get_hostname_ip(node, self.runtime.network_interface) for node in nodes)
-                ip_of = dict(zip(nodes, node_ips, strict=True))
                 placed = self.service_instances(service)
                 if not placed:
                     logger.warning(
@@ -495,6 +511,8 @@ class ServiceStageMixin:
                         "workers" if service.effective_per == "worker" else "nodes",
                     )
                     continue
+                node_ips = tuple(get_hostname_ip(node, self.runtime.network_interface) for node in nodes)
+                ip_of = dict(zip(nodes, node_ips, strict=True))
                 contexts = [
                     ServiceLaunchContext(
                         runtime=self.runtime,
@@ -507,9 +525,15 @@ class ServiceStageMixin:
                         node_ips=node_ips,
                         process=process,
                         config=self.config,
+                        frontend_node=frontend_node,
+                        frontend_ip=frontend_ip,
+                        frontend_port=frontend_port,
                     )
                     for index, (node, process) in enumerate(placed)
                 ]
+                work_dir = self._clone_service_source(service, nodes[0], registry)
+                if work_dir is not None:
+                    self._build_service_source(service, contexts[0], work_dir, registry)
                 # Launch a batch, then wait for its readiness probes together.
                 batches = [contexts[:1], contexts[1:]] if kind.leader_first else [contexts]
                 instances: list[ManagedProcess] = []
