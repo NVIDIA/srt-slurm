@@ -30,7 +30,7 @@ from srtctl.core.power.session import (
     _EndpointResult,
     _run_daemon_workers,
 )
-from srtctl.core.power.topology import DeviceAssignment, build_expected_devices
+from srtctl.core.power.topology import DeviceAssignment, build_expected_devices, build_pool_expected_devices
 from srtctl.core.power.validate_artifacts import validate_power_artifacts
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.schema import TelemetryExporterConfig
@@ -937,6 +937,36 @@ class TestPublication:
                 "no_record": (Reason.UNEXPECTED_DEVICE,),
                 "failed": (Reason.UNEXPECTED_DEVICE, Reason.WORKER_IDENTITY_INVALID),
             }[case]
+        )
+
+    @pytest.mark.parametrize("reported_gpus", [4, 8])
+    def test_pool_samples_are_retained_and_extra_devices_block_publication(self, tmp_path, exporters, reported_gpus):
+        exporter = exporters(_body("p", count=reported_gpus))
+        session = PowerTelemetrySession(
+            settings=_settings(tmp_path, sample_interval_seconds=0.2),
+            expected_devices=build_pool_expected_devices({"trainer": ("node-p",)}, gpus_per_node=4),
+            expected_windows=[ExpectedWindow("sa-bench", 4)],
+            nodes=["node-p"],
+            endpoints=_endpoints(("node-p", exporter.url)),
+        )
+        session.initialize()
+        assert session.start_and_wait_for_readiness()
+        session.record_worker_identity(WorkerIdentityProof(100.0, error="no engine workers to probe"))
+
+        start = time.time()
+        time.sleep(0.6)
+        self._write_window_and_result(session, start, time.time())
+        outcome = session.stop_and_finalize()
+        report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
+
+        rows, errors = read_samples(session.samples_path)
+        assert not errors
+        assert {row.gpu_index for row in rows} == set(range(reported_gpus))
+        assert outcome.publication_valid is (reported_gpus == 4)
+        assert report.ok is (reported_gpus == 4), report.failures
+        assert outcome.reason_codes == (() if reported_gpus == 4 else (Reason.UNEXPECTED_DEVICE,))
+        assert not any(
+            "recomputed" in failure or "disk-derived reason_codes mismatch" in failure for failure in report.failures
         )
 
     def test_unverified_clock_sync_blocks_publication_without_failing_best_effort(self, tmp_path, exporters):
