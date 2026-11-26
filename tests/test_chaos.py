@@ -142,6 +142,23 @@ class TestChaosSchema:
                 )
             )
 
+    @pytest.mark.parametrize(
+        "profiling_cfg",
+        [
+            {"type": "nsys", "aggregated": {"start_step": 1, "stop_step": 2}},
+            {"type": "nsys-time", "delay_secs": 5, "duration_secs": 10},
+        ],
+    )
+    def test_chaos_rejected_with_explicit_nsys_profiling(self, profiling_cfg: dict):
+        with pytest.raises(ValidationError, match="chaos cannot run with nsys"):
+            _load_dict(
+                _base_recipe(
+                    observability={"enabled": False},
+                    profiling=profiling_cfg,
+                    chaos={"events": [{"type": "kill", "role": "agg"}]},
+                )
+            )
+
     def test_main_alias_rejected_for_native_workers(self):
         with pytest.raises(ValidationError, match="process='main'"):
             _load_dict(
@@ -614,15 +631,15 @@ class TestFaultToleranceAndActions:
         registry = ProcessRegistry(job_id="105")
         registry.add_process(_FakeStep("agg_0_node0", node="node0").managed)
         signals: list[str] = []
-        runner_box: list[ChaosRunner] = []
+        stop_entered = threading.Event()
+        teardown_done = threading.Event()
 
         def fake(node, payload, **_kwargs):
             if "pids" in payload:
-                signals.append(payload["signal"])
                 if payload["signal"] == "STOP":
-                    # stop() drains (and resumes) the registered stall right before this SIGSTOP lands.
-                    runner_box[0]._done_event.set()
-                    runner_box[0]._ctx.drain_active_stalls()
+                    stop_entered.set()
+                    assert teardown_done.wait(timeout=5.0)
+                signals.append(payload["signal"])
             return _fake_node_helper(payload, pids=(777,))
 
         runner = self._runner(
@@ -631,17 +648,21 @@ class TestFaultToleranceAndActions:
             {("agg", 0, 0): [_proc("agg", 0, "node0")]},
             [ChaosEventConfig(type="freeze", role="agg")],
         )
-        runner_box.append(runner)
         with (
             patch("srtctl.chaos.actions.list_step_ids", return_value=None),
             patch("srtctl.chaos.actions.run_node_python", side_effect=fake),
         ):
             runner.start()
+            assert stop_entered.wait(timeout=5.0)
+            # Real ChaosRunner.stop() times out waiting for the thread, drains the registered
+            # stall, and sends SIGCONT *before* the pending SIGSTOP lands; execute_freeze must
+            # then see teardown and send a second SIGCONT after SIGSTOP completes.
+            runner.stop(timeout=0.05)
+            teardown_done.set()
             assert runner._thread is not None
             runner._thread.join(timeout=5.0)
-            assert signals == ["STOP", "CONT"]  # the freeze resumes its own pause, not stop()
+            assert signals == ["CONT", "STOP", "CONT"]
             assert runner._ctx.drain_active_stalls() == []
-            runner.stop(timeout=5.0)
 
     def test_rolling_restart_stops_when_replacement_not_ready(self, tmp_path: Path):
         registry = ProcessRegistry(job_id="105")

@@ -3665,7 +3665,7 @@ class SrtConfig:
             return
         if not self.roles:
             raise ValidationError("chaos requires at least one worker role in roles:")
-        if self.observability_nsys_enabled or self.profiling.type.startswith("nsys"):
+        if self.observability_nsys_enabled or self.profiling.is_nsys:
             # Killed, frozen, or relaunched workers break nsys captures (unfinalized reports, missed
             # capture-boundary acks, reused report paths), so chaos and nsys never run together.
             raise ValidationError(

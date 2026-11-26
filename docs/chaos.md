@@ -70,7 +70,7 @@ sequenceDiagram
 - **`leashed: true` (live dry-run):** runs target selection, Prometheus `hottest` scraping, `min_healthy` checks, and on-node process discovery without sending any signal. Events are recorded in `chaos_events.json` with `status: "leashed"`.
 - **`min_healthy: N` (blast-radius guard):** refuses to fire a `kill` or `freeze` when fewer than `min_healthy` healthy workers of `role` would remain (recording `status: "skipped"` with `reason: "min_healthy_guard"`), and throttles `rolling_restart` waves so at least `min_healthy` workers stay up.
 - **`schedule:` (stochastic soak mode):** repeatedly injects `kill` or `freeze` faults until the benchmark exits (or `max_events` is reached), drawing inter-event delays with mean `mean_interval_seconds` and floor `min_interval_seconds` (`min + Exp(1 / (mean - min))`). `initial_delay_seconds` counts from benchmark start, so scripted `events` do not push the first soak fault back.
-- **No nsys:** a recipe with `chaos:` cannot enable nsys (`observability.nsys` or `profiling.type: nsys`/`nsys-time`). Killed, frozen, or relaunched workers leave reports unfinalized, miss capture-boundary acknowledgments (which hangs the benchmark), and reuse report paths. Set `observability.nsys.enabled: false`.
+- **No nsys:** a recipe with `chaos:` cannot enable nsys (`observability.nsys` or `profiling.type: nsys`/`nsys-time`). Killed, frozen, or relaunched workers leave reports unfinalized, miss capture-boundary acknowledgments (which hangs the benchmark), and reuse report paths. Set `observability.nsys.enabled: false` and leave `profiling.type: none` (the default).
 
 ## Example
 
