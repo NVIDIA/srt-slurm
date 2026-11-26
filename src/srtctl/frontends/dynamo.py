@@ -164,10 +164,10 @@ class DynamoFrontend(DynamicFrontend):
         return process.sys_port if process.sys_port > 0 else None
 
     def worker_endpoint_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
-        """One endpoint per logical worker: the leader's system port, or the native engine's port behind a sidecar."""
+        """One endpoint per logical worker: the leader's system port, or the native engine's port when it serves gRPC."""
         if not process.is_leader:
             return None
-        port = process.http_port if config.dynamo.sidecar else process.sys_port
+        port = process.http_port if config.dynamo.sidecar or self.dials_native_grpc else process.sys_port
         return port if port > 0 else None
 
     def profiling_control_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:

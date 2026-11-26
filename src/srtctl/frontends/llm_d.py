@@ -36,7 +36,7 @@ import requests
 import yaml
 
 from srtctl.core.health import WorkerHealthResult
-from srtctl.frontends.base import numactl_prefix, register_frontend
+from srtctl.frontends.base import frontend_arg_names, numactl_prefix, register_frontend
 from srtctl.frontends.static_router import StaticRouterFrontend
 from srtctl.ports import (
     LLM_D_ENVOY_ADMIN_PORT,
@@ -565,7 +565,7 @@ class LLMDFrontend(StaticRouterFrontend):
         return f"http://{self.resolve_worker_host(process.node, network_interface)}:{process.http_port}"
 
     def _validate_epp_args(self, args: dict[str, Any] | None) -> None:
-        managed = {str(key).replace("_", "-") for key in (args or {})} & _MANAGED_EPP_FLAGS
+        managed = frontend_arg_names(args) & _MANAGED_EPP_FLAGS
         if managed:
             raise ValueError(f"frontend.args sets {', '.join(sorted(managed))}, which srtctl manages for llm-d")
 

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from srtctl.frontends.base import register_frontend
+from srtctl.frontends.base import frontend_arg_names, register_frontend
 from srtctl.frontends.static_router import StaticRouterFrontend
 
 if TYPE_CHECKING:
@@ -40,7 +40,7 @@ class AtomeshFrontend(StaticRouterFrontend):
         backend_processes: list[Process],
         runtime: RuntimeContext | None = None,
     ) -> list[str]:
-        normalized = {str(key).replace("_", "-") for key in (config.frontend.args or {})}
+        normalized = frontend_arg_names(config.frontend.args)
         if "backend" in normalized:
             raise ValueError("frontend.args.backend is managed by srtctl for atomesh")
         return ["--backend", "atom"]

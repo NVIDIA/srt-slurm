@@ -15,7 +15,7 @@ static routers.
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from srtctl.frontends.base import register_frontend
+from srtctl.frontends.base import frontend_arg_names, register_frontend
 from srtctl.frontends.static_router import RouterWorker, StaticRouterFrontend, setup_script_preamble
 
 if TYPE_CHECKING:
@@ -74,7 +74,7 @@ class SGLRouterFrontend(StaticRouterFrontend):
         ``--tokenizer-path`` takes a ``tokenizer.json`` file or a HuggingFace repo id;
         without it the router downloads the tokenizer for ``--model-id``.
         """
-        normalized = {str(key).replace("_", "-") for key in config.frontend.args or {}}
+        normalized = frontend_arg_names(config.frontend.args)
         managed: list[str] = []
         if "model-id" not in normalized:
             managed.extend(["--model-id", config.served_model_name])

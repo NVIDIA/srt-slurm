@@ -272,6 +272,11 @@ class Frontend(ABC):
         raise NotImplementedError
 
 
+def frontend_arg_names(args: dict[str, Any] | None) -> set[str]:
+    """The flag names ``frontend.args`` sets, with ``_`` spelled as ``-``."""
+    return {str(key).replace("_", "-") for key in args or {}}
+
+
 def frontend_args_to_cli(args: dict[str, Any] | None) -> list[str]:
     """``frontend.args`` as CLI flags with keys verbatim: ``True`` is a bare flag, ``False``/``None`` are dropped."""
     if not args:

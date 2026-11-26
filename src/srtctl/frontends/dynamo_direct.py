@@ -17,7 +17,7 @@ replaces the discovery plane with a URL list and reads the workers' own ports.
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from srtctl.core.slurm import get_hostname_ip
-from srtctl.frontends.base import register_frontend
+from srtctl.frontends.base import frontend_arg_names, register_frontend
 from srtctl.frontends.dynamo import DynamoFrontend
 
 if TYPE_CHECKING:
@@ -42,9 +42,7 @@ class DynamoDirectFrontend(DynamoFrontend):
     uses_discovery_plane: ClassVar[bool] = False
 
     def validate(self, config: Any) -> None:
-        conflicts = sorted(
-            {str(key).replace("_", "-") for key in config.frontend.args or {}}.intersection(_MANAGED_ARGS)
-        )
+        conflicts = sorted(frontend_arg_names(config.frontend.args).intersection(_MANAGED_ARGS))
         if conflicts:
             raise ValueError(f"frontend.type: dynamo-direct manages frontend.args: {', '.join(conflicts)}")
 
@@ -68,10 +66,6 @@ class DynamoDirectFrontend(DynamoFrontend):
     def worker_metrics_port(self, process: "Process", runtime: "RuntimeContext") -> int | None:
         """Every node of a native engine serves ``/metrics`` on its own HTTP port."""
         return process.http_port if process.http_port > 0 else None
-
-    def worker_endpoint_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
-        """One endpoint per logical worker: the leader's HTTP port."""
-        return process.http_port if process.is_leader and process.http_port > 0 else None
 
     def profiling_control_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
         """The engine's own HTTP server controls its profiler on every node."""
