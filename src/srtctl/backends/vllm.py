@@ -363,7 +363,7 @@ class VLLMBackend(Backend):
 
     # Default KV connector: "nixl", "lmcache", "lmcache-mp", "kvbm", "moriio", "mooncake", or a raw JSON string for
     # --kv-transfer-config. Can be overridden per role by setting "connector" in roles.<role>.args; connector_for_mode
-    # resolves it. "moriio" (ROCm MoRI-IO) uses vLLM Router discovery or ATOMesh static READ routing.
+    # resolves it. "moriio" (ROCm MoRI-IO) uses vLLM Router discovery or ATOMesh static MoRI routing.
     # "mooncake" (vLLM MooncakeConnector) runs the vLLM Router in --kv-connector mooncake mode.
     # dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).
     connector: str | None = "nixl"
@@ -541,7 +541,7 @@ class VLLMBackend(Backend):
     def discovers_workers(self) -> bool:
         """Whether either role uses a connector with allocated peer metadata listeners.
 
-        MoRI-IO uses vLLM Router registration or ATOMesh static READ URLs. The
+        MoRI-IO uses vLLM Router registration or ATOMesh static URLs. The
         frontend selects that behavior and requires both roles to agree.
         """
         return any(row is not None and row.discovery for row in map(self.kv_connector_for_mode, ("prefill", "decode")))
@@ -1395,7 +1395,7 @@ class VLLMBackend(Backend):
                 process,
                 runtime,
                 use_default=mode != "agg",
-                register_with_router=frontend.moriio_routing != "static-read",
+                register_with_router=frontend.moriio_routing != "static",
             )
             for key in ("connector", "kv-transfer-config", "kv_transfer_config"):
                 config.pop(key, None)

@@ -69,7 +69,7 @@ class VLLMRouterFrontend(StaticRouterFrontend):
 
     type: ClassVar[str] = "vllm-router"
     required_backend: ClassVar[str | None] = "vllm"
-    moriio_routing: ClassVar[Literal["discovery", "static-read"] | None] = "discovery"
+    moriio_routing: ClassVar[Literal["discovery", "static"] | None] = "discovery"
     supports_mooncake_bootstrap: ClassVar[bool] = True
     # Router expands each node-local hybrid-LB pool into its DP ranks itself.
     expands_node_local_dp: ClassVar[bool] = True

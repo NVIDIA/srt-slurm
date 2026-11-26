@@ -1,0 +1,68 @@
+# Generic launch example: resolve model/image aliases in srtslurm.yaml.
+# The worker image must support MoRI PP producers; the router image must
+# implement native vLLM moriio-write. Set MoRI network QoS for your cluster
+# (for example MORI_RDMA_TC); NCCL settings do not configure MoRI.
+schema: 2
+name: atomesh-vllm-moriio-write
+identity:
+  model: {}
+  container: {}
+slurm:
+  time_limit: 00:30:00
+model:
+  path: model
+  container: vllm
+  precision: bf16
+resources:
+  gpu_type: mi355x
+  gpus_per_node: 8
+frontend:
+  type: atomesh
+  container_image: atomesh
+  enable_multiple_frontends: false
+  args:
+    policy: dp_sticky
+engine:
+  type: vllm
+  connector: moriio
+  allow_prefill_decode_colocation: true
+environment:
+  VLLM_KV_CACHE_LAYOUT: LBHNC
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 4
+    args:
+      tensor-parallel-size: 1
+      pipeline-parallel-size: 4
+      max-model-len: 4096
+      kv-transfer-config:
+        kv_connector: MultiConnector
+        kv_role: kv_both
+        kv_connector_extra_config:
+          connectors:
+            - kv_connector: MoRIIOConnector
+              kv_role: kv_producer
+              kv_connector_extra_config:
+                read_mode: false
+            - kv_connector: SimpleCPUOffloadConnector
+              kv_role: kv_both
+              kv_connector_extra_config:
+                cpu_bytes_to_use: 4294967296
+  decode:
+    nodes: colocate
+    workers: 1
+    gpus: 4
+    args:
+      tensor-parallel-size: 1
+      data-parallel-size: 4
+      max-model-len: 4096
+      kv-transfer-config:
+        kv_connector: MoRIIOConnector
+        kv_role: kv_consumer
+        kv_connector_extra_config:
+          read_mode: false
+benchmark:
+  type: custom
+  command: echo "Configure a workload for the selected model"

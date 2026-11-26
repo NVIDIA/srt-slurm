@@ -500,3 +500,27 @@ vLLM owns consumer abort notification and producer deferred release. Its produce
 `defer_timeout` must cover decode admission and transfer under the deployed load;
 the default 60 seconds is not an arbitrary queue budget. GPU transfer, offload
 and speculative-decoding support must be validated for the chosen worker image.
+
+
+### ATOMesh with native vLLM MoRI-IO WRITE workers
+
+Set `read_mode: false` in the MoRI child on both roles and choose
+`frontend.type: atomesh`. A `SimpleCPUOffloadConnector` sibling remains in the
+prefill MultiConnector unchanged. srtctl selects `moriio-write`, disables proxy
+discovery and supplies the router's `--vllm-moriio-peers` JSON from the same
+allocated handshake/notify ports and advertised host used in worker commands.
+These router arguments are managed; do not set them in `frontend.args`.
+
+The WRITE path starts both HTTP legs concurrently. Prefill DP must be 1, P/D TP
+sizes must match, and every worker's DP pool must fit on one node. Decode uses
+PP1 and its native internal DP load balancing; PP is permitted on prefill with a
+worker version supporting MoRI PP
+([vLLM #64693](https://github.com/vllm-project/vllm/pull/64693)). Health checks and
+stable worker lifetimes are required. The router supplies the selected peer identity, while
+vLLM owns block allocation, actual decode DP-rank notification, native writes,
+completion ACKs and deferred KV release. A READ result does not validate WRITE.
+
+See [`examples/vllm/atomesh-moriio-write.yaml`](../examples/vllm/atomesh-moriio-write.yaml)
+for a launch example. Resolve its model and image aliases in `srtslurm.yaml`.
+Configure the worker's MoRI network settings for the cluster: `MORI_RDMA_TC`
+sets its traffic class; `NCCL_IB_TC` does not configure the MoRI transport.

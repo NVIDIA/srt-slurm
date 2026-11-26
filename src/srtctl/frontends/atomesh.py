@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from srtctl.backends.atom import AtomBackend
@@ -21,10 +22,10 @@ if TYPE_CHECKING:
 
 @register_frontend("atomesh")
 class AtomeshFrontend(StaticRouterFrontend):
-    """Route ATOM traffic or vLLM Mooncake / MoRI-IO READ prefill/decode traffic."""
+    """Route ATOM traffic or vLLM Mooncake / MoRI-IO READ or WRITE prefill/decode traffic."""
 
     type: ClassVar[str] = "atomesh"
-    moriio_routing: ClassVar[Literal["discovery", "static-read"] | None] = "static-read"
+    moriio_routing: ClassVar[Literal["discovery", "static"] | None] = "static"
     supports_mooncake_bootstrap: ClassVar[bool] = True
     executable: ClassVar[tuple[str, ...]] = ("atomesh", "launch")
     pd_flag: ClassVar[str] = "--pd-disaggregation"
@@ -51,8 +52,12 @@ class AtomeshFrontend(StaticRouterFrontend):
                 raise ValueError("ATOMesh Mooncake requires decode internal load balancing")
         if config.frontend.enable_multiple_frontends:
             raise ValueError("ATOMesh vLLM requires frontend.enable_multiple_frontends: false")
-        if {"backend", "vllm-kv-connector"} & {str(key).replace("_", "-") for key in (config.frontend.args or {})}:
-            raise ValueError("frontend.args.backend and vllm-kv-connector are managed by srtctl for atomesh")
+        if {"backend", "vllm-kv-connector", "vllm-moriio-peers"} & {
+            str(key).replace("_", "-") for key in (config.frontend.args or {})
+        }:
+            raise ValueError(
+                "frontend.args.backend, vllm-kv-connector and vllm-moriio-peers are managed by srtctl for atomesh"
+            )
 
     def _validate_moriio_workers(self, config: Any) -> None:
         backend = config.backend
@@ -60,20 +65,33 @@ class AtomeshFrontend(StaticRouterFrontend):
             "decode", "tensor-parallel-size"
         ):
             raise ValueError("ATOMesh MoRI-IO requires the same tensor-parallel-size on prefill and decode")
+        modes = {}
         for mode in ("prefill", "decode"):
-            if backend._get_parallel_size(mode, "data-parallel-size") != 1:
-                raise ValueError(f"ATOMesh MoRI-IO requires {mode} data-parallel-size: 1")
             row = backend.kv_connector_for_mode(mode)
             if row is None or not row.discovery:
-                raise ValueError("ATOMesh MoRI-IO READ requires MoRI-IO on both prefill and decode")
+                raise ValueError("ATOMesh MoRI-IO requires MoRI-IO on both prefill and decode")
             try:
-                read_mode = backend.discovery_read_mode(mode)
+                modes[mode] = backend.discovery_read_mode(mode)
             except TypeError as exc:
                 raise ValueError(str(exc)) from exc
-            if not read_mode:
-                raise ValueError("ATOMesh MoRI-IO requires read_mode: true on both roles")
             if config.topology.worker_restart(mode).enabled:
-                raise ValueError("ATOMesh MoRI-IO READ requires worker restart: never")
+                raise ValueError("ATOMesh MoRI-IO requires worker restart: never")
+        if modes["prefill"] != modes["decode"]:
+            raise ValueError("ATOMesh MoRI-IO requires matching read_mode on both roles")
+        read_mode = modes["prefill"]
+        for mode in ("prefill", "decode"):
+            if (read_mode or mode == "prefill") and backend._get_parallel_size(mode, "data-parallel-size") != 1:
+                raise ValueError(f"ATOMesh MoRI-IO requires {mode} data-parallel-size: 1")
+            if not read_mode:
+                gpus = config.topology.gpus_per_prefill if mode == "prefill" else config.topology.gpus_per_decode
+                if gpus > config.resources.gpus_per_node or backend._get_local_dp_size(
+                    mode, gpus
+                ) != backend._get_parallel_size(mode, "data-parallel-size"):
+                    raise ValueError("ATOMesh MoRIIO WRITE requires each worker's DP pool to fit on one node")
+        if not read_mode and (
+            backend._get_parallel_size("decode", "pipeline-parallel-size") != 1 or backend.is_external_lb("decode")
+        ):
+            raise ValueError("ATOMesh MoRIIO WRITE requires decode PP=1 and internal DP load balancing")
         if config.topology.num_agg:
             raise ValueError("ATOMesh MoRI-IO requires a prefill/decode topology")
         if config.health_check is None:
@@ -115,9 +133,34 @@ class AtomeshFrontend(StaticRouterFrontend):
         runtime: RuntimeContext | None = None,
     ) -> list[str]:
         normalized = {str(key).replace("_", "-") for key in (config.frontend.args or {})}
-        if {"backend", "vllm-kv-connector"} & normalized:
-            raise ValueError("frontend.args.backend and vllm-kv-connector are managed by srtctl for atomesh")
+        if {"backend", "vllm-kv-connector", "vllm-moriio-peers"} & normalized:
+            raise ValueError(
+                "frontend.args.backend, vllm-kv-connector and vllm-moriio-peers are managed by srtctl for atomesh"
+            )
         args = ["--backend", backend.type]
         if isinstance(backend, VLLMBackend) and backend.discovers_workers():
-            args.extend(["--vllm-kv-connector", "moriio-read"])
+            read_mode = backend.discovery_read_mode("prefill")
+            args.extend(["--vllm-kv-connector", "moriio-read" if read_mode else "moriio-write"])
+            if not read_mode:
+                if runtime is None:
+                    raise ValueError("MoRIIO WRITE peer metadata requires allocated runtime ports")
+                peers = []
+                for process in backend_processes:
+                    if process.http_port <= 0:
+                        continue
+                    workers = self.collect_workers(backend, [process], runtime.network_interface)
+                    if len(workers) != 1:
+                        raise ValueError("Expected one static MoRIIO peer per API process")
+                    extra = backend._discovery_extra_config(process, runtime, register_with_router=False)
+                    peers.append(
+                        {
+                            "url": workers[0].url,
+                            "host": extra["host_ip"],
+                            "handshake_port": int(extra["handshake_port"]),
+                            "notify_port": int(extra["notify_port"]),
+                            "tp_size": backend._get_parallel_size(process.endpoint_mode, "tensor-parallel-size"),
+                            "dp_size": backend._get_parallel_size(process.endpoint_mode, "data-parallel-size"),
+                        }
+                    )
+                args.extend(["--vllm-moriio-peers", json.dumps(peers, separators=(",", ":"))])
         return args
