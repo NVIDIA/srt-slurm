@@ -129,12 +129,13 @@ class _FakeLauncher:
 
 
 class TestChaosSchema:
-    def test_kill_rejected_with_observability_nsys(self):
+    @pytest.mark.parametrize("capture_window", ["measured_workload", "including_startup"])
+    def test_kill_rejected_with_observability_nsys(self, capture_window: str):
         with pytest.raises(ValidationError, match="observability.nsys"):
             _load_dict(
                 _base_recipe(
                     benchmark={"type": "sa-bench", "isl": 128, "osl": 128, "concurrencies": "4"},
-                    observability={"enabled": True},
+                    observability={"enabled": True, "nsys": {"capture_window": capture_window}},
                     chaos={"events": [{"type": "kill", "role": "agg"}]},
                 )
             )
@@ -617,7 +618,7 @@ class TestFaultToleranceAndActions:
         assert "STOP" not in signals
         assert runner.records[0].status == "failed"
 
-    def test_pause_registered_after_teardown_drain_is_resumed_on_exit(self, tmp_path: Path):
+    def test_pause_racing_teardown_drain_is_resumed(self, tmp_path: Path):
         registry = ProcessRegistry(job_id="105")
         registry.add_process(_FakeStep("agg_0_node0", node="node0").managed)
         signals: list[str] = []
@@ -627,8 +628,9 @@ class TestFaultToleranceAndActions:
             if "pids" in payload:
                 signals.append(payload["signal"])
                 if payload["signal"] == "STOP":
-                    # stop() already drained (join timed out) and teardown is underway.
+                    # stop() drains (and resumes) the registered stall right before this SIGSTOP lands.
                     runner_box[0]._done_event.set()
+                    runner_box[0]._ctx.drain_active_stalls()
             return _fake_node_helper(payload, pids=(777,))
 
         runner = self._runner(
@@ -645,7 +647,7 @@ class TestFaultToleranceAndActions:
             runner.start()
             assert runner._thread is not None
             runner._thread.join(timeout=5.0)
-            assert signals == ["STOP", "CONT"]  # resumed by the timeline's exit path, not stop()
+            assert signals == ["STOP", "CONT"]  # the freeze resumes its own pause, not stop()
             assert runner._ctx.drain_active_stalls() == []
             runner.stop(timeout=5.0)
 

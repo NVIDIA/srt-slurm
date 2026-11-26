@@ -632,6 +632,9 @@ def execute_freeze(
                     f"freeze SIGSTOP failed on {target.label}: states={bad} unsignalled={unsignalled} "
                     f"errors={[e for r in results for e in r['errors']]}"
                 )
+            if ctx.should_stop():
+                # Teardown may have sent SIGCONT before this SIGSTOP landed; resume again on the way out.
+                raise RuntimeError("benchmark teardown started during the freeze")
             logger.warning(
                 "Chaos[%d] freeze: %s SIGSTOP verified (state=T) %s", event_index, target.label, _proc_info(chosen)
             )
