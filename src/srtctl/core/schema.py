@@ -3194,7 +3194,11 @@ class SrtConfig:
         """Reject job-wide orchestration that is not yet role-aware."""
         if not self.has_role_backends:
             return
-        if self.frontend.type == "dynamo" or self.dynamo.sidecar:
+        from srtctl.frontends import FRONTEND_NONE, get_frontend
+
+        if self.dynamo.sidecar or (
+            self.frontend.type != FRONTEND_NONE and get_frontend(self.frontend.type).runs_dynamo
+        ):
             raise ValidationError("role-specific engines do not yet support the Dynamo frontend or sidecars")
         if self.resources.het_jobs is True:
             raise ValidationError("role-specific engines do not yet support resources.het_jobs")
@@ -3492,7 +3496,9 @@ class SrtConfig:
         if self.frontend.epp_config is not None and (frontend is None or not frontend.accepts_epp_config):
             raise ValidationError(f"frontend.epp_config is not supported with frontend.type: {self.frontend.type}")
         if self.frontend.router_policy_config is not None and (frontend is None or not frontend.runs_dynamo):
-            raise ValidationError("frontend.router_policy_config is only supported with frontend.type: dynamo")
+            raise ValidationError(
+                "frontend.router_policy_config requires a Dynamo frontend (frontend.type: dynamo or dynamo-direct)"
+            )
         if frontend is None:
             return
         required = frontend.required_backend
@@ -4035,12 +4041,9 @@ class SrtConfig:
         """
         if self.dynamo.sidecar:
             return True
-        from srtctl.frontends import get_frontend
+        from srtctl.frontends import FRONTEND_NONE, get_frontend
 
-        try:
-            return get_frontend(self.frontend.type).dials_native_grpc
-        except ValueError:
-            return False
+        return self.frontend.type != FRONTEND_NONE and get_frontend(self.frontend.type).dials_native_grpc
 
     def _frontend_profiling_control_is_leader_only(self) -> bool:
         """Whether the frontend's workers expose one profiler control server per logical endpoint."""

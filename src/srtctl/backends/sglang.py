@@ -570,7 +570,7 @@ class SGLangBackend(Backend):
             # token counts balloon. Force delta streaming unless the recipe set the flag itself.
             engine.append("--incremental-streaming-output")
             logger.info(
-                "sglang %s worker %d: adding --incremental-streaming-output (required by the Dynamo sidecar; "
+                "sglang %s worker %d: adding --incremental-streaming-output (required by Dynamo's native gRPC client; "
                 "set the role's args.incremental-streaming-output explicitly to override)",
                 mode,
                 process.endpoint_index,

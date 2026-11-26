@@ -3,8 +3,6 @@
 
 """Dynamo frontend dialing native SGLang gRPC engines itself (`frontend.type: dynamo-direct`)."""
 
-from types import SimpleNamespace
-
 import pytest
 from marshmallow import ValidationError
 
@@ -28,9 +26,8 @@ def _srt_config(engine=None, **overrides) -> SrtConfig:
         model={"path": "model", "container": "image", "precision": "bf16"},
         resources=ResourceConfig(gpu_type="h100", gpus_per_node=8),
         roles={"agg": RoleConfig(nodes=1, workers=2, gpus=1)},
-        frontend=FrontendConfig(type="dynamo-direct", enable_multiple_frontends=False),
         engine=engine or SGLangBackend(),
-        **overrides,
+        **{"frontend": FrontendConfig(type="dynamo-direct", enable_multiple_frontends=False), **overrides},
     )
 
 
@@ -97,9 +94,8 @@ def test_worker_ports_are_the_engines_own_http_ports() -> None:
 
 @pytest.mark.parametrize("key", ["direct", "engine-url", "engine_url", "direct-backend"])
 def test_managed_flags_cannot_be_set_in_frontend_args(key: str) -> None:
-    config = SimpleNamespace(frontend=SimpleNamespace(args={key: "x"}))
-    with pytest.raises(ValueError, match="manages frontend.args"):
-        DynamoDirectFrontend().get_managed_frontend_args(config, SGLangBackend(), [], SimpleNamespace())
+    with pytest.raises(ValidationError, match="manages frontend.args"):
+        _srt_config(frontend=FrontendConfig(type="dynamo-direct", args={key: "x"}))
 
 
 def test_only_sglang_engines_are_accepted() -> None:

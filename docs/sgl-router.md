@@ -66,7 +66,7 @@ roles; load-aware admission reads load reports, enabled on the engine with
 
 ## Example
 
-[`examples/sglang/sgl-router-disagg.yaml`](../examples/sglang/sgl-router-disagg.yaml):
+[`examples/sglang/sgl-router-disagg.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/sglang/sgl-router-disagg.yaml):
 
 ```yaml
 frontend:

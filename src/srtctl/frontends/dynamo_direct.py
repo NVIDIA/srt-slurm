@@ -41,6 +41,13 @@ class DynamoDirectFrontend(DynamoFrontend):
     # Engines are listed, not discovered: no etcd or NATS, only the lifecycle collector.
     uses_discovery_plane: ClassVar[bool] = False
 
+    def validate(self, config: Any) -> None:
+        conflicts = sorted(
+            {str(key).replace("_", "-") for key in config.frontend.args or {}}.intersection(_MANAGED_ARGS)
+        )
+        if conflicts:
+            raise ValueError(f"frontend.type: dynamo-direct manages frontend.args: {', '.join(conflicts)}")
+
     def get_managed_frontend_args(
         self, config: Any, backend: Any, backend_processes: list["Process"], runtime: "RuntimeContext"
     ) -> list[str]:
@@ -50,11 +57,6 @@ class DynamoDirectFrontend(DynamoFrontend):
         flat. A prefill engine's bootstrap host is the host of its URL, hence the
         worker node's address on the job's network interface.
         """
-        conflicts = sorted(
-            {str(key).replace("_", "-") for key in config.frontend.args or {}}.intersection(_MANAGED_ARGS)
-        )
-        if conflicts:
-            raise ValueError(f"frontend.type: dynamo-direct manages frontend.args: {', '.join(conflicts)}")
         args = ["--direct", "--direct-backend", _DIRECT_BACKENDS[backend.type]]
         for process in backend_processes:
             # Allocated only on a node that hosts native gRPC listeners; the frontend discovers the node's others.
@@ -72,4 +74,5 @@ class DynamoDirectFrontend(DynamoFrontend):
         return process.http_port if process.is_leader and process.http_port > 0 else None
 
     def profiling_control_port(self, process: "Process", config: Any, runtime: "RuntimeContext") -> int | None:
+        """The engine's own HTTP server controls its profiler on every node."""
         return process.http_port if process.http_port > 0 else None

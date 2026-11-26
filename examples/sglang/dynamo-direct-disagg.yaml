@@ -5,8 +5,8 @@
 # `sglang.launch_server` engines with a native gRPC listener: no `dynamo.sglang`
 # worker, no sidecar, no etcd. The frontend runs `dynamo.frontend --direct` with
 # one `--engine-url` per engine and routes with `--router-mode kv`.
-# `dynamo.source` must be a Dynamo build whose frontend has `--direct`; see
-# docs/dynamo-direct.md.
+# `dynamo.source` pins the commit of ai-dynamo/dynamo#19568, which adds `--direct`;
+# no Dynamo release has the flag yet. See docs/dynamo-direct.md.
 #
 # Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
 
@@ -26,7 +26,8 @@ resources:
   gpus_per_node: 8
 dynamo:
   source:
-    pypi: "1.4.2"
+    git: https://github.com/ai-dynamo/dynamo
+    rev: 3e2af8eefe56b15baa985384590e0d723112058c   # ai-dynamo/dynamo#19568, which adds --direct
 
 frontend:
   type: dynamo-direct

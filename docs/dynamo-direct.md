@@ -6,11 +6,18 @@ frontend dials each engine's native gRPC API itself, so the engines are plain
 and no etcd or NATS. Routing, prefill/decode orchestration and migration run in
 the frontend as they do for registered workers.
 
-```
-dynamo (sidecar: true)                         dynamo-direct
-engine --grpc-port P <- sidecar (same node)    engine --grpc-port P
-           sidecar -> etcd <- dynamo.frontend            ^ gRPC
-                                               dynamo.frontend --direct --engine-url grpc://<ip>:P ...
+```mermaid
+flowchart LR
+    subgraph sidecar["dynamo (sidecar: true)"]
+        direction LR
+        F1["dynamo.frontend"] --> D1["etcd"]
+        S1["sidecar (same node)"] --> D1
+        S1 -->|"native gRPC"| E1["engine --grpc-port P"]
+    end
+    subgraph direct["dynamo-direct"]
+        direction LR
+        F2["dynamo.frontend --direct<br/>--engine-url grpc://&lt;ip&gt;:P"] -->|"native gRPC"| E2["engine --grpc-port P"]
+    end
 ```
 
 Only `engine: sglang` is supported, with SGLang's Rust server (v0.5.23 or later).
@@ -50,12 +57,13 @@ port and the frontend's on the public port.
 
 ## Example
 
-[`examples/sglang/dynamo-direct-disagg.yaml`](../examples/sglang/dynamo-direct-disagg.yaml):
+[`examples/sglang/dynamo-direct-disagg.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/sglang/dynamo-direct-disagg.yaml):
 
 ```yaml
 dynamo:
   source:
-    pypi: "1.4.2"   # replace with a Dynamo build whose frontend has --direct
+    git: https://github.com/ai-dynamo/dynamo
+    rev: 3e2af8eefe56b15baa985384590e0d723112058c   # ai-dynamo/dynamo#19568, which adds --direct
 
 frontend:
   type: dynamo-direct
