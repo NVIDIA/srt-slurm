@@ -36,7 +36,7 @@ from srtctl.core.power.contract import (
     is_finite_number,
     sha256_file,
 )
-from srtctl.core.power.identity import WorkerGpuIdentity, WorkerIdentityProof, is_gpu_uuid
+from srtctl.core.power.identity import WorkerGpuIdentity, WorkerIdentityProof, is_device_identity
 from srtctl.core.power.manifest import STATUS_COMPLETE, ArtifactError, ExpectedWindow, WindowValidation
 from srtctl.core.power.samples import ObservedDevice, SampleRow, derive_observed_devices, read_samples
 from srtctl.core.power.topology import (
@@ -573,9 +573,9 @@ def _worker_identity(manifest: dict[str, Any]) -> WorkerIdentityProof | None:
             not isinstance(uuids, list)
             or not uuids
             or len(set(uuids)) != len(uuids)
-            or not all(map(is_gpu_uuid, uuids))
+            or not all(map(is_device_identity, uuids))
         ):
-            raise ValueError(f"worker gpu_uuids is not a non-empty list of distinct GPU UUIDs: {uuids!r}")
+            raise ValueError(f"worker gpu_uuids is not a non-empty list of distinct GPU identities: {uuids!r}")
         workers.append(
             WorkerGpuIdentity(
                 hostname=_text(entry["hostname"], "hostname"),
