@@ -617,6 +617,38 @@ class TestFaultToleranceAndActions:
         assert "STOP" not in signals
         assert runner.records[0].status == "failed"
 
+    def test_pause_registered_after_teardown_drain_is_resumed_on_exit(self, tmp_path: Path):
+        registry = ProcessRegistry(job_id="105")
+        registry.add_process(_FakeStep("agg_0_node0", node="node0").managed)
+        signals: list[str] = []
+        runner_box: list[ChaosRunner] = []
+
+        def fake(node, payload, **_kwargs):
+            if "pids" in payload:
+                signals.append(payload["signal"])
+                if payload["signal"] == "STOP":
+                    # stop() already drained (join timed out) and teardown is underway.
+                    runner_box[0]._done_event.set()
+            return _fake_node_helper(payload, pids=(777,))
+
+        runner = self._runner(
+            tmp_path,
+            registry,
+            {("agg", 0, 0): [_proc("agg", 0, "node0")]},
+            [ChaosEventConfig(type="freeze", role="agg")],
+        )
+        runner_box.append(runner)
+        with (
+            patch("srtctl.chaos.actions.list_step_ids", return_value=None),
+            patch("srtctl.chaos.actions.run_node_python", side_effect=fake),
+        ):
+            runner.start()
+            assert runner._thread is not None
+            runner._thread.join(timeout=5.0)
+            assert signals == ["STOP", "CONT"]  # resumed by the timeline's exit path, not stop()
+            assert runner._ctx.drain_active_stalls() == []
+            runner.stop(timeout=5.0)
+
     def test_rolling_restart_stops_when_replacement_not_ready(self, tmp_path: Path):
         registry = ProcessRegistry(job_id="105")
         steps = [_FakeStep(f"agg_{i}_node{i}", node=f"node{i}") for i in (0, 1)]
