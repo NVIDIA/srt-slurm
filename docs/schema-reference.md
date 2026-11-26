@@ -833,5 +833,17 @@ Top-level keys of `srtslurm.yaml`. Recipes inherit these defaults and resolve al
 | `preflight` | bool | `True` | Run the pre-submit model.path / model.container / telemetry filesystem checks on ``srtctl apply``. Set false on clusters whose model or image paths exist only on compute nodes (node-local NVMe such as /raid), where the login node cannot stat them; every apply then behaves as if --no-preflight had been passed. The framework still fails loudly at runtime if a path is genuinely missing on the compute node. |
 | `release_nodes_before_postprocess` | bool | `False` | After workers stop, shrink the job to its batch host (`scontrol update NodeList=`) so the other nodes return to the scheduler before the S3 upload and AI analysis, which then run on the batch host. Needs job shrinking enabled (no `disable_job_shrink`); skipped for het jobs. |
 | `launcher` | one of `'slurm'`, `'docker'`, `'host'` | `'slurm'` | Where processes run: `slurm` (srun steps inside an sbatch allocation), `docker` (one job on this machine, containers under `docker run`) or `host` (one job on this machine, every process on the host without containers). See docs/cluster-config.md#launcher. |
+| `ssh` | [SSHConfig](#sshconfig) \| None | `None` | With launcher: host, submit the entire job over SSH; see docs/cluster-config.md#host-jobs-over-ssh. |
 | `docker_args` | list[str] \| None | `None` | Extra `docker run` arguments for every container under `launcher: docker`, e.g. `["--user", "1000:1000"]`. |
 | `docker_gpus` | str \| None | `None` | The `--gpus` value for every container under `launcher: docker` (default `all`), e.g. `"device=2,3,4,5"` on a shared or partly faulty machine. Docker renumbers the listed devices from 0, so the per-worker `CUDA_VISIBLE_DEVICES` masks the orchestrator computes stay valid. |
+
+### SSHConfig
+
+Run a complete host-mode job on one passwordless SSH target.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `host` | str | required | SSH destination, such as an alias in ~/.ssh/config or user@hostname. |
+| `workdir` | str | required | Existing remote srt-slurm checkout, with launcher: host support; absolute or ~/relative. |
+| `python` | str | `'python3'` | Remote Python 3.10+ used for the dependency-free job supervisor. |
+| `uv` | str | `'uv'` | Remote uv executable used to run srtctl from workdir. |

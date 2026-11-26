@@ -1,0 +1,22 @@
+# Copy to srtslurm.yaml on the machine that submits jobs, then edit the remote paths.
+# The target must already have this repository with host-launcher support, uv,
+# Python 3.10+, and the same engine/tools needed by local host mode.
+# The remote host launcher uses its existing environment. Authentication uses ~/.ssh/config.
+launcher: host
+ssh:
+  host: gpu-box
+  workdir: /home/user/srt-slurm
+  # Use absolute executable paths when the remote SSH session cannot find them.
+  # python: /usr/bin/python3
+  # uv: /home/user/.local/bin/uv
+
+# Run from the submitting machine:
+#   srtctl dry-run -f examples/host/vllm-agg-1gpu.yaml
+#   srtctl apply -f examples/host/vllm-agg-1gpu.yaml --json
+# The entire job runs remotely and survives disconnects. Use the returned ssh-<id>:
+#   srtctl remote list
+#   srtctl remote status ssh-<id>
+#   srtctl remote logs ssh-<id> --follow
+#   srtctl remote stop ssh-<id>
+#
+# See docs/cluster-config.md#host-jobs-over-ssh for path and lifecycle semantics.

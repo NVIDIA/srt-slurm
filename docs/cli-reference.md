@@ -13,6 +13,9 @@ Examples:
   srtctl apply -f config.yaml --sweep            # Submit sweep
   srtctl preflight -f config.yaml                # Check model/container availability
   srtctl dry-run -f config.yaml                  # Dry run
+  srtctl remote list                            # List jobs submitted through ssh in srtslurm.yaml
+  srtctl remote logs ssh-<id> --follow            # Follow a remote host job; Ctrl+C leaves it running
+  srtctl remote stop ssh-<id>                     # Request graceful shutdown of a remote host job
   srtctl cache-inputs -f config.yaml             # Pre-generate benchmark datasets
   srtctl bake-image --image model.sqsh --sa-bench  # Bake dependencies into an image
   srtctl render -f config.yaml --to ./rendered   # Write the sbatch script for someone else to submit
@@ -74,6 +77,39 @@ Query the generated dataset as JSON without a browser
 | `--offset OFFSET` | `0` |  |
 | `--limit LIMIT` | `100` |  |
 | `--points` |  | Include up to 1000 raw points per metric series |
+
+## `srtctl remote`
+
+Inspect and stop jobs submitted over SSH
+
+### `srtctl remote list`
+
+List SSH submissions on the configured target
+
+### `srtctl remote status`
+
+Read an SSH job's state and output directory
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `job_id` | required | ssh-<id> printed by apply |
+
+### `srtctl remote logs`
+
+Read the saved apply log on the SSH target
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `job_id` | required | ssh-<id> printed by apply |
+| `--follow` |  | Follow output until the job ends; Ctrl+C leaves it running |
+
+### `srtctl remote stop`
+
+Request graceful shutdown through the remote job supervisor
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `job_id` | required | ssh-<id> printed by apply |
 
 ## `srtctl apply`
 

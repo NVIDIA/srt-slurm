@@ -147,6 +147,13 @@ model_paths:
 #   #   You are analyzing benchmark failure logs for an LLM serving system.
 #   #   ...
 
+# To run an entire host-mode job on another machine over passwordless SSH:
+# launcher: host
+# ssh:
+#   host: gpu-box
+#   workdir: /home/user/srt-slurm
+# See docs/cluster-config.md#host-jobs-over-ssh for remote paths and lifecycle.
+
 # Usage:
 # In your job config, you can now use:
 #   model:

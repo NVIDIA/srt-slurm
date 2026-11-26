@@ -177,6 +177,7 @@ class HostLauncher(LocalLauncher):
 
     name = "host"
     uses_container_images = False
+    supports_ssh = True
 
     def __init__(self) -> None:
         super().__init__()
