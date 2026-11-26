@@ -2719,9 +2719,11 @@ class FrontendConfig:
     """Frontend/router configuration.
 
     Attributes:
-        type: Frontend type - "dynamo" (default) and "infera" (Infera router,
-            SGLang workers register in etcd); "sglang-router" (SGLang Model
-            Gateway), "vllm-router", "smg" (Shepherd Model Gateway, any backend), "llm-d"
+        type: Frontend type - "dynamo" (default), "dynamo-direct" (the Dynamo
+            frontend dialing native SGLang gRPC engines itself, no etcd) and
+            "infera" (Infera router, SGLang workers register in etcd);
+            "sglang-router" (SGLang Model Gateway), "sgl-router" (SGLang's Rust
+            router), "vllm-router", "smg" (Shepherd Model Gateway, any backend), "llm-d"
             (llm-d Endpoint Picker behind Envoy, vLLM), "atomesh", and
             "tilert-router" (static routers); "sglang", "vllm", and
             "trtllm_serve" (direct: the single aggregate worker binds the public
@@ -3192,7 +3194,11 @@ class SrtConfig:
         """Reject job-wide orchestration that is not yet role-aware."""
         if not self.has_role_backends:
             return
-        if self.frontend.type == "dynamo" or self.dynamo.sidecar:
+        from srtctl.frontends import FRONTEND_NONE, get_frontend
+
+        if self.dynamo.sidecar or (
+            self.frontend.type != FRONTEND_NONE and get_frontend(self.frontend.type).runs_dynamo
+        ):
             raise ValidationError("role-specific engines do not yet support the Dynamo frontend or sidecars")
         if self.resources.het_jobs is True:
             raise ValidationError("role-specific engines do not yet support resources.het_jobs")
@@ -3461,8 +3467,6 @@ class SrtConfig:
         """A Dynamo router policy config targets Dynamo, names a file, and is the only policy file."""
         if self.frontend.router_policy_config is None:
             return
-        if self.frontend.type != "dynamo":
-            raise ValidationError("frontend.router_policy_config is only supported with frontend.type: dynamo")
         if isinstance(self.frontend.router_policy_config, str) and not self.frontend.router_policy_config.strip():
             raise ValidationError("frontend.router_policy_config must be a non-empty path or a mapping")
 
@@ -3496,6 +3500,10 @@ class SrtConfig:
             ) from None
         if self.frontend.epp_config is not None and (frontend is None or not frontend.accepts_epp_config):
             raise ValidationError(f"frontend.epp_config is not supported with frontend.type: {self.frontend.type}")
+        if self.frontend.router_policy_config is not None and (frontend is None or not frontend.runs_dynamo):
+            raise ValidationError(
+                "frontend.router_policy_config requires a Dynamo frontend (frontend.type: dynamo or dynamo-direct)"
+            )
         if frontend is None:
             return
         required = frontend.required_backend
@@ -3825,7 +3833,7 @@ class SrtConfig:
         processes = self.backend.endpoints_to_processes(
             [endpoint],
             frontend_type=self.frontend.type,
-            dynamo_sidecar=self.dynamo.sidecar,
+            dynamo_sidecar=self.engines_serve_native_grpc,
         )
         return {process.node_rank for process in processes}
 
@@ -4029,6 +4037,19 @@ class SrtConfig:
                 f"telemetry requires a non-empty list of unique positive benchmark.concurrencies{cpu_only_fix}"
             )
 
+    @property
+    def engines_serve_native_grpc(self) -> bool:
+        """Whether engines expose their native gRPC API: beside a Dynamo sidecar, or to a frontend that dials them.
+
+        Decides the worker port layout. A services-only job and a type the registry does not know
+        have no frontend to ask.
+        """
+        if self.dynamo.sidecar:
+            return True
+        from srtctl.frontends import FRONTEND_NONE, get_frontend
+
+        return self.frontend.type != FRONTEND_NONE and get_frontend(self.frontend.type).dials_native_grpc
+
     def _frontend_profiling_control_is_leader_only(self) -> bool:
         """Whether the frontend's workers expose one profiler control server per logical endpoint."""
         if self.frontend.type == "none":
@@ -4061,7 +4082,7 @@ class SrtConfig:
         processes = self.backend.endpoints_to_processes(
             endpoints,
             frontend_type=self.frontend.type,
-            dynamo_sidecar=self.dynamo.sidecar,
+            dynamo_sidecar=self.engines_serve_native_grpc,
         )
         if self.backend.get_srun_config().launch_per_endpoint:
             processes = [process for process in processes if process.node_rank == 0]
@@ -4371,7 +4392,11 @@ def installs_dynamo(config: SrtConfig) -> bool:
     dynamo frontend) and its dry-run display: dynamo is only installed when the
     dynamo frontend is selected and install isn't disabled.
     """
-    return config.frontend.type == "dynamo" and config.dynamo.install
+    from srtctl.frontends import FRONTEND_NONE, get_frontend
+
+    if config.frontend.type == FRONTEND_NONE:
+        return False
+    return get_frontend(config.frontend.type).runs_dynamo and config.dynamo.install
 
 
 def container_creation_env(config: SrtConfig) -> dict[str, str] | None:

@@ -182,7 +182,7 @@ class WorkerStageMixin:
 
         # 2. Dynamo installation (required for dynamo.sglang when using dynamo frontend)
         # Skip if dynamo.install is False (container already has dynamo installed)
-        if installs_dynamo(self.config):
+        if installs_dynamo(self.config) and get_frontend(self.config.frontend.type).worker_launch == "dynamo":
             parts.append(self.config.dynamo.get_install_commands())
 
         if not parts:
@@ -299,8 +299,8 @@ class WorkerStageMixin:
             # Installed plugins may replace native engine output types and
             # break the fixed Rust/Python MessagePack contract used by vllm-rs.
             environment.setdefault("VLLM_PLUGINS", "")
-        if self.config.dynamo.sidecar and backend.type == "sglang":
-            # The sidecar talks to SGLang's native gRPC server, a prebuilt Rust extension. In
+        if backend.type == "sglang" and self.config.engines_serve_native_grpc:
+            # The sidecar (or a frontend that dials the engine itself) talks to SGLang's native gRPC server, a prebuilt Rust extension. In
             # images that run SGLang from a source checkout (the nightlies), the extension
             # loader's default "auto" mode ignores the bundled .so and tries to rebuild it
             # with cargo, which those images do not ship, so the engine dies before gRPC is up.

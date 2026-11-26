@@ -524,6 +524,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
 
     mixin = WorkerStageMixin()
     mixin.config = SimpleNamespace(
+        engines_serve_native_grpc=False,
         setup_script="setup.sh",
         frontend=SimpleNamespace(type="sglang"),
         dynamo=SimpleNamespace(install=False, sidecar=False, request_plane="nats", event_plane="zmq"),
@@ -595,6 +596,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
 
     mixin = WorkerStageMixin()
     mixin.config = SimpleNamespace(
+        engines_serve_native_grpc=False,
         setup_script=None,
         frontend=SimpleNamespace(type=frontend_type),
         dynamo=SimpleNamespace(
@@ -1012,6 +1014,7 @@ def test_trtllm_sidecar_endpoint_kills_step_on_rank_failure(tmp_path: Path) -> N
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.backend.type = "trtllm"
     mixin.config.dynamo.sidecar = True
+    mixin.config.engines_serve_native_grpc = True
     mixin.backend.get_srun_config.return_value = TRTLLMBackend().get_srun_config()
     mixin.runtime.srun_options = {"exclusive": "", "kill-on-bad-exit": "0"}
     mixin.config.roles["prefill"] = RoleConfig(
@@ -1037,6 +1040,7 @@ def test_sglang_sidecar_trusts_the_bundled_rust_extension(tmp_path: Path) -> Non
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.backend.type = "sglang"
     mixin.config.dynamo.sidecar = True
+    mixin.config.engines_serve_native_grpc = True
 
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
@@ -1054,6 +1058,7 @@ def test_sglang_sidecar_rust_build_mode_respects_the_recipe(tmp_path: Path) -> N
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.backend.type = "sglang"
     mixin.config.dynamo.sidecar = True
+    mixin.config.engines_serve_native_grpc = True
     mixin.runtime.environment = {"SGLANG_RUST_BUILD_MODE": "auto"}
 
     with (
@@ -1082,6 +1087,7 @@ def test_vllm_sidecar_disables_plugins_by_default(tmp_path: Path) -> None:
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.backend.type = "vllm"
     mixin.config.dynamo.sidecar = True
+    mixin.config.engines_serve_native_grpc = True
 
     with (
         patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
@@ -1188,6 +1194,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
 
     mixin = WorkerStageMixin()
     mixin.config = SimpleNamespace(
+        engines_serve_native_grpc=False,
         setup_script=None,
         frontend=SimpleNamespace(type="sglang"),
         dynamo=SimpleNamespace(install=False, sidecar=False, request_plane="nats", event_plane=None),

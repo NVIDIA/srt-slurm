@@ -76,6 +76,15 @@ class Frontend(ABC):
     #: for such a frontend and refuses the deprecated per_gpu layout.
     expands_node_local_dp: ClassVar[bool] = False
 
+    #: The frontend process is ``dynamo.frontend``: the job installs Dynamo for it
+    #: (``dynamo.install``) and it accepts ``frontend.router_policy_config``.
+    runs_dynamo: ClassVar[bool] = False
+
+    #: The frontend dials each engine's native gRPC API itself (Dynamo ``--direct``).
+    #: A backend with such a server starts the engine exactly as it does beside a
+    #: Dynamo sidecar, without the sidecar, and advertises the gRPC listener.
+    dials_native_grpc: ClassVar[bool] = False
+
     def worker_scheme(self, backend: Any, mode: "WorkerMode") -> str | None:
         """Static worker URL transport, or None when workers are not registered by URL."""
         return None
@@ -261,6 +270,11 @@ class Frontend(ABC):
             List of ManagedProcess instances for started frontends
         """
         raise NotImplementedError
+
+
+def frontend_arg_names(args: dict[str, Any] | None) -> set[str]:
+    """The flag names ``frontend.args`` sets, with ``_`` spelled as ``-``."""
+    return {str(key).replace("_", "-") for key in args or {}}
 
 
 def frontend_args_to_cli(args: dict[str, Any] | None) -> list[str]:

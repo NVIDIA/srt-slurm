@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from srtctl.core.health import WorkerHealthResult, probe_http_ok
-from srtctl.frontends.base import logical_health_expectations, register_frontend
+from srtctl.frontends.base import frontend_arg_names, logical_health_expectations, register_frontend
 from srtctl.frontends.static_router import RouterWorker, StaticRouterFrontend, setup_script_preamble
 from srtctl.ports import VLLM_DISCOVERY_PORT
 
@@ -310,7 +310,7 @@ class VLLMRouterFrontend(StaticRouterFrontend):
     ) -> list[str]:
         """Derive topology- and health-related Router arguments."""
         frontend_args = config.frontend.args or {}
-        normalized_frontend_args = {str(key).replace("_", "-") for key in frontend_args}
+        normalized_frontend_args = frontend_arg_names(frontend_args)
         managed_args: list[str] = []
 
         local_dp_size = node_local_data_parallel_size(config, backend_processes)

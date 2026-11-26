@@ -63,7 +63,7 @@ def worker_processes(
             selected,
             port_allocator=allocator,
             frontend_type=config.frontend.type,
-            dynamo_sidecar=config.dynamo.sidecar,
+            dynamo_sidecar=config.engines_serve_native_grpc,
         )
 
     if not config.has_role_backends:

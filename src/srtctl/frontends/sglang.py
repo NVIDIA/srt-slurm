@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.topology import Process
-from srtctl.frontends.base import register_frontend
+from srtctl.frontends.base import frontend_arg_names, register_frontend
 from srtctl.frontends.static_router import StaticRouterFrontend
 from srtctl.ports import SGLANG_ROUTER_METRICS_PORT
 
@@ -61,8 +61,7 @@ class SGLangRouterFrontend(StaticRouterFrontend):
         is given (``PrometheusConfig`` is ``None`` otherwise), and tachometer is on
         by default, so srtctl always asks for it on every interface.
         """
-        frontend_args = config.frontend.args or {}
-        normalized = {str(key).replace("_", "-") for key in frontend_args}
+        normalized = frontend_arg_names(config.frontend.args)
         managed: list[str] = []
         if "prometheus-port" not in normalized:
             managed.extend(["--prometheus-port", str(SGLANG_ROUTER_METRICS_PORT)])
