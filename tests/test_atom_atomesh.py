@@ -58,7 +58,7 @@ def _build(backend: AtomBackend, process: Process, runtime=None, **kwargs) -> li
         return backend.build_worker_command(process, [process], runtime or _runtime(), **kwargs)
 
 
-def test_atomesh_frontend_requires_atom_backend() -> None:
+def test_atomesh_frontend_requires_supported_backend() -> None:
     data = _config()
     data["engine"] = "sglang"
 
@@ -363,4 +363,4 @@ def test_atomesh_rejects_recipe_backend_argument() -> None:
 def test_atomesh_worker_metrics_are_not_scraped() -> None:
     """The frontend owns scrape targets; ATOM has no worker metrics endpoint."""
     process = Process("node0", frozenset(range(8)), 7500, 6100, "agg", 0)
-    assert AtomeshFrontend().worker_metrics_port(process, _runtime()) is None
+    assert AtomeshFrontend().worker_metrics_path(AtomBackend(), process.endpoint_mode) is None

@@ -18,7 +18,7 @@ import yaml
 from srtctl.core import launcher as launcher_mod
 from srtctl.core.docker import DockerLauncher
 from srtctl.core.launcher import LaunchSpec, SlurmLauncher, get_launcher
-from srtctl.core.runtime import Nodes
+from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import SrtConfig
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.mock import MockOptions, run_mock_sweep
@@ -133,6 +133,47 @@ class TestLocalDockerCommand:
         # Docker splits --gpus on commas unless the whole value is wrapped in literal quotes.
         assert cmd[cmd.index("--gpus") + 1] == '"device=2,3,4,5"'
         assert "all" not in cmd
+
+    @pytest.mark.parametrize("capabilities", [[], ["SYS_NICE"]])
+    def test_cluster_can_omit_disallowed_capabilities(self, docker, cluster, capabilities):
+        cluster(launcher="docker", docker_cap_add=capabilities)
+        cmd = docker.docker_command(LaunchSpec(command=["true"], container_image="img:1"), "c")
+        requested = [cmd[index + 1] for index, arg in enumerate(cmd) if arg == "--cap-add"]
+        assert requested == capabilities
+        assert "PERFMON" not in cmd
+
+    def test_model_symlinks_need_no_root_owned_alias(self, docker, cluster, tmp_path, monkeypatch):
+        cluster(launcher="docker", docker_args=["--user", "1000:1000"])
+        snapshot = tmp_path / "cache" / "snapshots" / "revision"
+        snapshot.mkdir(parents=True)
+        blob = tmp_path / "shared-blobs" / "weights"
+        blob.parent.mkdir()
+        blob.write_text("weights")
+        (snapshot / "model.safetensors").symlink_to(blob)
+        host, target, model_arg = docker.model_mount(snapshot)
+        assert host == target == model_arg == snapshot.resolve()
+        spec = LaunchSpec(command=["serve", str(model_arg)], container_image="img:1", container_mounts={host: target})
+        cmd = docker.docker_command(spec, "c")
+        assert f"{tmp_path}:{tmp_path}" in cmd
+        assert "ln -s" not in cmd[-1]
+        assert cmd[-1].endswith(str(model_arg))
+        monkeypatch.setenv("SRTCTL_OUTPUT_DIR", str(tmp_path / "out"))
+        data = {**SINGLE_NODE_DISAGG, "model": {**SINGLE_NODE_DISAGG["model"], "path": str(snapshot)}}
+        runtime = RuntimeContext.from_config(_config(tmp_path, data), "docker-test")
+        assert runtime.shared_model_arg == str(snapshot.resolve())
+        assert runtime.container_mounts[snapshot.resolve()] == snapshot.resolve()
+
+    def test_explicit_devices_can_replace_gpu_runtime_request(self, docker, cluster):
+        cluster(
+            launcher="docker",
+            docker_gpus="",
+            docker_args=["--device=/dev/kfd", "--device=/dev/dri"],
+        )
+        spec = LaunchSpec(command=["true"], container_image="rocm:1", env_to_set={"HIP_VISIBLE_DEVICES": "4,5,6,7"})
+        cmd = docker.docker_command(spec, "c")
+        assert "--gpus" not in cmd
+        assert "--device=/dev/kfd" in cmd and "--device=/dev/dri" in cmd
+        assert "HIP_VISIBLE_DEVICES=4,5,6,7" in cmd[-1]
 
     def test_docker_gpus_single_device_or_all_is_not_quoted(self, docker, cluster):
         cluster(launcher="docker", docker_gpus="device=3")

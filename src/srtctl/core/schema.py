@@ -774,9 +774,12 @@ class ClusterConfig:
     launcher: Literal["slurm", "docker"] = "slurm"
     # Extra `docker run` arguments for every container under `launcher: docker`, e.g. `["--user", "1000:1000"]`.
     docker_args: list[str] | None = None
+    # Additional Docker capabilities; unset defaults to ["PERFMON", "SYS_NICE"]. An empty list adds none.
+    docker_cap_add: list[str] | None = None
     # The `--gpus` value for every container under `launcher: docker` (default `all`), e.g. `"device=2,3,4,5"`
     # on a shared or partly faulty machine. Docker renumbers the listed devices from 0, so the per-worker
     # `CUDA_VISIBLE_DEVICES` masks the orchestrator computes stay valid.
+    # Set to an empty string to omit `--gpus` when devices are supplied through `docker_args`, e.g. ROCm.
     docker_gpus: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
@@ -3788,13 +3791,20 @@ class SrtConfig:
         )
         if not discovery and not bootstrap:
             return
-        if self.frontend.type != "vllm-router":
-            reason = (
-                "a discovery connector (engine.connector: moriio) registers workers with the vLLM Router"
-                if discovery
-                else "the Mooncake connector needs the vLLM Router's bootstrap transfer metadata"
+        from srtctl.frontends import get_frontend
+
+        if discovery and get_frontend(self.frontend.type).moriio_routing is None:
+            raise ValidationError(
+                f"MoRI-IO requires frontend.type: vllm-router or atomesh (got {self.frontend.type!r})"
             )
-            raise ValidationError(f"{reason}; it requires frontend.type: vllm-router (got {self.frontend.type!r})")
+        if bootstrap:
+            from srtctl.frontends import get_frontend
+
+            if not get_frontend(self.frontend.type).supports_mooncake_bootstrap:
+                raise ValidationError(
+                    "the Mooncake connector requires frontend.type: vllm-router or atomesh "
+                    f"for bootstrap transfer metadata (got {self.frontend.type!r})"
+                )
 
     def _validate_vllm_failover(self) -> None:
         """Rules for ``backend.failover`` (vLLM shadow engine recovery).

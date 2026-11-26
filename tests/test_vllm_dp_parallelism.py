@@ -46,9 +46,7 @@ def test_dp_ranks_own_complete_model_parallel_groups(frontend, node_count, tp, p
     if frontend != "dynamo":
         assert all(p.http_port > 0 for p in processes)
         assert len({(p.node, p.http_port) for p in processes}) == len(processes)
-        runtime = MagicMock(
-            model_path=Path("/model"), is_hf_model=False, worker_model_arg="/model", frontend_port=8000
-        )
+        runtime = MagicMock(model_path=Path("/model"), is_hf_model=False, worker_model_arg="/model", frontend_port=8000)
         with patch("srtctl.core.slurm.get_hostname_ip", return_value="127.0.0.1"):
             for process in processes:
                 command = backend.build_worker_command(
@@ -79,3 +77,29 @@ def test_per_rank_launch_rejects_invalid_pcp_allocation(dp, pcp, gpu_count, node
     endpoint = Endpoint("agg", 0, nodes, frozenset(range(gpu_count)))
     with pytest.raises(ValueError, match=error):
         backend.endpoints_to_processes([endpoint], frontend_type="llm-d")
+
+
+def test_internal_dp_pools_get_distinct_rpc_ports_and_one_api_each():
+    backend = VLLMBackend(
+        connector="mooncake",
+        roles={"decode": RoleConfig(args={"data-parallel-size": 4, "enable-expert-parallel": True})},
+    )
+    endpoints = [
+        Endpoint("decode", 0, ("node0",), frozenset(range(4))),
+        Endpoint("decode", 1, ("node0",), frozenset(range(4, 8))),
+    ]
+    processes = backend.endpoints_to_processes(endpoints, frontend_type="atomesh")
+    assert len(processes) == 2
+    assert len({process.dp_rpc_port for process in processes}) == 2
+    assert all(process.dp_rpc_port is not None for process in processes)
+    runtime = MagicMock(model_path=Path("/model"), is_hf_model=False, worker_model_arg="/model", frontend_port=8000)
+    with patch("srtctl.core.slurm.get_hostname_ip", return_value="127.0.0.1"):
+        for process in processes:
+            command = backend.build_worker_command(
+                process=process, endpoint_processes=[process], runtime=runtime, frontend_type="atomesh"
+            )
+            assert command[command.index("--data-parallel-rpc-port") + 1] == str(process.dp_rpc_port)
+            assert command[command.index("--data-parallel-size") + 1] == "4"
+            assert "--enable-expert-parallel" in command
+            assert "--data-parallel-rank" not in command
+            assert "--data-parallel-external-lb" not in command

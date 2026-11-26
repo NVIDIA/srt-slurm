@@ -25,7 +25,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --host 0.0.0.0 --port 6100 --master-addr 127.0.0.1 --nnodes 2 --node-rank 0 --device-ids 0,1,2,3,4,5,6,7 --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --host 0.0.0.0 --port 6100 --master-addr 127.0.0.1 --nnodes 2 --node-rank 0 --device-ids 0,1,2,3,4,5,6,7 --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## agg_0_node-02
 nodelist: node-02
@@ -50,7 +50,7 @@ bash_preamble: |
     __FINGERPRINT_EOF__
     ) || true )
 command: |
-    vllm serve /model --master-addr 127.0.0.1 --nnodes 2 --node-rank 1 --headless --device-ids 0,1,2,3,4,5,6,7 --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
+    vllm serve /model --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --master-addr 127.0.0.1 --nnodes 2 --node-rank 1 --headless --device-ids 0,1,2,3,4,5,6,7 --data-parallel-size 16 --enable-expert-parallel --max-model-len 4096 --served-model-name Qwen/Qwen3-30B-A3B --tensor-parallel-size 1
 
 ## smg_0
 nodelist: node-01

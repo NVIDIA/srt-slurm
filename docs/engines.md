@@ -433,3 +433,94 @@ setup_script: "my-setup.sh"    # Optional: custom setup script
 ```
 
 The v1 spelling of this layout (`backend:`, `resources.prefill_nodes` and friends, `infra:`, `dynamo.version`) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
+
+### ATOMesh with native vLLM Mooncake workers
+
+Use `engine.type: vllm`, `engine.connector: mooncake`, and `frontend.type: atomesh`
+for HTTP P/D routing. See the [colocated example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/atomesh-mooncake-disagg.yaml).
+The worker image must include vLLM's `MooncakeConnector` and the matching transfer
+engine package (`mooncake-transfer-engine-rocm` on ROCm). Set
+`frontend.container_image` to an ATOM image containing the `atomesh` executable;
+only the router runs there. Pin both images to tested digests for reproducible runs.
+
+srtctl runs `atomesh launch --backend vllm --pd-disaggregation`, advertises the
+allocated prefill bootstrap port, and sets the worker's
+`VLLM_MOONCAKE_BOOTSTRAP_PORT` to that same port. A prefill `MultiConnector` can
+combine Mooncake with `SimpleCPUOffloadConnector`; its configuration is preserved.
+All workers must answer `/health` before router startup. ATOMesh then queries
+Mooncake `/query` and rejects an empty engine-ID map; the worker registry gates
+benchmark readiness and native vLLM `/metrics` are collected.
+
+This mode requires Mooncake on both roles, prefill DP=1, a shared engine config,
+one router, enabled health checks, and `prefill.restart: never`: ATOMesh caches
+engine IDs at startup. NIXL is not supported by this integration.
+Decode may use `data-parallel-size` greater than one with vLLM's internal load
+balancing. One API endpoint owns the decode DP pool; ATOMesh does not expand it
+into rank-specific URLs. The DP coordination address and port come from the
+allocated topology. `data-parallel-external-lb` is rejected. See the
+[decode DP example](https://github.com/NVIDIA/srt-slurm/blob/main/examples/vllm/atomesh-mooncake-decode-dp.yaml).
+For MoE models, `roles.decode.args.enable-expert-parallel: true` can shard
+experts across that pool when supported by the worker image.
+Mooncake workers may use different TP/PP layouts when the installed vLLM model
+and connector support that combination; ATOMesh forwards bootstrap metadata
+and does not repartition KV itself. MoRI-IO READ retains its equal-TP constraint.
+Native ATOM routing retains its own transfer discovery and has no worker metrics.
+
+For session affinity use `frontend.args.policy: dp_sticky` and send `X-Session-ID`.
+AgentX can derive it from correlation IDs with
+`AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID=true`; preserve the correlation
+header too. Sticky routing is a distinct policy from consistent hashing.
+
+### ATOMesh with native vLLM MoRI-IO READ workers
+
+Use `engine.connector: moriio` with `frontend.type: atomesh` and
+`frontend.enable_multiple_frontends: false`. The router image must contain
+ATOMesh's `--vllm-kv-connector moriio-read` option. This is a static HTTP P/D
+mode: all worker URLs are advertised without Mooncake bootstrap ports.
+Every worker must pass `/health` before the router starts.
+
+srtctl sets each MoRI-IO connector's `read_mode: true`, allocated handshake and
+notify ports, routable `host_ip`, and empty `proxy_ip`. Workers therefore do not
+register with a ZMQ proxy. An explicit `read_mode: false` is rejected, as are
+conflicting topology fields. The same binding applies to a unique MoRI-IO child
+inside nested `MultiConnector` configurations and preserves sibling offload
+settings. vLLM Router retains its ZMQ discovery mode.
+
+Both roles must use MoRI-IO, equal TP and DP=1 with one shared engine config,
+one router, health checks and no worker restart. The vLLM worker must return
+explicit peer metadata from `request_finished`: grouped block IDs, engine ID,
+host, handshake/notify ports, TP, global/local DP size, actual DP rank and override,
+and the shared transfer ID. This contract is present at
+[vLLM 4fab5a0](https://github.com/vllm-project/vllm/blob/4fab5a07475822c6eaa971dceb2e2220d0446808/vllm/distributed/kv_transfer/kv_connector/v1/moriio/moriio_connector.py);
+verify it in the deployed image. The router sends decode only after prefill
+succeeds and validates that metadata, which it forwards without flattening.
+
+The router sends no RDMA completion acknowledgement on cancellation or failure.
+vLLM owns consumer abort notification and producer deferred release. Its producer
+`defer_timeout` must cover decode admission and transfer under the deployed load;
+the default 60 seconds is not an arbitrary queue budget. GPU transfer, offload
+and speculative-decoding support must be validated for the chosen worker image.
+
+
+### ATOMesh with native vLLM MoRI-IO WRITE workers
+
+Set `read_mode: false` in the MoRI child on both roles and choose
+`frontend.type: atomesh`. A `SimpleCPUOffloadConnector` sibling remains in the
+prefill MultiConnector unchanged. srtctl selects `moriio-write`, disables proxy
+discovery and supplies the router's `--vllm-moriio-peers` JSON from the same
+allocated handshake/notify ports and advertised host used in worker commands.
+These router arguments are managed; do not set them in `frontend.args`.
+
+The WRITE path starts both HTTP legs concurrently. Prefill DP must be 1, P/D TP
+sizes must match, and every worker's DP pool must fit on one node. Decode uses
+PP1 and its native internal DP load balancing; PP is permitted on prefill with a
+worker version supporting MoRI PP
+([vLLM #64693](https://github.com/vllm-project/vllm/pull/64693)). Health checks and
+stable worker lifetimes are required. The router supplies the selected peer identity, while
+vLLM owns block allocation, actual decode DP-rank notification, native writes,
+completion ACKs and deferred KV release. A READ result does not validate WRITE.
+
+See [`examples/vllm/atomesh-moriio-write.yaml`](../examples/vllm/atomesh-moriio-write.yaml)
+for a launch example. Resolve its model and image aliases in `srtslurm.yaml`.
+Configure the worker's MoRI network settings for the cluster: `MORI_RDMA_TC`
+sets its traffic class; `NCCL_IB_TC` does not configure the MoRI transport.

@@ -1,0 +1,191 @@
+# examples/vllm/atomesh-moriio-write.yaml
+# exit_code: 0
+# srun calls: 11
+
+## prefill_0_node-01
+nodelist: node-01
+output: <output>/logs/node-01_prefill_w0.out
+container_image: vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 3000
+    HEAD_NODE_IP: 127.0.0.1
+    VLLM_KV_CACHE_LAYOUT: LBHNC
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --host 0.0.0.0 --port 6100 --device-ids 0,1,2,3 --kv-transfer-config '{"kv_connector": "MultiConnector", "kv_role": "kv_both", "kv_connector_extra_config": {"connectors": [{"kv_connector": "MoRIIOConnector", "kv_role": "kv_producer", "kv_connector_extra_config": {"read_mode": false, "proxy_ip": "", "proxy_ping_port": "36367", "http_port": "6100", "host_ip": "127.0.0.1", "handshake_port": "26000", "notify_port": "27000"}}, {"kv_connector": "SimpleCPUOffloadConnector", "kv_role": "kv_both", "kv_connector_extra_config": {"cpu_bytes_to_use": 4294967296}}]}}' --max-model-len 4096 --pipeline-parallel-size 4 --served-model-name model --tensor-parallel-size 1
+
+## decode_0_node-01
+nodelist: node-01
+output: <output>/logs/node-01_decode_w0.out
+container_image: vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    DYN_VLLM_KV_EVENT_PORT: 3001
+    HEAD_NODE_IP: 127.0.0.1
+    VLLM_KV_CACHE_LAYOUT: LBHNC
+bash_preamble: |
+    ( python3 <(cat <<'__FINGERPRINT_EOF__'
+    <fingerprint script>
+    __FINGERPRINT_EOF__
+    ) || true )
+command: |
+    vllm serve /model --data-parallel-address 127.0.0.1 --data-parallel-rpc-port 8400 --host 0.0.0.0 --port 6132 --device-ids 4,5,6,7 --data-parallel-size 4 --kv-transfer-config '{"kv_connector": "MoRIIOConnector", "kv_role": "kv_consumer", "kv_connector_extra_config": {"read_mode": false, "proxy_ip": "", "proxy_ping_port": "36367", "http_port": "6132", "host_ip": "127.0.0.1", "handshake_port": "26004", "notify_port": "27004"}}' --max-model-len 4096 --served-model-name model --tensor-parallel-size 1
+
+## atomesh_0
+nodelist: node-01
+output: <output>/logs/node-01_atomesh_0.out
+container_image: atomesh
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    VLLM_KV_CACHE_LAYOUT: LBHNC
+command: |
+    atomesh launch --pd-disaggregation --prefill http://127.0.0.1:6100 --decode http://127.0.0.1:6132 --host 0.0.0.0 --port 8000 --backend vllm --vllm-kv-connector moriio-write --vllm-moriio-peers '[{"url":"http://127.0.0.1:6100","host":"127.0.0.1","handshake_port":26000,"notify_port":27000,"tp_size":1,"dp_size":1},{"url":"http://127.0.0.1:6132","host":"127.0.0.1","handshake_port":26004,"notify_port":27004,"tp_size":1,"dp_size":4}]' --policy dp_sticky
+
+## service_dcgm-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_dcgm-exporter_node-01.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_dcgm-exporter_node-02.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_dcgm-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_dcgm-exporter_node-03.out
+container_image: nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    dcgm-exporter --collect-interval=1000 --address :9401
+
+## service_node-exporter_node-01
+nodelist: node-01
+output: <output>/logs/service_node-exporter_node-01.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-02
+nodelist: node-02
+output: <output>/logs/service_node-exporter_node-02.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## service_node-exporter_node-03
+nodelist: node-03
+output: <output>/logs/service_node-exporter_node-03.out
+container_image: quay.io#prometheus/node-exporter:v1.8.2
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+srun_export_env:
+    ETCD_ENDPOINTS: http://127.0.0.1:2379
+use_bash_wrapper: False
+command: |
+    /bin/node_exporter --web.listen-address=:9101 --collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo --collector.processes --collector.stat --collector.vmstat --collector.pressure --collector.meminfo_numa '--collector.vmstat.fields=^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*'
+
+## tachometer
+nodelist: node-01
+output: <output>/logs/tachometer.out
+srun_export_env:
+    POLARS_MAX_THREADS: 4
+use_bash_wrapper: False
+command: |
+    tachometer-scraper --config <output>/logs/tachometer_config.toml --local-dir <output>/logs/tachometer/local --sync-interval 120
+
+## benchmark
+nodelist: node-01
+output: <output>/logs/benchmark.out
+container_image: vllm
+container_mounts:
+    <repo>/src/srtctl/benchmarks/scripts: /srtctl-benchmarks
+    <repo>/src/srtctl/runtime_scripts: /srtctl-runtime
+    <model>: /model
+    <output>/logs: /logs
+env_to_set:
+    AIPERF_SERVER_METRICS_URLS: http://127.0.0.1:6100/metrics,http://127.0.0.1:6132/metrics
+    SRTCTL_FRONTEND_TYPE: atomesh
+    SRT_DECODE_ENDPOINTS: 127.0.0.1:6132
+    SRT_DECODE_IPS: 127.0.0.1
+    SRT_FRONTEND_HOST: 127.0.0.1
+    SRT_FRONTEND_PORT: 8000
+    SRT_GPUS_PER_NODE: 8
+    SRT_PREFILL_ENDPOINTS: 127.0.0.1:6100
+    SRT_PREFILL_IPS: 127.0.0.1
+    SRT_SERVICE_DCGM_EXPORTER_IPS: 127.0.0.1,127.0.0.1,127.0.0.1
+    SRT_SERVICE_DCGM_EXPORTER_NODES: node-01,node-02,node-03
+    SRT_SERVICE_DCGM_EXPORTER_NODE_COUNT: 3
+    SRT_SERVICE_NODE_EXPORTER_IPS: 127.0.0.1,127.0.0.1,127.0.0.1
+    SRT_SERVICE_NODE_EXPORTER_NODES: node-01,node-02,node-03
+    SRT_SERVICE_NODE_EXPORTER_NODE_COUNT: 3
+    SRT_SERVICE_PROCESS_EXPORTER_IPS: 127.0.0.1,127.0.0.1,127.0.0.1
+    SRT_SERVICE_PROCESS_EXPORTER_NODES: node-01,node-02,node-03
+    SRT_SERVICE_PROCESS_EXPORTER_NODE_COUNT: 3
+    SRT_WORKER_NODES: node-01,node-02,node-03
+    VLLM_KV_CACHE_LAYOUT: LBHNC
+command: |
+    bash -lc 'echo "Configure a workload for the selected model"'

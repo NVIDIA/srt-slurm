@@ -363,7 +363,7 @@ class VLLMBackend(Backend):
 
     # Default KV connector: "nixl", "lmcache", "lmcache-mp", "kvbm", "moriio", "mooncake", or a raw JSON string for
     # --kv-transfer-config. Can be overridden per role by setting "connector" in roles.<role>.args; connector_for_mode
-    # resolves it. "moriio" (ROCm MoRI-IO) registers workers with the vLLM Router and needs frontend.type: vllm-router.
+    # resolves it. "moriio" (ROCm MoRI-IO) uses vLLM Router discovery or ATOMesh static MoRI routing.
     # "mooncake" (vLLM MooncakeConnector) runs the vLLM Router in --kv-connector mooncake mode.
     # dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).
     connector: str | None = "nixl"
@@ -544,11 +544,10 @@ class VLLMBackend(Backend):
         )
 
     def discovers_workers(self) -> bool:
-        """Whether the prefill/decode workers register with the router over its discovery endpoint.
+        """Whether either role uses a connector with allocated peer metadata listeners.
 
-        True when either role runs a discovery connector (MoRI-IO); the router then learns
-        its workers by registration instead of from URLs on its command line, and the
-        vLLM Router's ``validate`` requires both roles to agree.
+        MoRI-IO uses vLLM Router registration or ATOMesh static URLs. The
+        frontend selects that behavior and requires both roles to agree.
         """
         return any(row is not None and row.discovery for row in map(self.kv_connector_for_mode, ("prefill", "decode")))
 
@@ -572,6 +571,7 @@ class VLLMBackend(Backend):
         runtime: RuntimeContext | None = None,
         *,
         use_default: bool = True,
+        register_with_router: bool = True,
     ) -> str | None:
         """``--kv-transfer-config`` JSON for a worker mode, or None when the mode has no connector.
 
@@ -595,11 +595,13 @@ class VLLMBackend(Backend):
             return _connector_to_kv_transfer_config(connector, mode)
         if process is None or runtime is None:
             raise ValueError(
-                f"connector {connector!r} registers workers with the vLLM Router and needs the worker topology; "
-                "it is only available with frontend.type: vllm-router"
+                f"connector {connector!r} needs the worker topology for peer metadata; "
+                "it is only available with frontend.type: vllm-router or atomesh"
             )
         payload, extra = self._discovery_template(mode, connector, row)
-        for key, value in self._discovery_extra_config(process, runtime).items():
+        for key, value in self._discovery_extra_config(
+            process, runtime, register_with_router=register_with_router
+        ).items():
             configured = extra.get(key, value)
             if key.endswith("_port") and type(configured) is int:
                 configured = str(configured)
@@ -656,7 +658,9 @@ class VLLMBackend(Backend):
             raise TypeError("discovery read_mode must be a JSON boolean")
         return payload, extra
 
-    def _discovery_extra_config(self, process: Process, runtime: RuntimeContext) -> dict[str, Any]:
+    def _discovery_extra_config(
+        self, process: Process, runtime: RuntimeContext, *, register_with_router: bool = True
+    ) -> dict[str, Any]:
         """MoRI-IO's ``kv_connector_extra_config`` (the keys ``moriio_common.py`` reads, vllm-project/vllm 9679173788)."""
         from srtctl.core.slurm import get_hostname_ip
 
@@ -666,7 +670,7 @@ class VLLMBackend(Backend):
                 "the topology was built without a discovery connector"
             )
         return {
-            "proxy_ip": runtime.head_node_ip,
+            "proxy_ip": runtime.head_node_ip if register_with_router else "",
             "proxy_ping_port": str(VLLM_DISCOVERY_PORT),
             "http_port": str(process.http_port),
             # Upstream falls back to its own interface guess, which is the wrong NIC on multi-homed nodes.
@@ -1086,11 +1090,16 @@ class VLLMBackend(Backend):
                         )
                     )
                 else:
-                    processes.extend(
-                        endpoints_to_processes(
-                            [endpoint], port_allocator=allocator, sidecar_grpc=dynamo_sidecar, bootstrap_ports=False
-                        )
+                    endpoint_processes = endpoints_to_processes(
+                        [endpoint], port_allocator=allocator, sidecar_grpc=dynamo_sidecar, bootstrap_ports=False
                     )
+                    if self.is_dp_mode(endpoint.mode):
+                        self._validate_endpoint_parallelism(endpoint)
+                        dp_rpc_port = allocator.next(DP_RPC_PORTS, endpoint.leader_node)
+                        endpoint_processes = [
+                            replace(process, dp_rpc_port=dp_rpc_port) for process in endpoint_processes
+                        ]
+                    processes.extend(endpoint_processes)
         elif not any(self.is_dp_mode(ep.mode) for ep in endpoints):
             # Standard TP mode: one process per node, or one per engine of the
             # worker under backend.failover (engine 0 plus its shadows).
@@ -1386,7 +1395,13 @@ class VLLMBackend(Backend):
 
             # A prefill/decode worker gets its KV connector. An aggregate worker gets
             # only the one its role names (e.g. lmcache-mp offload), not the P/D default.
-            kv_transfer_config = self.kv_transfer_config(mode, process, runtime, use_default=mode != "agg")
+            kv_transfer_config = self.kv_transfer_config(
+                mode,
+                process,
+                runtime,
+                use_default=mode != "agg",
+                register_with_router=frontend.moriio_routing != "static",
+            )
             for key in ("connector", "kv-transfer-config", "kv_transfer_config"):
                 config.pop(key, None)
             if kv_transfer_config is not None:
@@ -1414,6 +1429,19 @@ class VLLMBackend(Backend):
 
             # Behind a router, an external-LB rank is a `vllm serve` of its own (endpoints_to_processes).
             is_rank_server = self.is_external_lb(mode) and not binds_public_port and not frontend.expands_node_local_dp
+
+            if is_dp_mode and not frontend.expands_node_local_dp and not is_rank_server:
+                for key in list(config):
+                    if normalize_vllm_config_key(key) in {"data-parallel-address", "data-parallel-rpc-port"}:
+                        config.pop(key)
+                cmd.extend(
+                    [
+                        "--data-parallel-address",
+                        leader_ip,
+                        "--data-parallel-rpc-port",
+                        str(process.dp_rpc_port or VLLM_DATA_PARALLEL_RPC_PORT),
+                    ]
+                )
 
             if frontend.expands_node_local_dp and is_dp_mode and self.dp_launch_mode != "per_node":
                 raise ValueError(

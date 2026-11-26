@@ -156,7 +156,6 @@ RULES = [
                 ("cli/submit.py", "frontend.type vs 'vllm'"),
                 ("core/schema.py", "frontend.type vs 'dynamo'"),
                 ("core/schema.py", "frontend.type vs 'vllm'"),
-                ("core/schema.py", "frontend.type vs 'vllm-router'"),
             }
         ),
     ),

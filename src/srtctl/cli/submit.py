@@ -74,7 +74,7 @@ from srtctl.core.image_bake import (
 )
 from srtctl.core.launcher import get_launcher
 from srtctl.core.lockfile import load_lockfile_fingerprints
-from srtctl.core.runtime import Nodes, resolve_local_model_mount, resolve_model_path
+from srtctl.core.runtime import Nodes, resolve_model_path
 from srtctl.core.schema import SrtConfig, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
@@ -367,7 +367,7 @@ def show_config_details(config: SrtConfig) -> None:
         model_path = Path(os.path.expandvars(config.model.path))
         is_hf_model = config.model.path.startswith("hf:")
     if not is_hf_model:
-        model_mount, model_mount_target, _ = resolve_local_model_mount(model_path)
+        model_mount, model_mount_target, _ = get_launcher().model_mount(model_path)
         mounts_table.add_row("built-in", str(model_mount), str(model_mount_target))
     mounts_table.add_row("built-in", "<log_dir>", "/logs")
 
