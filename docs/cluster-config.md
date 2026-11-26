@@ -52,13 +52,13 @@ reporting:
 
 **default_host_setup**: A [`host_setup`](runtime-env.md#host_setup) block applied to every job on the cluster, for node state that has to be set outside the container, such as locking GPU clocks. A recipe that sets its own `host_setup:` block replaces it entirely; `host_setup: {commands: []}` opts a single run out.
 
-**preflight**: `srtctl apply` normally stats `model.path`, `model.container` and the telemetry images on the submitting node before calling sbatch. On clusters where those live only on compute nodes (node-local NVMe such as `/raid/models`), that check can never pass from the login node; set `preflight: false` and every `apply` behaves as if `--no-preflight` had been passed, with an INFO line saying so. Paths are still resolved at runtime and the framework fails loudly on the compute node if one is genuinely missing.
+**preflight**: `srtctl apply` normally stats `model.path`, `model.container` and the telemetry images on the submitting node before calling sbatch. On clusters where those live only on compute nodes (node-local NVMe such as `/raid/models`), that check can never pass from the login node; set `preflight: false` and every `apply` behaves as if `--no-preflight` had been passed, with an INFO line saying so. Paths are still resolved at runtime and the framework fails loudly on the compute node if one is genuinely missing. Under `launcher: host`, which runs no container images, preflight still checks `model.path`, the topology and that `model.container` is set, but does not look for the `model.container` or exporter image files, and the job does not require the image file to exist, so a recipe whose image exists only on a cluster needs neither `preflight: false` nor `--no-preflight`.
 
 **nginx_raise_ulimit**: When set to `true` or `false`, this value is applied to jobs that omit `frontend.nginx_raise_ulimit` in the recipe. Use `true` on clusters where raising the nginx container's open-file limit is allowed; leave unset if each job should rely on the frontend default (`false`). A recipe that sets `frontend.nginx_raise_ulimit` always wins.
 
 ### Launcher
 
-`launcher` picks where a job's processes run. `slurm` (the default) runs each process as an `srun` step inside the allocation `sbatch` hands out. `docker` runs the whole job on the machine you type `srtctl apply` on, for a single GPU VM without Slurm. It needs Docker with the NVIDIA Container Toolkit (`docker run --gpus all` must work) and the binaries `make setup ARCH=x86_64` (or `aarch64`) installs:
+`launcher` picks where a job's processes run. `slurm` (the default) runs each process as an `srun` step inside the allocation `sbatch` hands out. `docker` runs the whole job on the machine you type `srtctl apply` on, for a single GPU VM without Slurm. `host` also runs the whole job on that machine, but starts every process straight on the host without containers, for a machine with neither Slurm nor a container runtime (see [`launcher: host`](#launcher-host)). `docker` needs Docker with the NVIDIA Container Toolkit (`docker run --gpus all` must work) and the binaries `make setup ARCH=x86_64` (or `aarch64`) installs:
 
 ```yaml
 launcher: docker
@@ -82,6 +82,39 @@ Every container sees the GPUs `docker_gpus` names (all of them by default) and s
 [`examples/docker/vllm-agg-1gpu.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/docker/vllm-agg-1gpu.yaml) is a one-GPU recipe tested this way.
 
 `launcher: docker` checks the recipe before running it and refuses one that needs more than this machine: more than one node, `resources.het_jobs`, a dedicated frontend, benchmark or infra node, service pools (`services[].nodes`), an engine that launches each endpoint as one multi-task MPI step (TRT-LLM), or a `model.container` / `roles.<role>.container` that is an enroot image file (`.sqsh`) rather than a Docker image name. Enroot URIs such as `nvcr.io#nvidia/x:tag` are rewritten to `nvcr.io/nvidia/x:tag`. Containers run as root unless `docker_args` sets `--user`, so files they write under `outputs/` are root-owned. `srtctl monitor` and the MCP job tools read Slurm and do not see Docker-launcher jobs.
+
+#### `launcher: host`
+
+```yaml
+launcher: host
+```
+
+`host` runs a job the way `docker` does (the same job script in the foreground, `SRTCTL_JOB_ID=host-<timestamp>`, the same single-machine checks before it starts, one point of a sweep after another), but starts every process as a process group on this machine instead of in a container. It is for a machine with neither Slurm nor a container runtime: a Mac, a workstation, or a VM without the NVIDIA Container Toolkit.
+
+| | `docker` | `host` |
+|---|---|---|
+| Process launch | `docker run ... <image> bash -c <wrapper>` | `bash -c <wrapper>` on this machine, in its own process group |
+| Image (`model.container`, `roles.<role>.container`, the exporter images under `observability.tachometer` and `telemetry`) | the container each process runs in | ignored (logged once), and neither preflight nor the job checks that an image file exists, so a Slurm recipe whose `.sqsh` is only on the cluster runs here unchanged; a recipe must still name an image, and one that names a Docker image (as `examples/host/` does) also runs under `docker` and `slurm`, while `docker` refuses a `.sqsh` |
+| Engine, benchmark client, tools | inside the image | on the `PATH` of the shell that ran `srtctl apply`, typically the engine installed in a virtualenv |
+| Container mounts (`/logs`, `/model`, `/configs`, `extra_mount`, ...) | bind mounts | container paths in the command line, the exported environment and `container-workdir` are rewritten to the host directories behind them |
+| Graceful stop of a named step | `docker kill --signal=TERM` | `killpg` on the step's process group |
+| What a process leaves running when it exits | killed with the container | its process group is SIGKILLed; groups still running when the orchestrator finishes get SIGTERM, then SIGKILL |
+| Working directory | the image's `WORKDIR` (or `container-workdir`) | a private scratch directory for the job (or `container-workdir`); srtctl's own host commands start in the checkout |
+| A binary that is not installed | the step fails | the process fails with exit 127 and `not found` in its log |
+| Node and address | this host, `127.0.0.1` | same |
+
+Since nothing is mounted, the launcher rewrites each mount's container path to its host directory wherever it appears as a whole path in an argument (a `bash -c` script included): `--model /model` becomes `--model /data/qwen`, `/logs/sa-bench` becomes `outputs/<job_id>/logs/sa-bench`. A container path inside a longer path segment (`/models`, `/data/logs`) or a URL (`http://host:8000/model`) is left alone. A host directory whose path a shell would split (a space or a quote, as in `~/My Models/qwen`) is reached through a symlink to it in the job's private scratch directory (`$TMPDIR/srtctl-<job_id>-*/`, removed when the orchestrator exits), so the rewritten path stays one word inside `bash -c` scripts; a missing directory is created first, as `docker run -v` does. Paths written inside a script file (rather than on its command line) are not rewritten: a script that hardcodes `/logs` writes there. The bundled benchmark scripts under `src/srtctl/benchmarks/scripts/` still write their results to a fixed `/logs/...` directory, so under `host` use `benchmark.type: custom` (or `manual`) until they take their output directory from the command line.
+
+A container also keeps whatever a step installs off the machine; on the host nothing does, so `host` guards installs instead:
+
+- Every process starts with `PIP_REQUIRE_VIRTUALENV=1` (unless your environment sets it). `pip install`, with `--user` or `--break-system-packages` too, then refuses any Python that is not a virtualenv, and `uv pip install` already refuses one without `--system`. A step can install into the virtualenv its `pip` belongs to (the one active when you ran `srtctl apply`), never into the system or Homebrew Python.
+- Every process gets the `PATH` of the shell that ran `srtctl apply`. What the job script and `uv run` put in front of it for the orchestrator (the checkout's `bin/`, `~/.local/bin`, srtctl's own virtualenv) follows it instead, srtctl's virtualenv last. `VIRTUAL_ENV` names your virtualenv: the one that shell had active or, under `uv run srtctl apply` (which replaces it with srtctl's), the virtualenv of the first `python3` on that `PATH`; `UV_PROJECT_ENVIRONMENT` no longer names srtctl's. So `python3` is your engine's interpreter, `pip` and `uv pip` install into the same virtualenv, and a process that would have run in a container starts in the job's scratch directory rather than the checkout.
+- Two steps are refused before the job starts. The Dynamo install (`frontend.type: dynamo` with `dynamo.install: true`) marks itself done inside the Python it installed into, so a later job would skip its own install: install `ai-dynamo` where your engine runs and set `dynamo.install: false`. `reporting.ai_analysis` installs Claude Code and the GitHub CLI into your home directory with curl: set `reporting.ai_analysis.enabled: false`.
+- A recipe's `setup_script` and `host_setup` run on this machine as you. `host_setup` starts in the srt-slurm checkout, as it does on a Slurm node, so with no virtualenv active a `uv pip install` there finds srtctl's own `.venv`; activate your engine's virtualenv before `srtctl apply`.
+
+Do not run `make setup` on a Mac: it downloads Linux binaries into `bin/`, which the job script puts first on `PATH`. `srtctl apply` under `host` checks only for `uv` (from Homebrew or the standalone installer, on `PATH` or in `~/.local/bin`), plus the checkout files the recipe's services run, built for this machine: `configs/etcd` and `configs/nats-server` for the etcd/NATS discovery plane and `configs/otelcol-contrib` for the OTel collector (both implied by a Dynamo frontend, unless they are external or disabled). Without the Tachometer scraper, `dcgm-exporter` or `node_exporter`, which are not critical, those processes fail with exit 127 and the run goes ahead without their telemetry; set `observability.tachometer.enabled: false` to skip them. Closing the terminal `srtctl apply` runs in stops the job and its processes; run it under `nohup` to keep the job going after you log out. The job script locks its `uv sync` with `flock` where it exists; macOS has none and syncs without the lock.
+
+[`examples/host/vllm-agg-1gpu.yaml`](https://github.com/NVIDIA/srt-slurm/blob/main/examples/host/vllm-agg-1gpu.yaml) is a one-GPU vLLM recipe for `host`, benchmarked with a custom `vllm bench serve` command; it sets nothing launcher-specific, so the same file is a valid `docker` or `slurm` recipe.
 
 ### Running without `srtslurm.yaml`
 

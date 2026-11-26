@@ -35,7 +35,7 @@ from marshmallow import ValidationError
 import srtctl.mock as mock_module
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.cli.mixins import postprocess_stage
-from srtctl.core.processes import ProcessRegistry
+from srtctl.core.processes import SHUTDOWN_SIGNALS, ProcessRegistry
 from srtctl.core.schema import ClusterConfig
 from srtctl.core.status import StatusReporter
 from srtctl.mock import MockOptions, run_mock_sweep
@@ -896,8 +896,8 @@ def test_runtime_context_reads_srtslurm_yaml_once_through_get_srtslurm_setting(
 
 @pytest.fixture(autouse=True)
 def _restore_signal_handlers() -> Iterator[None]:
-    # The real orchestrator installs SIGTERM/SIGINT handlers bound to its registry; keep them out of other tests.
-    saved = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    # The real orchestrator installs SHUTDOWN_SIGNALS handlers bound to its registry; keep them out of other tests.
+    saved = {sig: signal.getsignal(sig) for sig in SHUTDOWN_SIGNALS}
     yield
     for sig, handler in saved.items():
         signal.signal(sig, handler)

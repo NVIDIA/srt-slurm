@@ -1,15 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Where the orchestrator's processes run: a Slurm allocation, or Docker on this machine.
+"""Where the orchestrator's processes run: a Slurm allocation, or this machine.
 
 The ``SweepOrchestrator`` asks a ``Launcher`` for everything it used to ask Slurm
 for directly: start a process (``launch``), signal a named step (``signal_step``),
 list running steps (``list_step_ids``), the job's nodes (``nodes``) and their
 addresses (``node_ip``), the job id (``job_id``), and how a rendered job script is
 submitted (``submit`` / ``start``). ``SlurmLauncher`` is the default and keeps the
-srun/sbatch/scancel behavior; ``DockerLauncher`` (``core/docker.py``) runs one
-job on the current machine, with containers under ``docker run``.
+srun/sbatch/scancel behavior. The single-machine launchers share ``LocalLauncher``
+(``core/local.py``): ``DockerLauncher`` (``core/docker.py``) runs one job on the
+current machine with containers under ``docker run``, and ``HostLauncher``
+(``core/host.py``) runs it with every process straight on the host.
 
 The launcher is picked by the ``launcher`` key of ``srtslurm.yaml``
 (``get_launcher``). Nothing outside the launcher modules branches on that name.
@@ -37,6 +39,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_LAUNCHER = "slurm"
+
+# What `make setup ARCH=<compute_arch>` installs that a job needs, relative to the srt-slurm
+# checkout: path -> how a missing one is reported.
+MAKE_SETUP_FILES: dict[str, str] = {
+    "configs/nats-server": "configs/nats-server",
+    "configs/etcd": "configs/etcd",
+    "bin/uv": "bin/uv (compute-arch uv)",
+    "bin/tachometer-scraper": "bin/tachometer-scraper (compute-arch Tachometer scraper)",
+}
 
 
 @dataclass(frozen=True)
@@ -75,6 +86,10 @@ class Launcher(ABC):
     """How and where the orchestrator's processes run."""
 
     name: ClassVar[str]
+    # Whether a launch runs inside ``LaunchSpec.container_image``. When False the launcher never
+    # opens an image, so preflight does not stat the recipe's images and the runtime does not
+    # require the file to exist.
+    uses_container_images: ClassVar[bool] = True
 
     def build_task_command(self, spec: LaunchSpec) -> list[str]:
         """The command the task runs: the bash wrapper around ``spec.command``, or the command itself.
@@ -178,6 +193,28 @@ class Launcher(ABC):
     def validate(self, config: SrtConfig) -> list[str]:
         """Reasons ``config`` cannot run under this launcher; empty when it can."""
         return []
+
+    def setup_problems(self, srtctl_source: Path, config: SrtConfig | None) -> list[str]:
+        """What a job under this launcher needs installed and is missing; empty when ready.
+
+        By default the binaries ``make setup`` puts in the srt-slurm checkout.
+        """
+        return [label for path, label in MAKE_SETUP_FILES.items() if not (srtctl_source / path).exists()]
+
+    def setup_hint(self, srtctl_source: Path) -> list[str]:
+        """Lines that tell the user how to install what ``setup_problems`` reports."""
+        return [
+            "Run make setup ARCH=<compute_arch> first:",
+            f"  cd {srtctl_source}",
+            "  make setup ARCH=aarch64  # for GB200/Grace compute nodes",
+            "  make setup ARCH=x86_64   # for x86_64 compute nodes",
+        ]
+
+    def stop_leftovers(self) -> None:  # noqa: B027 - optional end-of-job hook
+        """Stop whatever the job started that still runs after the orchestrator stopped its processes.
+
+        Nothing by default: Slurm ends every step with the allocation.
+        """
 
 
 class SlurmLauncher(Launcher):
@@ -413,8 +450,9 @@ class SlurmLauncher(Launcher):
 def launchers() -> dict[str, type[Launcher]]:
     """Every launcher by its ``srtslurm.yaml`` name."""
     from srtctl.core.docker import DockerLauncher
+    from srtctl.core.host import HostLauncher
 
-    return {cls.name: cls for cls in (SlurmLauncher, DockerLauncher)}
+    return {cls.name: cls for cls in (SlurmLauncher, DockerLauncher, HostLauncher)}
 
 
 @cache

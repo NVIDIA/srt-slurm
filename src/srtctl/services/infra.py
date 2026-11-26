@@ -59,6 +59,9 @@ class EtcdService(_InfraKind):
 
     default_readiness_ports = (ETCD_CLIENT_PORT,)
 
+    def checkout_files(self, service: ServiceConfig) -> tuple[str, ...]:
+        return () if service.command is not None else ("configs/etcd",)
+
     def build_command(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> list[str]:
         if service.command is not None:
             return list(service.effective_command)
@@ -88,6 +91,9 @@ class NatsService(_InfraKind):
 
     default_readiness_ports = (NATS_PORT,)
     option_keys = ("max_payload_mb",)
+
+    def checkout_files(self, service: ServiceConfig) -> tuple[str, ...]:
+        return () if service.command is not None else ("configs/nats-server",)
 
     def build_command(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> list[str]:
         if service.command is not None:

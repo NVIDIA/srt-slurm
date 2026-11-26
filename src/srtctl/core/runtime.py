@@ -360,18 +360,22 @@ def resolve_model_path(path: str) -> tuple[Path, bool]:
     return model_path, False
 
 
-def resolve_container_image(image: str) -> Path:
+def resolve_container_image(image: str, *, must_exist: bool = True) -> Path:
     """Resolve ``model.container`` into a path or a registry image name.
 
     Only file-like values (starting with "/" or "./") are validated; registry
     names such as "nvcr.io/nvidia/pytorch:23.12" are returned as-is, wrapped in
-    a Path for type compatibility with the rest of the runtime.
+    a Path for type compatibility with the rest of the runtime. With ``must_exist=False``
+    (a launcher that runs no images, such as ``launcher: host``) a file path is resolved
+    but not required to exist.
     """
     container_image_str = os.path.expandvars(image)
     if not container_image_str.startswith(("/", "./")):
         return Path(container_image_str)
 
     container_image = Path(container_image_str).resolve()
+    if not must_exist:
+        return container_image
     if not container_image.exists():
         raise FileNotFoundError(f"Container image path does not exist: {container_image}")
     if not container_image.is_file():
@@ -509,7 +513,8 @@ class RuntimeContext:
         """
         # Get nodes from the launcher (the Slurm allocation, or this machine)
         pools = [(svc.name, svc.nodes) for svc in config.pool_services if svc.nodes is not None]
-        nodes = get_launcher().nodes(
+        launcher = get_launcher()
+        nodes = launcher.nodes(
             frontend_dedicated_node=config.frontend.placement.dedicated,
             client_dedicated_node=config.benchmark.placement.dedicated,
             etcd_nats_dedicated_node=config.infra_dedicated_node,
@@ -541,7 +546,7 @@ class RuntimeContext:
         log_dir.mkdir(parents=True, exist_ok=True)
 
         model_path, is_hf_model = resolve_model_path(config.model.path)
-        container_image = resolve_container_image(config.model.container)
+        container_image = resolve_container_image(config.model.container, must_exist=launcher.uses_container_images)
 
         # Build container mounts
         container_mounts: dict[Path, Path] = {

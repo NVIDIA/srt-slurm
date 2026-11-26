@@ -977,25 +977,19 @@ def _cpu_power_exporter_problem(srtctl_source: Path) -> str | None:
 
 
 def validate_setup(srtctl_source: Path, config: SrtConfig | None = None) -> None:
-    """Validate that make setup has been run and required binaries exist.
+    """Validate that what the launcher's jobs need is installed.
 
-    Checks for NATS, etcd, Tachometer, and compute-arch uv binaries. Raises SystemExit
+    The launcher names it (``Launcher.setup_problems``): under Slurm and docker, the NATS,
+    etcd, Tachometer and compute-arch uv binaries ``make setup`` installs. Raises SystemExit
     with a clear error message if anything is missing.
 
     cpu-power-exporter is only required by recipes that configure
     telemetry.cpu_power_exporter; every other recipe submits without it.
     """
-    missing = []
+    launcher = get_launcher()
+    missing = launcher.setup_problems(srtctl_source, config)
 
     configs_dir = srtctl_source / "configs"
-    if not (configs_dir / "nats-server").exists():
-        missing.append("configs/nats-server")
-    if not (configs_dir / "etcd").exists():
-        missing.append("configs/etcd")
-    if not (srtctl_source / "bin" / "uv").exists():
-        missing.append("bin/uv (compute-arch uv)")
-    if not (srtctl_source / "bin" / "tachometer-scraper").exists():
-        missing.append("bin/tachometer-scraper (compute-arch Tachometer scraper)")
     cpu_power_enabled = (
         config is not None and config.telemetry.enabled and config.telemetry.cpu_power_exporter is not None
     )
@@ -1005,13 +999,15 @@ def validate_setup(srtctl_source: Path, config: SrtConfig | None = None) -> None
             missing.append(problem)
 
     if missing:
-        console.print(f"\n[red bold]ERROR:[/] Required binaries not found in {srtctl_source}:")
+        console.print(
+            f"\n[red bold]ERROR:[/] Required binaries not found for launcher: {launcher.name} ({srtctl_source}):"
+        )
         for m in missing:
             console.print(f"  [red]✗[/] {m}")
-        console.print("\nRun [bold]make setup ARCH=<compute_arch>[/] first:")
-        console.print(f"  cd {srtctl_source}")
-        console.print("  make setup ARCH=aarch64  [dim]# for GB200/Grace compute nodes[/]")
-        console.print("  make setup ARCH=x86_64   [dim]# for x86_64 compute nodes[/]\n")
+        console.print()
+        for line in launcher.setup_hint(srtctl_source):
+            console.print(line, markup=False, highlight=False)
+        console.print()
         raise SystemExit(1)
 
     # Optional: the default process exporter is host-native and skipped at launch

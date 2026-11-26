@@ -10,39 +10,26 @@ import os
 import re
 import shlex
 import shutil
-import signal
-import socket
 import subprocess
-import sys
-import threading
-import time
-from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from srtctl.core.launcher import Launcher, LaunchSpec
+from srtctl.core.launcher import LaunchSpec
+from srtctl.core.local import LocalLauncher
 
 if TYPE_CHECKING:
-    from srtctl.core.runtime import Nodes, RuntimeContext
+    from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
 
 logger = logging.getLogger(__name__)
 
 # Docker container names: [a-zA-Z0-9][a-zA-Z0-9_.-]*
 _CONTAINER_NAME_UNSAFE = re.compile(r"[^a-zA-Z0-9_.-]")
-JOB_ID_ENV = "SRTCTL_JOB_ID"
 JOB_LABEL = "srtctl.job"
 STEP_LABEL = "srtctl.step"
 # Host env forwarded into every container: pyxis hands a Slurm container the whole
 # submit environment, docker hands it nothing.
 _PASSTHROUGH_ENV = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "NGC_API_KEY")
-
-
-@dataclass
-class _DockerStep:
-    popen: subprocess.Popen
-    container: str | None  # docker container name; None for a host process
 
 
 def _gpus_flag_value(value: str) -> str:
@@ -59,7 +46,7 @@ def _gpus_flag_value(value: str) -> str:
     return value
 
 
-class DockerLauncher(Launcher):
+class DockerLauncher(LocalLauncher):
     """One job on the current machine: containers under ``docker run``, host commands under ``bash``.
 
     Every container shares the host network and IPC namespace and sees the GPUs
@@ -70,12 +57,6 @@ class DockerLauncher(Launcher):
     """
 
     name = "docker"
-
-    def __init__(self) -> None:
-        self._steps: dict[str, _DockerStep] = {}
-        self._lock = threading.Lock()
-        self._counter = 0
-        self._warned_srun_options: set[str] = set()
 
     # -- launching -----------------------------------------------------------
 
@@ -139,7 +120,9 @@ class DockerLauncher(Launcher):
         mounts, pre_commands = self._mounts(spec)
         for host, container in mounts:
             cmd.extend(["-v", f"{host}:{container}"])
-        cmd.extend(self._srun_option_flags(spec))
+        workdir = self._container_workdir(spec)
+        if workdir:
+            cmd.extend(["-w", workdir])
         for name in (*_PASSTHROUGH_ENV, *(spec.env_to_pass_through or ())):
             if name in os.environ:
                 cmd.extend(["-e", name])
@@ -149,44 +132,6 @@ class DockerLauncher(Launcher):
         cmd.append(self.docker_image(str(spec.container_image)))
         cmd.extend(self._with_pre_commands(self.build_task_command(spec), pre_commands))
         return cmd
-
-    # srun/pyxis options a recipe may carry that have no docker meaning (or are the launcher's own job).
-    _IGNORED_SRUN_OPTIONS = frozenset(
-        {
-            "mem",
-            "container-name",
-            "container-remap-root",
-            "no-container-remap-root",
-            "container-mount-home",
-            "no-container-mount-home",
-            "container-writable",
-            "container-readonly",
-            "distribution",
-            "exclusive",
-        }
-    )
-
-    def _srun_option_flags(self, spec: LaunchSpec) -> list[str]:
-        """The ``docker run`` flags for the recipe's ``srun_options``: ``container-workdir`` becomes ``-w``.
-
-        Other pyxis options either have no docker counterpart or are handled by the
-        launcher itself; unknown ones are reported once so a recipe that depends on
-        them is not silently changed.
-        """
-        flags: list[str] = []
-        unknown: list[str] = []
-        for key, value in (spec.srun_options or {}).items():
-            if key == "container-workdir" and value:
-                flags.extend(["-w", str(value)])
-            elif key not in self._IGNORED_SRUN_OPTIONS:
-                unknown.append(key)
-        if unknown:
-            with self._lock:
-                new = [k for k in unknown if k not in self._warned_srun_options]
-                self._warned_srun_options.update(new)
-            if new:
-                logger.warning("launcher: docker ignores srun_options %s", ", ".join(sorted(new)))
-        return flags
 
     # How many directory entries to inspect for symlinks that leave a mount (HF snapshot dirs hold tens).
     _MOUNT_SCAN_LIMIT = 20_000
@@ -265,156 +210,33 @@ class DockerLauncher(Launcher):
             return ["bash", "-c", f"{setup} && {task[2]}"]
         return ["bash", "-c", f"{setup} && exec {shlex.join(task)}"]
 
-    def _check_single_host(self, spec: LaunchSpec) -> None:
-        if spec.nodes > 1 or spec.ntasks > 1:
-            raise ValueError(
-                f"launcher: docker runs one task per launch; got nodes={spec.nodes} ntasks={spec.ntasks} "
-                f"for {spec.step_name or shlex.join(spec.command[:3])}"
-            )
-        this_host = {socket.gethostname(), "localhost"}
-        foreign = [n for n in spec.nodelist or () if n not in this_host]
-        if foreign:
-            raise ValueError(f"launcher: docker cannot place a process on {', '.join(foreign)}")
-
     def launch(self, spec: LaunchSpec) -> subprocess.Popen:
         self._check_single_host(spec)
-        container: str | None = None
-        env: dict[str, str] | None = None
         if spec.container_image:
             container = self._container_name(spec.step_name)
-            cmd = self.docker_command(spec, container)
-        else:
-            cmd = self.build_task_command(spec)
-            if spec.srun_export_env:
-                env = {**os.environ, **spec.srun_export_env}
-        logger.info("docker launcher command: %s", shlex.join(cmd))
-
-        if spec.output:
-            Path(spec.output).parent.mkdir(parents=True, exist_ok=True)
-            with open(spec.output, "w") as out:
-                # start_new_session: a host process gets its own process group so the
-                # whole tree can be signalled; docker run forwards signals itself.
-                popen = subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, env=env, start_new_session=True)
-        else:
-            popen = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, start_new_session=True
-            )
-        if spec.step_name:
-            with self._lock:
-                self._steps[spec.step_name] = _DockerStep(popen=popen, container=container)
-        return popen
+            return self._start(self.docker_command(spec, container), spec, container=container)
+        env = {**os.environ, **spec.srun_export_env} if spec.srun_export_env else None
+        return self._start(self.build_task_command(spec), spec, env=env)
 
     # -- signalling ----------------------------------------------------------
 
-    def list_step_ids(
-        self, job_id: str | None = None, *, unique_names: set[str] | None = None
-    ) -> dict[str, str] | None:
-        # Step names are the registry keys, so they are unique by construction.
-        with self._lock:
-            return {
-                name: step.container or str(step.popen.pid)
-                for name, step in self._steps.items()
-                if step.popen.poll() is None
-            }
-
-    def signal_step(
-        self, step_name: str, sig: str = "TERM", *, step_ids: dict[str, str] | None = None, full: bool = True
-    ) -> bool:
-        """``docker kill --signal`` for a container, ``killpg`` for a host process.
-
-        ``docker run`` forwards signals too, but ``docker kill`` reaches the
-        container even if its client is gone.
-        """
-        with self._lock:
-            step = self._steps.get(step_name)
-        if step is None or step.popen.poll() is not None:
+    def _signal_container(self, container: str, sig: str) -> bool:
+        """``docker kill --signal``: ``docker run`` forwards signals too, but this reaches a container whose client is gone."""
+        if shutil.which("docker") is None:
             return False
-        if step.container is not None:
-            if shutil.which("docker") is None:
-                return False
-            result = subprocess.run(
-                ["docker", "kill", f"--signal={sig}", step.container],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-            if result.returncode != 0:
-                logger.warning("docker kill --signal=%s %s failed: %s", sig, step.container, result.stderr.strip())
-                return False
-        else:
-            try:
-                os.killpg(step.popen.pid, signal.Signals[f"SIG{sig}"])
-            except (ProcessLookupError, PermissionError, KeyError) as exc:
-                logger.warning("killpg SIG%s %s failed: %s", sig, step_name, exc)
-                return False
-        logger.info("Sent SIG%s to %s", sig, step_name)
+        result = subprocess.run(
+            ["docker", "kill", f"--signal={sig}", container],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            logger.warning("docker kill --signal=%s %s failed: %s", sig, container, result.stderr.strip())
+            return False
         return True
 
-    # -- placement -----------------------------------------------------------
-
-    def nodes(
-        self,
-        *,
-        frontend_dedicated_node: bool = False,
-        client_dedicated_node: bool = False,
-        etcd_nats_dedicated_node: bool = False,
-        colocate_dedicated_nodes: bool = True,
-        engine_nodes: int | None = None,
-        pools: Sequence[tuple[str, int]] = (),
-    ) -> Nodes:
-        from srtctl.core.runtime import Nodes
-
-        return Nodes.from_nodelist(
-            [socket.gethostname()],
-            frontend_dedicated_node=frontend_dedicated_node,
-            client_dedicated_node=client_dedicated_node,
-            etcd_nats_dedicated_node=etcd_nats_dedicated_node,
-            colocate_dedicated_nodes=colocate_dedicated_nodes,
-            engine_nodes=engine_nodes,
-            pools=pools,
-        )
-
-    def node_ip(self, hostname: str, network_interface: str | None = None) -> str:
-        # Every container runs with --network host on this one machine.
-        return "127.0.0.1"
-
-    def job_id(self) -> str | None:
-        return os.environ.get(JOB_ID_ENV)
-
     # -- submission ----------------------------------------------------------
-
-    def submit(self, script_path: Path) -> str:
-        now = time.time()
-        return f"docker-{time.strftime('%Y%m%d-%H%M%S', time.localtime(now))}-{int(now * 1000) % 1000:03d}"
-
-    def start(self, job_id: str, job_output_dir: Path) -> int:
-        """Run the staged job script in the foreground, teeing it to ``logs/sweep_<job_id>.log``.
-
-        Runs in the foreground so a sweep's jobs take the machine's GPUs one at a time.
-        """
-        script = job_output_dir / "sbatch_script.sh"
-        log_path = job_output_dir / "logs" / f"sweep_{job_id}.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        env = {k: v for k, v in os.environ.items() if not k.startswith("SLURM_")}
-        env[JOB_ID_ENV] = job_id
-        with open(log_path, "a") as log:
-            proc = subprocess.Popen(
-                ["bash", str(script)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True
-            )
-            assert proc.stdout is not None
-            while True:
-                try:
-                    for line in proc.stdout:
-                        log.write(line)
-                        log.flush()
-                        sys.stderr.write(line)
-                    break
-                except KeyboardInterrupt:
-                    # Ctrl+C also reached the orchestrator (same process group); keep
-                    # streaming while it cleans up.
-                    continue
-            return proc.wait()
 
     def shell_command(
         self, runtime: RuntimeContext, node: str, *, image: str | None = None, container_name: str | None = None
@@ -427,30 +249,7 @@ class DockerLauncher(Launcher):
     # -- validation ----------------------------------------------------------
 
     def validate(self, config: SrtConfig) -> list[str]:
-        from srtctl.core.config import get_srtslurm_setting
-
-        errors = []
-        topology = config.topology
-        if config.total_nodes > 1:
-            errors.append(f"needs {config.total_nodes} nodes; launcher: docker runs on one machine")
-        if topology.het_components(
-            infra_dedicated=config.infra_dedicated_node,
-            cluster_default=get_srtslurm_setting("use_het_jobs", False),
-        ):
-            errors.append("resources.het_jobs is a Slurm heterogeneous job; set it false")
-        if config.frontend.placement.dedicated:
-            errors.append("frontend.placement.dedicated needs a second node")
-        if config.benchmark.placement.dedicated:
-            errors.append("benchmark.placement.dedicated needs a second node")
-        if config.infra_dedicated_node:
-            errors.append("a dedicated infra node (etcd/NATS) needs a second node")
-        if config.pool_services:
-            errors.append("services[].nodes (pools) need nodes of their own")
-        if config.backend.get_srun_config().launch_per_endpoint:
-            errors.append(
-                f"engine {config.backend_type} launches each endpoint as one multi-task MPI step, "
-                "which launcher: docker does not support"
-            )
+        errors = super().validate(config)
         images = {"model.container": str(config.model.container)}
         images.update({f"roles.{role}.container": image for role, image in config.role_containers.items()})
         for key, image in images.items():

@@ -328,9 +328,10 @@
     "launcher": {
       "enum": [
         "slurm",
-        "docker"
+        "docker",
+        "host"
       ],
-      "description": "Where processes run: `slurm` (srun steps inside an sbatch allocation) or `local` (one job on this machine, containers under `docker run`). See docs/cluster-config.md#launcher.",
+      "description": "Where processes run: `slurm` (srun steps inside an sbatch allocation), `docker` (one job on this machine, containers under `docker run`) or `host` (one job on this machine, every process on the host without containers). See docs/cluster-config.md#launcher.",
       "default": "slurm"
     },
     "docker_args": {
