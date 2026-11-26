@@ -1669,6 +1669,9 @@ class ProfilingConfig:
     # Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix)
     extra_nsys_args: list[str] | None = None
 
+    # Additional Nsight export format for explicit profiling; use "none" to disable.
+    nsys_export: str = "sqlite"
+
     # Non-TRT-LLM Nsight activity domains. ``cuda-sw`` can be selected
     # explicitly where software tracing is preferred over hardware tracing.
     nsys_trace: str = "cuda,nvtx"
@@ -1829,6 +1832,7 @@ class ProfilingConfig:
                 "stop",
             ]
 
+        cmd.append(f"--export={self.nsys_export}")
         if self.extra_nsys_args:
             cmd.extend(self.extra_nsys_args)
 
@@ -1888,6 +1892,7 @@ class ProfilingConfig:
                 cmd += ["--delay", str(self.delay_secs)]
             if self.duration_secs is not None:
                 cmd += ["--duration", str(self.duration_secs)]
+            cmd.append(f"--export={self.nsys_export}")
             if self.extra_nsys_args:
                 cmd.extend(self.extra_nsys_args)
             cmd.extend(["-o", output_file])
@@ -1910,6 +1915,7 @@ class ProfilingConfig:
             "true",
         ]
 
+        cmd.append(f"--export={self.nsys_export}")
         if self.extra_nsys_args:
             cmd.extend(self.extra_nsys_args)
 

@@ -2046,6 +2046,11 @@
           "description": "Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix)",
           "default": null
         },
+        "nsys_export": {
+          "type": "string",
+          "description": "Additional Nsight export format for explicit profiling; use \"none\" to disable.",
+          "default": "sqlite"
+        },
         "nsys_trace": {
           "type": "string",
           "description": "Non-TRT-LLM Nsight activity domains. ``cuda-sw`` can be selected explicitly where software tracing is preferred over hardware tracing.",

@@ -680,11 +680,13 @@ class TestDryRunSrunOptions:
 class TestDryRunExecutionExtensions:
     """Test custom benchmark and telemetry details display."""
 
-    def test_nsys_profiling_details_shown(self, capsys):
+    @pytest.mark.parametrize("nsys_export", ["sqlite", "none"])
+    def test_nsys_profiling_details_shown(self, capsys, nsys_export):
         config = _make_config(
             {
                 "profiling": {
                     "type": "nsys",
+                    "nsys_export": nsys_export,
                     "nsys_trace": "cuda-sw,nvtx",
                     "trace_fork_before_exec": True,
                     "capture_range_end": "repeat:1:async",
@@ -697,6 +699,7 @@ class TestDryRunExecutionExtensions:
 
         show_config_details(config)
         output = capsys.readouterr().out
+        assert any("nsys_export" in line and nsys_export in line for line in output.splitlines())
         assert "cuda-sw,nvtx" in output
         assert "repeat:1:async" in output
         assert "/host/lib64:/host/lib" in output

@@ -55,6 +55,7 @@ class TestProfilingConfig:
         assert profiling.is_nsys is False
         assert profiling.is_torch is False
         assert profiling.type == "none"
+        assert profiling.nsys_export == "sqlite"
         assert profiling.nsys_trace == "cuda,nvtx"
         assert profiling.trace_fork_before_exec is None
         assert profiling.capture_range_end == "stop"
@@ -76,6 +77,7 @@ class TestProfilingConfig:
         prefix = profiling.get_nsys_prefix("/output/test")
         assert "nsys" in prefix
         assert "profile" in prefix
+        assert "--export=sqlite" in prefix
         assert "/output/test" in prefix
 
         # Dynamo frontend requires trace-fork-before-exec, sglang-router does not.
@@ -83,6 +85,32 @@ class TestProfilingConfig:
         assert "--trace-fork-before-exec=true" in prefix_dynamo
         prefix_router = profiling.get_nsys_prefix("/output/test", frontend_type="sglang-router")
         assert "--trace-fork-before-exec=true" not in prefix_router
+
+    @pytest.mark.parametrize("backend_type", ["sglang", "vllm", "trtllm"])
+    @pytest.mark.parametrize("profiling_type", ["nsys", "nsys-time"])
+    @pytest.mark.parametrize("nsys_export", ["sqlite", "none"])
+    def test_nsys_export(self, backend_type, profiling_type, nsys_export):
+        """SQLite export is optional across engines and capture modes."""
+        from srtctl.core.schema import ProfilingConfig
+
+        profiling = ProfilingConfig(
+            type=profiling_type,
+            nsys_export=nsys_export,
+            delay_secs=1,
+            duration_secs=2,
+        )
+        prefix = profiling.get_nsys_prefix("/output/test", backend_type=backend_type)
+        assert f"--export={nsys_export}" in prefix
+
+    @pytest.mark.parametrize(
+        "fields, expected", [({}, "sqlite"), ({"nsys_export": "sqlite"}, "sqlite"), ({"nsys_export": "none"}, "none")]
+    )
+    def test_nsys_export_schema_loading(self, fields, expected):
+        """Recipe loading retains the default and explicit export format."""
+        from srtctl.core.schema import ProfilingConfig
+
+        profiling = ProfilingConfig.Schema().load(fields)
+        assert profiling.nsys_export == expected
 
     def test_nsys_profiling_with_extra_args(self):
         """Test nsys profiling with custom extra_nsys_args."""

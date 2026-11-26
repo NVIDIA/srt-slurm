@@ -245,6 +245,7 @@ Profiling configuration.
 |---|---|---|---|
 | `type` | str | `'none'` | "none", "nsys", "nsys-time", or "torch" |
 | `extra_nsys_args` | list[str] \| None | `None` | Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix) |
+| `nsys_export` | str | `'sqlite'` | Additional Nsight export format for explicit profiling; use "none" to disable. |
 | `nsys_trace` | str | `'cuda,nvtx'` | Non-TRT-LLM Nsight activity domains. ``cuda-sw`` can be selected explicitly where software tracing is preferred over hardware tracing. |
 | `trace_fork_before_exec` | bool \| None | `None` | None preserves the existing Dynamo-specific default. Set explicitly for worker launchers that require or cannot tolerate child-process injection. |
 | `capture_range_end` | str | `'stop'` | Non-TRT-LLM behavior when cudaProfilerStop closes a capture range. |

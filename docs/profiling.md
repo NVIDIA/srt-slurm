@@ -215,6 +215,7 @@ profiling:
   type: "torch" # Required: "none", "torch", or "nsys"
 
   # nsys / nsys-time command settings
+  nsys_export: "sqlite"
   nsys_trace: "cuda,nvtx"
   trace_fork_before_exec: true
   capture_range_end: "stop"
@@ -320,11 +321,18 @@ do not warn, so existing all-worker recipes remain unchanged.
 
 ### nsys-specific behavior
 
+Explicit `nsys` and `nsys-time` profiling export a `.sqlite` file alongside
+each `.nsys-rep` by default, using Nsight's
+[`--export=sqlite` option](https://docs.nvidia.com/nsight-systems/UserGuide/#cli-profile-command-switch-options).
+Set `profiling.nsys_export: "none"` to disable export, or choose another
+Nsight-supported export format.
+This setting does not affect the automatic `observability.nsys` preset.
+
 When using `nsys`, workers are wrapped with:
 
 ```bash
 nsys profile -t cuda,nvtx --cuda-graph-trace=node \
-  -c cudaProfilerApi --capture-range-end stop \
+  -c cudaProfilerApi --capture-range-end stop --export=sqlite \
   [extra_nsys_args...] \
   -o /logs/profiles/{mode}/{name} \
   python3 -m sglang.launch_server ...
