@@ -116,38 +116,39 @@ def resolve_worker_targets(
     rng: random.Random,
     scraper: Callable[[str], str | None] = scrape_prometheus_text,
 ) -> tuple[list[WorkerTarget], dict[str, Any]]:
-    """Select target worker endpoint(s) from ``candidates`` according to ``event.select``.
+    """Select target worker endpoint(s) from ``candidates`` according to ``event.workers``.
 
     ``candidates`` must be sorted deterministically by ``(index, engine)``.
     Returns ``(chosen_targets, selection_details)``.
     """
     ordered = sorted(candidates, key=lambda t: (t.index, t.key[2]))
+    mode, indices, count = event.parse_workers()
     if not ordered:
-        return [], {"select": event.select, "candidates": 0}
+        return [], {"workers": event.workers, "candidates": 0}
 
-    if event.select == "all":
-        return ordered, {"select": "all", "chosen": [t.label for t in ordered]}
+    if mode == "all":
+        return ordered, {"workers": "all", "chosen": [t.label for t in ordered]}
 
-    if event.select == "index":
+    if mode == "index":
         by_index: dict[int, list[WorkerTarget]] = {}
         for target in ordered:
             by_index.setdefault(target.index, []).append(target)
         chosen: list[WorkerTarget] = []
         seen: set[EndpointKey] = set()
-        for idx in event.indices:
+        for idx in indices:
             for target in by_index.get(idx, ()):
                 if target.key not in seen:
                     seen.add(target.key)
                     chosen.append(target)
-        return chosen, {"select": "index", "indices": list(event.indices), "chosen": [t.label for t in chosen]}
+        return chosen, {"workers": event.workers, "indices": list(indices), "chosen": [t.label for t in chosen]}
 
-    if event.select == "random":
-        k = min(event.count, len(ordered))
+    if mode == "random":
+        k = min(count, len(ordered))
         chosen = sorted(rng.sample(ordered, k), key=lambda t: (t.index, t.key[2]))
-        return chosen, {"select": "random", "count": k, "chosen": [t.label for t in chosen]}
+        return chosen, {"workers": event.workers, "count": k, "chosen": [t.label for t in chosen]}
 
-    # event.select == "hottest"
-    k = min(event.count, len(ordered))
+    # mode == "hottest"
+    k = min(count, len(ordered))
     metric_chain = tuple(dict.fromkeys((hot_metric, *FALLBACK_HOT_METRICS)))
     raw_texts: dict[str, str | None] = {}
     for target in ordered:
@@ -174,13 +175,14 @@ def resolve_worker_targets(
     if used_metric is None:
         chosen = ordered[:k]
         logger.warning(
-            "Chaos select=hottest: %s (and fallbacks) returned 0/absent on every %s worker; falling back to %s",
+            "Chaos workers=%r: %s (and fallbacks) returned 0/absent on every %s worker; falling back to %s",
+            event.workers,
             hot_metric,
             event.role,
             [t.label for t in chosen],
         )
         return chosen, {
-            "select": "hottest",
+            "workers": event.workers,
             "metric": hot_metric,
             "fallback": True,
             "chosen": [t.label for t in chosen],
@@ -189,7 +191,7 @@ def resolve_worker_targets(
     ranked = sorted(scores, key=lambda item: (-item[0], item[1]))[:k]
     chosen = sorted((t for _, _, t in ranked), key=lambda t: (t.index, t.key[2]))
     return chosen, {
-        "select": "hottest",
+        "workers": event.workers,
         "metric": used_metric,
         "fallback": False,
         "scores": {t.label: val for val, _, t in scores},

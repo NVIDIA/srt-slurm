@@ -18,50 +18,52 @@ sequenceDiagram
     O->>C: Start ChaosTimeline thread
     loop Each event in chaos.events
         C->>C: Wait after_seconds (interruptible)
-        C->>C: Resolve targets (index / random / hottest / all)
-        alt respawn or rolling_replace
+        C->>C: Resolve workers (index / random / hottest / all)
+        alt respawn or rolling_restart
             C->>S: ensure_relaunch(endpoint)
         else one-way kill
             C->>R: set_critical(target_step, false)
         end
         C->>C: Signal step or worker-node process
+        opt wait_ready or rolling_restart
+            C->>S: Wait for relaunch readiness probe
+        end
         C->>C: Append record to chaos_events.json
     end
     B-->>O: Benchmark finishes
-    O->>C: stop() and SIGCONT any remaining stalled PIDs
+    O->>C: stop() and SIGCONT any remaining frozen PIDs
 ```
 
 ### Worker Fault Tolerance and Restart Semantics
 
-- **Per-target `critical` scoping:** On `kill_worker` and `kill_process` when `respawn: false` and `roles.<role>.restart` is `never`, `ChaosRunner` marks only the targeted worker's step(s) non-critical (`ProcessRegistry.set_critical(name, False)`) right before signalling. Surviving workers keep `critical: true`, so unintended collateral crashes still fail the job.
-- **Supervisor-backed relaunch:** When `roles.<role>.restart` is enabled, or when an event sets `respawn: true` or uses `rolling_replace`, exits are handled by the existing `WorkerSupervisor` (`worker_restarts.json`, log rotation to `<log>.out.<n>`, `_r<n>` step naming, and `/health` readiness probing).
+- **Per-target `critical` scoping:** On `kill` when `respawn: false` and `roles.<role>.restart` is `never`, `ChaosRunner` marks only the targeted worker's step(s) non-critical (`ProcessRegistry.set_critical(name, False)`) right before signalling. Surviving workers keep `critical: true`, so unintended collateral crashes still fail the job.
+- **Supervisor-backed relaunch:** When `roles.<role>.restart` is enabled, or when an event sets `respawn: true` or uses `rolling_restart`, exits are handled by the existing `WorkerSupervisor` (`worker_restarts.json`, log rotation to `<log>.out.<n>`, `_r<n>` step naming, and `/health` readiness probing). Setting `wait_ready: true` on `kill` waits for the relaunched worker's `/health` probe before starting the next event.
 
 ## Event Types
 
-- `kill_worker`: signals the target worker step(s) through the launcher (`scancel --signal=<sig> --full <job>.<step>` under Slurm).
-- `kill_process`: runs an overlapping bare-host helper on the worker node to find matching subprocesses (scoped by `SLURM_STEP_ID` when available, falling back to cmdline substring match), picks `rank` (`0`, `1`, ..., `random`, or `all`), and sends `signal`.
-- `stall_process`: sends `SIGSTOP` to the matched subprocess rank(s), polls `/proc/<pid>/stat` until state `T` is verified, holds for `duration_seconds` (or until benchmark teardown), then sends `SIGCONT` and verifies state is no longer `T`. Any paused process is unconditionally resumed on teardown.
-- `rolling_replace`: replaces every worker of `role` in a sliding window capped at `max_unavailable`, waiting for each replacement to pass its readiness probe through `WorkerSupervisor` before taking down the next worker.
+- `kill`: signals the target worker step(s) through the launcher (`scancel --signal=<sig> --full <job>.<step>` under Slurm). When `process:` is set, runs an overlapping bare-host helper on the worker node to find matching subprocesses (scoped by `SLURM_STEP_ID` when available, falling back to cmdline substring match), picks `rank` (`0`, `1`, ..., `random`, or `all`), and sends `signal`.
+- `freeze`: sends `SIGSTOP` to the matched subprocess rank(s) (defaults to `process: engine`), polls `/proc/<pid>/stat` until state `T` is verified, holds for `duration_seconds` (or until benchmark teardown), then sends `SIGCONT` and verifies state is no longer `T`. Any paused process is unconditionally resumed on teardown.
+- `rolling_restart`: restarts every worker of `role` in a sliding window capped at `max_unavailable`, waiting for each replacement to pass its readiness probe through `WorkerSupervisor` before taking down the next worker.
 
-### Target Selection
+### Worker Selection (`workers:`)
 
-- `select: index` — picks zero-based worker indices listed in `indices`.
-- `select: random` — picks `count` workers uniformly at random (deterministic when `chaos.seed` is set).
-- `select: all` — targets every worker of `role`.
-- `select: hottest` — scrapes `chaos.hot_metric` (default `dynamo_component_inflight_requests`, falling back to engine running-request gauges) from each worker's Prometheus endpoint and picks the `count` busiest workers. If no worker reports a positive value, falls back to index order and records `fallback: true`.
+- `0` or `[0, 1]` — zero-based worker index(es) within `role`.
+- `random` or `random:<N>` — picks `N` workers uniformly at random (deterministic when `chaos.seed` is set).
+- `all` — targets every worker of `role`.
+- `hottest` or `hottest:<N>` — scrapes `chaos.hot_metric` (default `dynamo_component_inflight_requests`, falling back to engine running-request gauges) from each worker's Prometheus endpoint and picks the `N` busiest workers. If no worker reports a positive value, falls back to index order and records `fallback: true`.
 
-### Engine Process Targets
+### Engine Process Targets (`process:`)
 
-`kill_process` and `stall_process` resolve `target` (`main`, `engine`, or `worker`) through the role backend's `fault_process_targets`:
+`kill` (when `process:` is set) and `freeze` resolve semantic aliases through the role backend's `fault_process_targets`:
 
-| Engine | `main` | `engine` | `worker` |
+| Engine | `main` | `engine` | `rank` |
 | --- | --- | --- | --- |
 | `vllm` | `dynamo.vllm` | `VLLM::EngineCore` | `VLLM::Worker` |
 | `sglang` | `dynamo.sglang` | `sglang::scheduler` | `sglang::scheduler` |
 | `trtllm` | `dynamo.trtllm` | `tensorrt_llm.llmapi.mgmn_worker_node` | `tensorrt_llm.llmapi.mgmn_worker_node` |
 | `mocker` | `dynamo.mocker` | `dynamo.mocker` | `dynamo.mocker` |
 
-Set `process_name` on an event to override `target` with any explicit cmdline substring (required for engines without default targets).
+Any other string in `process:` is matched verbatim as a cmdline substring (e.g. `process: "sglang::detokenizer"`), which also works for engines without default aliases.
 
 ## Example
 
@@ -102,8 +104,9 @@ chaos:
   seed: 7
   events:
     - after_seconds: 30
-      type: kill_worker
+      type: kill
       role: agg
-      select: hottest
+      workers: hottest
       respawn: true
+      wait_ready: true
 ```

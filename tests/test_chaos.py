@@ -126,29 +126,31 @@ class TestChaosSchema:
                     "events": [
                         {
                             "after_seconds": 10,
-                            "type": "kill_worker",
+                            "type": "kill",
                             "role": "agg",
-                            "select": "hottest",
+                            "workers": "hottest",
                             "respawn": True,
+                            "wait_ready": True,
                         },
                         {
                             "after_seconds": 5,
-                            "type": "kill_process",
+                            "type": "kill",
                             "role": "agg",
-                            "target": "worker",
+                            "workers": [0, 1],
+                            "process": "rank",
                             "rank": 1,
                             "signal": "SIGKILL",
                         },
                         {
                             "after_seconds": 5,
-                            "type": "stall_process",
+                            "type": "freeze",
                             "role": "agg",
-                            "select": "random",
+                            "workers": "random:2",
                             "duration_seconds": 10,
                         },
                         {
                             "after_seconds": 5,
-                            "type": "rolling_replace",
+                            "type": "rolling_restart",
                             "role": "agg",
                             "max_unavailable": 1,
                             "graceful": True,
@@ -161,36 +163,46 @@ class TestChaosSchema:
         assert cfg.chaos.seed == 123
         assert len(cfg.chaos.events) == 4
         assert cfg.chaos.events[1].normalized_signal == "KILL"
+        assert cfg.chaos.events[2].effective_process == "engine"
+        assert cfg.chaos.events[2].parse_workers() == ("random", (), 2)
 
     def test_invalid_role_rejected(self):
         with pytest.raises(ValidationError, match="has no workers"):
-            _load_dict(_base_recipe(chaos={"events": [{"type": "kill_worker", "role": "prefill"}]}))
+            _load_dict(_base_recipe(chaos={"events": [{"type": "kill", "role": "prefill"}]}))
 
-    def test_out_of_range_index_rejected(self):
+    def test_out_of_range_worker_index_rejected(self):
         with pytest.raises(ValidationError, match="out of range"):
-            _load_dict(_base_recipe(chaos={"events": [{"type": "kill_worker", "role": "agg", "indices": [2]}]}))
+            _load_dict(_base_recipe(chaos={"events": [{"type": "kill", "role": "agg", "workers": [2]}]}))
+
+    def test_invalid_workers_selector_rejected(self):
+        with pytest.raises(ValidationError, match="workers"):
+            _load_dict(_base_recipe(chaos={"events": [{"type": "kill", "role": "agg", "workers": "hottest:0"}]}))
+
+    def test_wait_ready_without_restart_or_respawn_rejected(self):
+        with pytest.raises(ValidationError, match="wait_ready"):
+            _load_dict(_base_recipe(chaos={"events": [{"type": "kill", "role": "agg", "wait_ready": True}]}))
 
     def test_invalid_signal_rejected(self):
         with pytest.raises(ValidationError, match="not a recognized POSIX signal"):
-            _load_dict(_base_recipe(chaos={"events": [{"type": "kill_worker", "role": "agg", "signal": "BOGUS"}]}))
+            _load_dict(_base_recipe(chaos={"events": [{"type": "kill", "role": "agg", "signal": "BOGUS"}]}))
 
     def test_negative_after_seconds_rejected(self):
         with pytest.raises(ValidationError, match="after_seconds"):
-            _load_dict(_base_recipe(chaos={"events": [{"type": "kill_worker", "role": "agg", "after_seconds": -1}]}))
+            _load_dict(_base_recipe(chaos={"events": [{"type": "kill", "role": "agg", "after_seconds": -1}]}))
 
-    def test_unsupported_backend_target_requires_process_name(self):
+    def test_unsupported_backend_alias_requires_explicit_process_substring(self):
         doc = _base_recipe(
             engine="tokenspeed",
             frontend={"type": "dynamo", "enable_multiple_frontends": False},
             roles={"agg": {"nodes": 1, "workers": 1, "gpus": 8}},
-            chaos={"events": [{"type": "stall_process", "role": "agg", "target": "worker"}]},
+            chaos={"events": [{"type": "freeze", "role": "agg"}]},
         )
-        with pytest.raises(ValidationError, match="process_name"):
+        with pytest.raises(ValidationError, match="explicit cmdline substring"):
             _load_dict(doc)
 
-        doc["chaos"]["events"][0]["process_name"] = "my_custom_worker"
+        doc["chaos"]["events"][0]["process"] = "my_custom_worker"
         cfg = _load_dict(doc)
-        assert cfg.chaos.events[0].process_name == "my_custom_worker"
+        assert cfg.chaos.events[0].effective_process == "my_custom_worker"
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +222,7 @@ class TestTargetSelection:
         assert parse_prometheus_metric(text, "dynamo_component_inflight_requests") == 11.5
         assert parse_prometheus_metric(text, "missing_metric") is None
 
-    def test_hottest_picks_busiest_worker(self):
+    def test_hottest_picks_busiest_workers(self):
         cfg = _load_dict(_base_recipe(roles={"agg": {"nodes": 1, "workers": 3}}))
         runtime = SimpleNamespace(network_interface=None)
         candidates = [
@@ -222,7 +234,7 @@ class TestTargetSelection:
             "10.0.0.1": "dynamo_component_inflight_requests 18\n",
             "10.0.0.2": "dynamo_component_inflight_requests 9\n",
         }
-        event = ChaosEventConfig(type="kill_worker", role="agg", select="hottest", count=2)
+        event = ChaosEventConfig(type="kill", role="agg", workers="hottest:2")
         with patch("srtctl.chaos.targets.get_hostname_ip", side_effect=lambda node, _iface=None: f"10.0.0.{node[-1]}"):
             chosen, info = resolve_worker_targets(
                 event,
@@ -244,7 +256,7 @@ class TestTargetSelection:
             WorkerTarget(("agg", i, 0), "agg", i, (_proc("agg", i, f"node{i}"),), (f"agg_{i}_node{i}",))
             for i in range(2)
         ]
-        event = ChaosEventConfig(type="kill_worker", role="agg", select="hottest", count=1)
+        event = ChaosEventConfig(type="kill", role="agg", workers="hottest")
         with patch("srtctl.chaos.targets.get_hostname_ip", return_value="10.0.0.1"):
             chosen, info = resolve_worker_targets(
                 event,
@@ -265,22 +277,22 @@ class TestTargetSelection:
             WorkerTarget(("agg", i, 0), "agg", i, (_proc("agg", i, f"node{i}"),), (f"agg_{i}_node{i}",))
             for i in range(4)
         ]
-        event = ChaosEventConfig(type="kill_worker", role="agg", select="random", count=1)
+        event = ChaosEventConfig(type="kill", role="agg", workers="random")
         a, _ = resolve_worker_targets(
             event,
             candidates,
             config=cfg,
-            runtime=runtime,
+            runtime=runtime,  # type: ignore[arg-type]
             hot_metric="m",
-            rng=random.Random(99),  # type: ignore[arg-type]
+            rng=random.Random(99),
         )
         b, _ = resolve_worker_targets(
             event,
             candidates,
             config=cfg,
-            runtime=runtime,
+            runtime=runtime,  # type: ignore[arg-type]
             hot_metric="m",
-            rng=random.Random(99),  # type: ignore[arg-type]
+            rng=random.Random(99),
         )
         assert a == b
 
@@ -291,7 +303,7 @@ class TestTargetSelection:
 
 
 class TestFaultToleranceAndActions:
-    def test_kill_worker_marks_only_target_non_critical(self, tmp_path: Path):
+    def test_kill_marks_only_target_non_critical(self, tmp_path: Path):
         cfg = _load_dict(_base_recipe())
         runtime = SimpleNamespace(job_id="100", log_dir=tmp_path, network_interface=None)
         registry = ProcessRegistry(job_id="100")
@@ -300,7 +312,7 @@ class TestFaultToleranceAndActions:
         registry.add_process(s0.managed)
         registry.add_process(s1.managed)
 
-        chaos = ChaosConfig(events=[ChaosEventConfig(type="kill_worker", role="agg", select="index", indices=[0])])
+        chaos = ChaosConfig(events=[ChaosEventConfig(type="kill", role="agg", workers=0)])
         runner = ChaosRunner(
             chaos=chaos,
             config=cfg,
@@ -332,7 +344,7 @@ class TestFaultToleranceAndActions:
         assert recorded["events"][0]["status"] == "completed"
         assert recorded["events"][0]["targets"] == ["agg_0"]
 
-    def test_kill_process_and_stall_process_with_teardown_resume(self, tmp_path: Path):
+    def test_freeze_and_subprocess_kill_with_step_scoping(self, tmp_path: Path):
         cfg = _load_dict(_base_recipe())
         runtime = SimpleNamespace(job_id="101", log_dir=tmp_path, network_interface=None)
         registry = ProcessRegistry(job_id="101")
@@ -367,8 +379,8 @@ class TestFaultToleranceAndActions:
 
         chaos = ChaosConfig(
             events=[
-                ChaosEventConfig(type="stall_process", role="agg", target="worker", rank=1, duration_seconds=0.05),
-                ChaosEventConfig(type="kill_process", role="agg", target="worker", rank=1, signal="KILL"),
+                ChaosEventConfig(type="freeze", role="agg", process="engine", rank=1, duration_seconds=0.05),
+                ChaosEventConfig(type="kill", role="agg", process="rank", rank=1, signal="KILL"),
             ]
         )
         runner = ChaosRunner(
@@ -385,7 +397,6 @@ class TestFaultToleranceAndActions:
             patch("srtctl.chaos.actions.run_node_python", side_effect=fake_node_python),
         ):
             runner.start()
-            # Give the two fast events time to complete before stopping.
             deadline = time.monotonic() + 5.0
             while len(runner.records) < 2 or any(r.status == "running" for r in runner.records):
                 if time.monotonic() >= deadline:
@@ -399,7 +410,7 @@ class TestFaultToleranceAndActions:
         assert calls[0]["payload"]["rank"] == 1
         assert all(r.status == "completed" for r in runner.records)
 
-    def test_rolling_replace_replaces_all_workers_via_supervisor(self, tmp_path: Path):
+    def test_kill_wait_ready_and_rolling_restart_via_supervisor(self, tmp_path: Path):
         cfg = _load_dict(_base_recipe())
         runtime = SimpleNamespace(job_id="102", log_dir=tmp_path, network_interface=None)
         registry = ProcessRegistry(job_id="102")
@@ -417,7 +428,6 @@ class TestFaultToleranceAndActions:
         registry.add_process(s0.managed)
         registry.add_process(s1.managed)
 
-        # Drive supervisor.reconcile() in the background just like the process monitor does.
         reconcile_done = threading.Event()
 
         def reconcile_loop():
@@ -431,12 +441,15 @@ class TestFaultToleranceAndActions:
         chaos = ChaosConfig(
             events=[
                 ChaosEventConfig(
-                    type="rolling_replace",
+                    type="kill", role="agg", workers=0, respawn=True, wait_ready=True, timeout_seconds=10.0
+                ),
+                ChaosEventConfig(
+                    type="rolling_restart",
                     role="agg",
                     max_unavailable=1,
                     graceful=True,
                     timeout_seconds=10.0,
-                )
+                ),
             ]
         )
         runner = ChaosRunner(
@@ -455,7 +468,7 @@ class TestFaultToleranceAndActions:
             ):
                 runner.start()
                 deadline = time.monotonic() + 5.0
-                while not runner.records or runner.records[0].status == "running":
+                while len(runner.records) < 2 or any(r.status == "running" for r in runner.records):
                     if time.monotonic() >= deadline:
                         break
                     time.sleep(0.05)
@@ -464,14 +477,17 @@ class TestFaultToleranceAndActions:
             reconcile_done.set()
             t.join(timeout=2.0)
 
-        assert len(runner.records) == 1
-        rec = runner.records[0]
-        assert rec.status == "completed"
-        assert rec.details["total"] == 2
-        assert len(rec.details["replaced"]) == 2
-        assert rec.details["timed_out"] is False
-        assert sorted(k for k, _ in launcher.calls) == [("agg", 0), ("agg", 1)]
-        assert registry.get_process("agg_0_node0_r1") is not None
+        assert len(runner.records) == 2
+        kill_rec, roll_rec = runner.records
+        assert kill_rec.status == "completed"
+        assert kill_rec.details["wait_ready_timed_out"] is False
+        assert kill_rec.details["recovered"] == [{"worker": "agg_0", "outcome": "relaunched"}]
+        assert roll_rec.status == "completed"
+        assert roll_rec.details["total"] == 2
+        assert len(roll_rec.details["restarted"]) == 2
+        assert roll_rec.details["timed_out"] is False
+        # agg_0 restarted twice (kill + rolling_restart), agg_1 once (rolling_restart).
+        assert registry.get_process("agg_0_node0_r2") is not None
         assert registry.get_process("agg_1_node0_r1") is not None
 
 
@@ -491,10 +507,9 @@ def test_mock_sweep_runs_chaos_concurrently_and_writes_timeline(tmp_path: Path):
                 {
                     "name": "kill-agg-0",
                     "after_seconds": 0.0,
-                    "type": "kill_worker",
+                    "type": "kill",
                     "role": "agg",
-                    "select": "index",
-                    "indices": [0],
+                    "workers": 0,
                     "respawn": True,
                 }
             ],
@@ -502,7 +517,6 @@ def test_mock_sweep_runs_chaos_concurrently_and_writes_timeline(tmp_path: Path):
     )
     recipe_path.write_text(yaml.safe_dump(doc, sort_keys=False))
 
-    # Validate load_config accepts the file cleanly.
     loaded = load_config(recipe_path)
     assert loaded.chaos.enabled is True
 

@@ -1594,14 +1594,15 @@ class TestChaosDryRun:
                         {
                             "name": "kill-hot",
                             "after_seconds": 30,
-                            "type": "kill_worker",
+                            "type": "kill",
                             "role": "agg",
-                            "select": "hottest",
+                            "workers": "hottest",
                             "respawn": True,
+                            "wait_ready": True,
                         },
                         {
                             "after_seconds": 15,
-                            "type": "rolling_replace",
+                            "type": "rolling_restart",
                             "role": "agg",
                             "max_unavailable": 1,
                         },
@@ -1612,9 +1613,10 @@ class TestChaosDryRun:
         show_config_details(config)
         output = capsys.readouterr().out
         assert "Chaos Fault Injection" in output
-        assert "kill_worker" in output
-        assert "hottest(1)" in output
-        assert "rolling_replace" in output
+        assert "kill" in output
+        assert "workers=hottest" in output
+        assert "wait_ready" in output
+        assert "rolling_restart" in output
         assert "chaos_events.json" in output
         assert "seed=7" in output
 

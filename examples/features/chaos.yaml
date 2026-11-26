@@ -1,8 +1,8 @@
 # Concurrent chaos fault injection alongside a benchmark on a Dynamo mocker cluster.
 #
 # Two aggregated workers behind Dynamo with `roles.agg.restart` enabled and a
-# `chaos:` timeline that kills the hottest worker, stalls a process, and runs a
-# rolling replacement while the benchmark runs. Events and timestamps land in
+# `chaos:` timeline that kills the hottest worker, freezes a process, and runs a
+# rolling restart while the benchmark runs. Events and timestamps land in
 # `logs/chaos_events.json`.
 #
 # Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
@@ -55,21 +55,22 @@ chaos:
   events:
     - name: "kill-hottest"
       after_seconds: 30
-      type: kill_worker
+      type: kill
       role: agg
-      select: hottest
+      workers: hottest
       signal: KILL
       respawn: true
-    - name: "stall-worker"
+      wait_ready: true
+    - name: "freeze-engine"
       after_seconds: 30
-      type: stall_process
+      type: freeze
       role: agg
-      select: random
-      target: worker
+      workers: random
+      process: engine
       duration_seconds: 15
-    - name: "rolling-replace"
+    - name: "rolling-restart"
       after_seconds: 30
-      type: rolling_replace
+      type: rolling_restart
       role: agg
       max_unavailable: 1
       graceful: true

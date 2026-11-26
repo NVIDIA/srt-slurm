@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fault injection action implementations (kill_worker, kill_process, stall_process, rolling_replace)."""
+"""Fault injection action implementations (kill, freeze, rolling_restart)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.processes import list_step_ids, signal_step
+from srtctl.core.schema import CHAOS_PROCESS_ALIASES
 from srtctl.core.slurm import start_srun_process
 
 if TYPE_CHECKING:
@@ -215,14 +216,15 @@ def _prepare_destructive_target(
     target: WorkerTarget,
     *,
     respawn: bool,
+    wait_ready: bool = False,
     backoff_seconds: float = 0.0,
 ) -> int | None:
     """Prevent a targeted kill from aborting the job; opt into supervisor relaunch when requested.
 
-    Returns the endpoint's prior restart count when ``respawn`` is True, else None.
+    Returns the endpoint's prior restart count when the supervisor will relaunch it, else None.
     """
     live_names = ctx.active_step_names(target)
-    if respawn and ctx.supervisor is not None:
+    if ctx.supervisor is not None and (respawn or wait_ready):
         return ctx.supervisor.ensure_relaunch(
             target.key,
             list(target.processes),
@@ -233,6 +235,45 @@ def _prepare_destructive_target(
     for name in live_names:
         ctx.registry.set_critical(name, False)
     return None
+
+
+def _wait_for_relaunches(
+    ctx: ChaosContext,
+    pending: list[tuple[WorkerTarget, int]],
+    *,
+    timeout_seconds: float,
+    event_index: int,
+    label: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Wait until ``WorkerSupervisor`` finishes relaunching every ``(target, prev_restarts)`` pair."""
+    if ctx.supervisor is None or not pending:
+        return [], False
+    deadline = time.monotonic() + timeout_seconds
+    remaining = list(pending)
+    completed: list[dict[str, Any]] = []
+    while remaining and not ctx.should_stop():
+        still: list[tuple[WorkerTarget, int]] = []
+        for target, prev_restarts in remaining:
+            done, outcome = ctx.supervisor.relaunch_status(target.key, prev_restarts=prev_restarts)
+            if done:
+                completed.append({"worker": target.label, "outcome": outcome})
+                logger.info("Chaos[%d] %s: %s relaunch %s", event_index, label, target.label, outcome)
+            else:
+                still.append((target, prev_restarts))
+        remaining = still
+        if not remaining or time.monotonic() >= deadline:
+            break
+        ctx.wait(1.0)
+    timed_out = bool(remaining) and not ctx.should_stop()
+    if timed_out:
+        logger.warning(
+            "Chaos[%d] %s: timed out after %.0fs waiting for %s",
+            event_index,
+            label,
+            timeout_seconds,
+            [t.label for t, _ in remaining],
+        )
+    return completed, timed_out
 
 
 def _signal_worker_steps(
@@ -268,103 +309,121 @@ def _signal_worker_steps(
     return results
 
 
-def _resolve_process_pattern(event: ChaosEventConfig, ctx: ChaosContext) -> str:
-    if event.process_name:
-        return event.process_name
+def _resolve_process_pattern(event: ChaosEventConfig, ctx: ChaosContext) -> str | None:
+    """Resolve ``event.effective_process`` to a cmdline substring, or None for step-level kills."""
+    proc = event.effective_process
+    if proc is None:
+        return None
+    if proc not in CHAOS_PROCESS_ALIASES:
+        return proc
     backend = ctx.config.backend_for_role(event.role)
-    pattern = backend.fault_process_target(event.target)
+    pattern = backend.fault_process_target(proc)
     if not pattern:
         raise RuntimeError(
-            f"No default process pattern for target={event.target!r} on backend {backend.type!r}; "
-            "set process_name explicitly"
+            f"No default process pattern for process={proc!r} on backend {backend.type!r}; "
+            "set process to an explicit cmdline substring"
         )
     return pattern
 
 
-def execute_kill_worker(
+def execute_kill(
     event: ChaosEventConfig,
     targets: list[WorkerTarget],
     ctx: ChaosContext,
     event_index: int,
 ) -> dict[str, Any]:
-    """Kill the Slurm step(s) of each targeted worker endpoint."""
+    """Kill the worker step(s) or matched engine/rank subprocess(es) for each targeted worker."""
     sig = event.normalized_signal
-    step_ids = list_step_ids(ctx.runtime.job_id)
-    outcomes: list[dict[str, Any]] = []
-    for target in targets:
-        live_names = ctx.active_step_names(target)
-        _prepare_destructive_target(ctx, target, respawn=event.respawn)
-        step_results = _signal_worker_steps(ctx, live_names, sig, step_ids=step_ids)
-        logger.warning(
-            "Chaos[%d] kill_worker: %s -> SIG%s (%s, respawn=%s)",
-            event_index,
-            target.label,
-            sig,
-            live_names,
-            event.respawn,
-        )
-        outcomes.append({"worker": target.label, "steps": step_results, "respawn": event.respawn})
-    return {"signal": f"SIG{sig}", "workers": outcomes}
-
-
-def execute_kill_process(
-    event: ChaosEventConfig,
-    targets: list[WorkerTarget],
-    ctx: ChaosContext,
-    event_index: int,
-) -> dict[str, Any]:
-    """Send a signal to matched engine/rank subprocess(es) inside each targeted worker."""
     pattern = _resolve_process_pattern(event, ctx)
-    sig = event.normalized_signal
     step_ids = list_step_ids(ctx.runtime.job_id) or {}
     outcomes: list[dict[str, Any]] = []
+    relaunch_watch: list[tuple[WorkerTarget, int]] = []
 
     for target in targets:
         live_names = ctx.active_step_names(target)
-        _prepare_destructive_target(ctx, target, respawn=event.respawn)
-        step_num = _step_numeric_id(step_ids.get(live_names[0])) if live_names else None
-        node = target.leader.node
-        payload: dict[str, Any] = {
-            "pattern": pattern,
-            "step_num": step_num,
-            "rank": event.rank,
-            "signal": sig,
-            "seed": ctx.rng.randint(0, 2**31 - 1),
-        }
-        res = run_node_python(
-            node,
-            payload,
-            log_dir=ctx.runtime.log_dir,
-            tag=f"kill_{event_index}_{target.label}",
-            het_group=target.leader.het_group,
+        prev_restarts = _prepare_destructive_target(
+            ctx,
+            target,
+            respawn=event.respawn,
+            wait_ready=event.wait_ready,
         )
-        signalled = res.get("signalled") or []
-        if not signalled:
-            raise RuntimeError(
-                f"kill_process matched {res.get('matched', 0)} process(es) for pattern={pattern!r} "
-                f"rank={event.rank!r} on {target.label} ({node}); nothing signalled"
+        if prev_restarts is not None and event.wait_ready:
+            relaunch_watch.append((target, prev_restarts))
+
+        if pattern is None:
+            step_results = _signal_worker_steps(ctx, live_names, sig, step_ids=step_ids or None)
+            logger.warning(
+                "Chaos[%d] kill (step): %s -> SIG%s (%s, respawn=%s, wait_ready=%s)",
+                event_index,
+                target.label,
+                sig,
+                live_names,
+                event.respawn,
+                event.wait_ready,
             )
-        logger.warning(
-            "Chaos[%d] kill_process: %s (%s) pattern=%r rank=%r -> SIG%s pids=%s",
-            event_index,
-            target.label,
-            node,
-            pattern,
-            event.rank,
-            sig,
-            [item["pid"] for item in signalled],
-        )
-        outcomes.append(
-            {
-                "worker": target.label,
-                "node": node,
+            outcomes.append({"worker": target.label, "steps": step_results, "respawn": event.respawn})
+        else:
+            step_num = _step_numeric_id(step_ids.get(live_names[0])) if live_names else None
+            node = target.leader.node
+            payload: dict[str, Any] = {
                 "pattern": pattern,
-                "matched": res.get("matched", 0),
-                "signalled": signalled,
-                "errors": res.get("errors") or [],
+                "step_num": step_num,
+                "rank": event.rank,
+                "signal": sig,
+                "seed": ctx.rng.randint(0, 2**31 - 1),
             }
+            res = run_node_python(
+                node,
+                payload,
+                log_dir=ctx.runtime.log_dir,
+                tag=f"kill_{event_index}_{target.label}",
+                het_group=target.leader.het_group,
+            )
+            signalled = res.get("signalled") or []
+            if not signalled:
+                raise RuntimeError(
+                    f"kill matched {res.get('matched', 0)} process(es) for pattern={pattern!r} "
+                    f"rank={event.rank!r} on {target.label} ({node}); nothing signalled"
+                )
+            logger.warning(
+                "Chaos[%d] kill (process): %s (%s) pattern=%r rank=%r -> SIG%s pids=%s",
+                event_index,
+                target.label,
+                node,
+                pattern,
+                event.rank,
+                sig,
+                [item["pid"] for item in signalled],
+            )
+            outcomes.append(
+                {
+                    "worker": target.label,
+                    "node": node,
+                    "pattern": pattern,
+                    "matched": res.get("matched", 0),
+                    "signalled": signalled,
+                    "errors": res.get("errors") or [],
+                }
+            )
+
+    details: dict[str, Any] = {
+        "scope": "process" if pattern is not None else "step",
+        "signal": f"SIG{sig}",
+        "workers": outcomes,
+    }
+    if pattern is not None:
+        details["pattern"] = pattern
+    if event.wait_ready and relaunch_watch:
+        recovered, timed_out = _wait_for_relaunches(
+            ctx,
+            relaunch_watch,
+            timeout_seconds=event.timeout_seconds,
+            event_index=event_index,
+            label="kill",
         )
-    return {"signal": f"SIG{sig}", "pattern": pattern, "workers": outcomes}
+        details["recovered"] = recovered
+        details["wait_ready_timed_out"] = timed_out
+    return details
 
 
 def resume_stalled_processes(
@@ -412,7 +471,7 @@ def resume_stalled_processes(
     return results
 
 
-def execute_stall_process(
+def execute_freeze(
     event: ChaosEventConfig,
     targets: list[WorkerTarget],
     ctx: ChaosContext,
@@ -420,6 +479,7 @@ def execute_stall_process(
 ) -> dict[str, Any]:
     """Pause matched subprocess(es) with ``SIGSTOP``, verify ``/proc/<pid>/stat`` == ``T``, then resume."""
     pattern = _resolve_process_pattern(event, ctx)
+    assert pattern is not None  # effective_process defaults to "engine" on freeze
     step_ids = list_step_ids(ctx.runtime.job_id) or {}
     stalled_now: list[StalledProcess] = []
     worker_outcomes: list[dict[str, Any]] = []
@@ -441,14 +501,14 @@ def execute_stall_process(
             node,
             payload,
             log_dir=ctx.runtime.log_dir,
-            tag=f"stall_{event_index}_{target.label}",
+            tag=f"freeze_{event_index}_{target.label}",
             het_group=target.leader.het_group,
         )
         signalled = res.get("signalled") or []
         if not signalled:
             raise RuntimeError(
-                f"stall_process matched {res.get('matched', 0)} process(es) for pattern={pattern!r} "
-                f"rank={event.rank!r} on {target.label} ({node}); nothing stalled"
+                f"freeze matched {res.get('matched', 0)} process(es) for pattern={pattern!r} "
+                f"rank={event.rank!r} on {target.label} ({node}); nothing frozen"
             )
         verified = res.get("verified_states") or {}
         for item in signalled:
@@ -457,9 +517,9 @@ def execute_stall_process(
             ctx.register_stall(sp)
         bad_states = {pid: st for pid, st in verified.items() if st != "T"}
         if bad_states:
-            raise RuntimeError(f"stall_process SIGSTOP verification failed on {target.label} ({node}): {bad_states}")
+            raise RuntimeError(f"freeze SIGSTOP verification failed on {target.label} ({node}): {bad_states}")
         logger.warning(
-            "Chaos[%d] stall_process: %s (%s) SIGSTOP verified (state=T) pids=%s",
+            "Chaos[%d] freeze: %s (%s) SIGSTOP verified (state=T) pids=%s",
             event_index,
             target.label,
             node,
@@ -477,7 +537,7 @@ def execute_stall_process(
 
     resume_results: list[dict[str, Any]] = []
     if event.duration_seconds is not None:
-        logger.info("Chaos[%d] stall_process: holding for %.1fs before SIGCONT", event_index, event.duration_seconds)
+        logger.info("Chaos[%d] freeze: holding for %.1fs before SIGCONT", event_index, event.duration_seconds)
         try:
             ctx.wait(event.duration_seconds)
         finally:
@@ -492,26 +552,26 @@ def execute_stall_process(
     }
 
 
-def execute_rolling_replace(
+def execute_rolling_restart(
     event: ChaosEventConfig,
     targets: list[WorkerTarget],
     ctx: ChaosContext,
     event_index: int,
 ) -> dict[str, Any]:
-    """Replace every worker of ``event.role`` in a sliding window capped at ``max_unavailable``."""
+    """Restart every worker of ``event.role`` in a sliding window capped at ``max_unavailable``."""
     if ctx.supervisor is None:
-        raise RuntimeError("rolling_replace requires WorkerSupervisor on the orchestrator")
+        raise RuntimeError("rolling_restart requires WorkerSupervisor on the orchestrator")
 
     ordered = sorted(targets, key=lambda t: (t.index, t.key[2]))
     sig = "TERM" if event.graceful else "KILL"
     cap = min(event.max_unavailable, len(ordered))
     queue = list(ordered)
     in_flight: list[tuple[WorkerTarget, int]] = []  # (target, prev_restarts)
-    replaced: list[dict[str, Any]] = []
+    restarted: list[dict[str, Any]] = []
     deadline = time.monotonic() + event.timeout_seconds
 
     logger.warning(
-        "Chaos[%d] rolling_replace: role=%s total=%d max_unavailable=%d signal=SIG%s timeout=%.0fs",
+        "Chaos[%d] rolling_restart: role=%s total=%d max_unavailable=%d signal=SIG%s timeout=%.0fs",
         event_index,
         event.role,
         len(ordered),
@@ -521,7 +581,6 @@ def execute_rolling_replace(
     )
 
     while (queue or in_flight) and not ctx.should_stop():
-        # Refill up to max_unavailable.
         if queue and len(in_flight) < cap:
             step_ids = list_step_ids(ctx.runtime.job_id)
             while queue and len(in_flight) < cap:
@@ -532,7 +591,7 @@ def execute_rolling_replace(
                 _signal_worker_steps(ctx, live_names, sig, step_ids=step_ids)
                 in_flight.append((target, prev_restarts))
                 logger.info(
-                    "Chaos[%d] rolling_replace: stopped %s (%s); in_flight=%d/%d remaining=%d",
+                    "Chaos[%d] rolling_restart: stopped %s (%s); in_flight=%d/%d remaining=%d",
                     event_index,
                     target.label,
                     f"SIG{sig}",
@@ -545,8 +604,8 @@ def execute_rolling_replace(
         for target, prev_restarts in in_flight:
             done, outcome = ctx.supervisor.relaunch_status(target.key, prev_restarts=prev_restarts)
             if done:
-                replaced.append({"worker": target.label, "outcome": outcome})
-                logger.info("Chaos[%d] rolling_replace: %s replacement %s", event_index, target.label, outcome)
+                restarted.append({"worker": target.label, "outcome": outcome})
+                logger.info("Chaos[%d] rolling_restart: %s replacement %s", event_index, target.label, outcome)
             else:
                 still_in_flight.append((target, prev_restarts))
         in_flight = still_in_flight
@@ -555,10 +614,10 @@ def execute_rolling_replace(
             break
         if time.monotonic() >= deadline:
             logger.warning(
-                "Chaos[%d] rolling_replace: timed out after %.0fs (%d/%d replaced)",
+                "Chaos[%d] rolling_restart: timed out after %.0fs (%d/%d restarted)",
                 event_index,
                 event.timeout_seconds,
-                len(replaced),
+                len(restarted),
                 len(ordered),
             )
             break
@@ -569,7 +628,7 @@ def execute_rolling_replace(
         "signal": f"SIG{sig}",
         "max_unavailable": cap,
         "total": len(ordered),
-        "replaced": replaced,
+        "restarted": restarted,
         "timed_out": bool(queue or in_flight) and not ctx.should_stop(),
     }
 
@@ -578,8 +637,7 @@ ActionHandler = Callable[["ChaosEventConfig", list["WorkerTarget"], "ChaosContex
 
 # Action dispatch table (names go in tables, never in branches).
 ACTION_HANDLERS: dict[str, ActionHandler] = {
-    "kill_worker": execute_kill_worker,
-    "kill_process": execute_kill_process,
-    "stall_process": execute_stall_process,
-    "rolling_replace": execute_rolling_replace,
+    "kill": execute_kill,
+    "freeze": execute_freeze,
+    "rolling_restart": execute_rolling_restart,
 }

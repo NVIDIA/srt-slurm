@@ -141,7 +141,7 @@ class SGLangBackend(Backend):
     fault_process_targets: ClassVar[Mapping[str, str]] = {
         "main": "dynamo.sglang",
         "engine": "sglang::scheduler",
-        "worker": "sglang::scheduler",
+        "rank": "sglang::scheduler",
     }
 
     # Mooncake KV store - launches mooncake_master on infra node and injects

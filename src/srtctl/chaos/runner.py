@@ -48,7 +48,7 @@ class ChaosEventRecord:
     name: str
     type: str
     role: str
-    select: str
+    workers: int | list[int] | str
     status: str  # "completed" | "skipped" | "failed"
     started_at: str
     started_at_ns: int
@@ -241,7 +241,7 @@ class ChaosRunner:
             name=event.name or f"{event.type}_{idx}",
             type=event.type,
             role=event.role,
-            select="all" if event.type == "rolling_replace" else event.select,
+            workers="all" if event.type == "rolling_restart" else event.workers,
             status="skipped",
             started_at=iso,
             started_at_ns=ns,
@@ -255,13 +255,13 @@ class ChaosRunner:
 
     def _execute_event(self, idx: int, event: ChaosEventConfig) -> None:
         started_iso, started_ns = _now_utc()
-        select_label = "all" if event.type == "rolling_replace" else event.select
+        workers_label: int | list[int] | str = "all" if event.type == "rolling_restart" else event.workers
         rec = ChaosEventRecord(
             index=idx,
             name=event.name or f"{event.type}_{idx}",
             type=event.type,
             role=event.role,
-            select=select_label,
+            workers=workers_label,
             status="running",
             started_at=started_iso,
             started_at_ns=started_ns,
@@ -272,9 +272,9 @@ class ChaosRunner:
 
         try:
             candidates = self._ctx.candidates_for_role(event.role)
-            if event.type == "rolling_replace":
+            if event.type == "rolling_restart":
                 chosen = candidates
-                sel_info: dict[str, Any] = {"select": "all", "chosen": [t.label for t in chosen]}
+                sel_info: dict[str, Any] = {"workers": "all", "chosen": [t.label for t in chosen]}
             else:
                 chosen, sel_info = resolve_worker_targets(
                     event,
@@ -288,7 +288,7 @@ class ChaosRunner:
             rec.targets = [t.label for t in chosen]
             rec.selection = sel_info
             if not chosen:
-                raise RuntimeError(f"No worker endpoints matched for role={event.role!r} select={event.select!r}")
+                raise RuntimeError(f"No worker endpoints matched for role={event.role!r} workers={event.workers!r}")
             handler = ACTION_HANDLERS[event.type]
             rec.details = handler(event, chosen, self._ctx, idx)
             rec.status = "completed"

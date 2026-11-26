@@ -663,12 +663,12 @@
               "type": "null"
             }
           ],
-          "description": "Optional RNG seed for deterministic ``select: random`` and ``rank: random`` selection.",
+          "description": "Optional RNG seed for deterministic ``workers: random`` and ``rank: random`` selection.",
           "default": null
         },
         "hot_metric": {
           "type": "string",
-          "description": "Primary Prometheus metric scraped from candidate workers when resolving ``select: hottest``. Falls back to engine running-request gauges, then worker index order.",
+          "description": "Primary Prometheus metric scraped from candidate workers when resolving ``workers: hottest``. Falls back to engine running-request gauges, then worker index order.",
           "default": "dynamo_component_inflight_requests"
         }
       },
@@ -680,12 +680,11 @@
       "properties": {
         "type": {
           "enum": [
-            "kill_worker",
-            "kill_process",
-            "stall_process",
-            "rolling_replace"
+            "kill",
+            "freeze",
+            "rolling_restart"
           ],
-          "description": "Fault action to run: ``kill_worker`` (signal the worker step), ``kill_process`` (signal matched engine/rank subprocesses on the worker node), ``stall_process`` (SIGSTOP, verify ``/proc/<pid>/stat`` state ``T``, hold, then SIGCONT), or ``rolling_replace`` (replace all workers of ``role`` in sliding ``max_unavailable`` waves)."
+          "description": "Fault action to run: ``kill`` (signal the worker step, or a matched subprocess when ``process`` is set), ``freeze`` (SIGSTOP, verify ``/proc/<pid>/stat`` state ``T``, hold, then SIGCONT), or ``rolling_restart`` (restart every worker of ``role`` in sliding ``max_unavailable`` waves)."
         },
         "after_seconds": {
           "type": "number",
@@ -701,38 +700,25 @@
           "description": "Worker role to target (``prefill``, ``decode``, or ``agg``).",
           "default": "agg"
         },
-        "select": {
-          "enum": [
-            "index",
-            "random",
-            "hottest",
-            "all"
+        "workers": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              }
+            },
+            {
+              "type": "string"
+            }
           ],
-          "description": "Target selection mode within ``role`` (``index``, ``random``, ``hottest``, or ``all``). Used by ``kill_worker``, ``kill_process``, and ``stall_process``.",
-          "default": "index"
+          "description": "Which worker endpoint(s) of ``role`` to target on ``kill`` or ``freeze``: a zero-based index (``0``), list of indices (``[0, 1]``), ``all``, ``hottest`` / ``hottest:<N>``, or ``random`` / ``random:<N>``.",
+          "default": 0
         },
-        "indices": {
-          "type": "array",
-          "items": {
-            "type": "integer"
-          },
-          "description": "Zero-based worker indices within ``role`` used when ``select: index``."
-        },
-        "count": {
-          "type": "integer",
-          "description": "Number of workers to pick when ``select`` is ``hottest`` or ``random``.",
-          "default": 1
-        },
-        "target": {
-          "enum": [
-            "main",
-            "engine",
-            "worker"
-          ],
-          "description": "Semantic process target (``main``, ``engine``, or ``worker``) resolved from the role backend's ``fault_process_targets`` for ``kill_process`` and ``stall_process``. Ignored when ``process_name`` is set.",
-          "default": "worker"
-        },
-        "process_name": {
+        "process": {
           "anyOf": [
             {
               "type": "string"
@@ -741,7 +727,7 @@
               "type": "null"
             }
           ],
-          "description": "Explicit cmdline substring matched on the worker node for ``kill_process`` or ``stall_process``, overriding ``target``.",
+          "description": "Optional process selector on the worker node. Omit on ``kill`` to signal the whole worker step. Set to a semantic alias (``main``, ``engine``, or ``rank`` \u2014 resolved from the role backend's ``fault_process_targets``) or any literal cmdline substring to target subprocesses inside the worker. On ``freeze``, defaults to ``engine``.",
           "default": null
         },
         "rank": {
@@ -756,12 +742,12 @@
               ]
             }
           ],
-          "description": "Which matched process rank (sorted by PID) to signal inside each targeted worker: a zero-based integer index, ``random``, or ``all``.",
+          "description": "Which matched subprocess (sorted by PID) to signal inside each targeted worker when ``process`` is active: a zero-based integer index, ``random``, or ``all``.",
           "default": 0
         },
         "signal": {
           "type": "string",
-          "description": "Signal sent by ``kill_worker`` or ``kill_process`` (e.g. ``KILL``, ``TERM``, ``SIGKILL``).",
+          "description": "Signal sent by ``kill`` (e.g. ``KILL``, ``TERM``, ``SIGKILL``).",
           "default": "KILL"
         },
         "duration_seconds": {
@@ -773,27 +759,32 @@
               "type": "null"
             }
           ],
-          "description": "Hold duration in seconds for ``stall_process`` before sending ``SIGCONT``. Omit to hold until the benchmark finishes and teardown resumes the process.",
+          "description": "Hold duration in seconds for ``freeze`` before sending ``SIGCONT``. Omit to hold until the benchmark finishes and teardown resumes the process.",
           "default": null
         },
         "respawn": {
           "type": "boolean",
-          "description": "When true on ``kill_worker`` or ``kill_process``, hand the targeted endpoint to the worker supervisor so it relaunches in place even when ``roles.<role>.restart`` is ``never``.",
+          "description": "When true on ``kill``, hand the targeted endpoint to the worker supervisor so it relaunches in place even when ``roles.<role>.restart`` is ``never``.",
+          "default": false
+        },
+        "wait_ready": {
+          "type": "boolean",
+          "description": "When true on ``kill``, wait up to ``timeout_seconds`` for the worker supervisor's ``/health`` probe on the relaunched worker(s) before advancing to the next event. Requires ``respawn: true`` or ``roles.<role>.restart`` enabled.",
           "default": false
         },
         "max_unavailable": {
           "type": "integer",
-          "description": "Maximum number of worker endpoints taken down at once during ``rolling_replace``.",
+          "description": "Maximum number of worker endpoints taken down at once during ``rolling_restart``.",
           "default": 1
         },
         "graceful": {
           "type": "boolean",
-          "description": "When true on ``rolling_replace``, stop workers with ``SIGTERM`` instead of ``SIGKILL``.",
+          "description": "When true on ``rolling_restart``, stop workers with ``SIGTERM`` instead of ``SIGKILL``.",
           "default": true
         },
         "timeout_seconds": {
           "type": "number",
-          "description": "Maximum time in seconds for ``rolling_replace`` to finish replacing and readying all workers of ``role``.",
+          "description": "Maximum time in seconds for ``rolling_restart`` or ``kill`` with ``wait_ready: true``.",
           "default": 600.0
         },
         "name": {

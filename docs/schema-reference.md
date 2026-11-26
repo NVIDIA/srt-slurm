@@ -331,8 +331,8 @@ Concurrent fault injection timeline executed while the benchmark runs.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `events` | list[[ChaosEventConfig](#chaoseventconfig)] | `[]` | Ordered list of fault events to execute during the benchmark. |
-| `seed` | int \| None | `None` | Optional RNG seed for deterministic ``select: random`` and ``rank: random`` selection. |
-| `hot_metric` | str | `'dynamo_component_inflight_requests'` | Primary Prometheus metric scraped from candidate workers when resolving ``select: hottest``. Falls back to engine running-request gauges, then worker index order. |
+| `seed` | int \| None | `None` | Optional RNG seed for deterministic ``workers: random`` and ``rank: random`` selection. |
+| `hot_metric` | str | `'dynamo_component_inflight_requests'` | Primary Prometheus metric scraped from candidate workers when resolving ``workers: hottest``. Falls back to engine running-request gauges, then worker index order. |
 
 ### ServiceConfig
 
@@ -523,21 +523,19 @@ One scheduled fault injection event executed alongside the benchmark.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `type` | one of `'kill_worker'`, `'kill_process'`, `'stall_process'`, `'rolling_replace'` | required | Fault action to run: ``kill_worker`` (signal the worker step), ``kill_process`` (signal matched engine/rank subprocesses on the worker node), ``stall_process`` (SIGSTOP, verify ``/proc/<pid>/stat`` state ``T``, hold, then SIGCONT), or ``rolling_replace`` (replace all workers of ``role`` in sliding ``max_unavailable`` waves). |
+| `type` | one of `'kill'`, `'freeze'`, `'rolling_restart'` | required | Fault action to run: ``kill`` (signal the worker step, or a matched subprocess when ``process`` is set), ``freeze`` (SIGSTOP, verify ``/proc/<pid>/stat`` state ``T``, hold, then SIGCONT), or ``rolling_restart`` (restart every worker of ``role`` in sliding ``max_unavailable`` waves). |
 | `after_seconds` | float | `0.0` | Delay in seconds after the previous event (or benchmark start for the first event) before running this event. |
 | `role` | one of `'prefill'`, `'decode'`, `'agg'` | `'agg'` | Worker role to target (``prefill``, ``decode``, or ``agg``). |
-| `select` | one of `'index'`, `'random'`, `'hottest'`, `'all'` | `'index'` | Target selection mode within ``role`` (``index``, ``random``, ``hottest``, or ``all``). Used by ``kill_worker``, ``kill_process``, and ``stall_process``. |
-| `indices` | list[int] | `<lambda>()` | Zero-based worker indices within ``role`` used when ``select: index``. |
-| `count` | int | `1` | Number of workers to pick when ``select`` is ``hottest`` or ``random``. |
-| `target` | one of `'main'`, `'engine'`, `'worker'` | `'worker'` | Semantic process target (``main``, ``engine``, or ``worker``) resolved from the role backend's ``fault_process_targets`` for ``kill_process`` and ``stall_process``. Ignored when ``process_name`` is set. |
-| `process_name` | str \| None | `None` | Explicit cmdline substring matched on the worker node for ``kill_process`` or ``stall_process``, overriding ``target``. |
-| `rank` | int \| one of `'random'`, `'all'` | `0` | Which matched process rank (sorted by PID) to signal inside each targeted worker: a zero-based integer index, ``random``, or ``all``. |
-| `signal` | str | `'KILL'` | Signal sent by ``kill_worker`` or ``kill_process`` (e.g. ``KILL``, ``TERM``, ``SIGKILL``). |
-| `duration_seconds` | float \| None | `None` | Hold duration in seconds for ``stall_process`` before sending ``SIGCONT``. Omit to hold until the benchmark finishes and teardown resumes the process. |
-| `respawn` | bool | `False` | When true on ``kill_worker`` or ``kill_process``, hand the targeted endpoint to the worker supervisor so it relaunches in place even when ``roles.<role>.restart`` is ``never``. |
-| `max_unavailable` | int | `1` | Maximum number of worker endpoints taken down at once during ``rolling_replace``. |
-| `graceful` | bool | `True` | When true on ``rolling_replace``, stop workers with ``SIGTERM`` instead of ``SIGKILL``. |
-| `timeout_seconds` | float | `600.0` | Maximum time in seconds for ``rolling_replace`` to finish replacing and readying all workers of ``role``. |
+| `workers` | int \| list[int] \| str | `0` | Which worker endpoint(s) of ``role`` to target on ``kill`` or ``freeze``: a zero-based index (``0``), list of indices (``[0, 1]``), ``all``, ``hottest`` / ``hottest:<N>``, or ``random`` / ``random:<N>``. |
+| `process` | str \| None | `None` | Optional process selector on the worker node. Omit on ``kill`` to signal the whole worker step. Set to a semantic alias (``main``, ``engine``, or ``rank`` — resolved from the role backend's ``fault_process_targets``) or any literal cmdline substring to target subprocesses inside the worker. On ``freeze``, defaults to ``engine``. |
+| `rank` | int \| one of `'random'`, `'all'` | `0` | Which matched subprocess (sorted by PID) to signal inside each targeted worker when ``process`` is active: a zero-based integer index, ``random``, or ``all``. |
+| `signal` | str | `'KILL'` | Signal sent by ``kill`` (e.g. ``KILL``, ``TERM``, ``SIGKILL``). |
+| `duration_seconds` | float \| None | `None` | Hold duration in seconds for ``freeze`` before sending ``SIGCONT``. Omit to hold until the benchmark finishes and teardown resumes the process. |
+| `respawn` | bool | `False` | When true on ``kill``, hand the targeted endpoint to the worker supervisor so it relaunches in place even when ``roles.<role>.restart`` is ``never``. |
+| `wait_ready` | bool | `False` | When true on ``kill``, wait up to ``timeout_seconds`` for the worker supervisor's ``/health`` probe on the relaunched worker(s) before advancing to the next event. Requires ``respawn: true`` or ``roles.<role>.restart`` enabled. |
+| `max_unavailable` | int | `1` | Maximum number of worker endpoints taken down at once during ``rolling_restart``. |
+| `graceful` | bool | `True` | When true on ``rolling_restart``, stop workers with ``SIGTERM`` instead of ``SIGKILL``. |
+| `timeout_seconds` | float | `600.0` | Maximum time in seconds for ``rolling_restart`` or ``kill`` with ``wait_ready: true``. |
 | `name` | str \| None | `None` | Optional label recorded in ``chaos_events.json``. |
 
 ### SourceConfig

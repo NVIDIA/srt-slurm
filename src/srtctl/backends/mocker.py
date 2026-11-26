@@ -96,7 +96,7 @@ class MockerBackend(Backend):
     fault_process_targets: ClassVar[Mapping[str, str]] = {
         "main": "dynamo.mocker",
         "engine": "dynamo.mocker",
-        "worker": "dynamo.mocker",
+        "rank": "dynamo.mocker",
     }
 
     # =========================================================================

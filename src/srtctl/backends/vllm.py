@@ -410,7 +410,7 @@ class VLLMBackend(Backend):
     fault_process_targets: ClassVar[Mapping[str, str]] = {
         "main": "dynamo.vllm",
         "engine": "VLLM::EngineCore",
-        "worker": "VLLM::Worker",
+        "rank": "VLLM::Worker",
     }
 
     # DP process layout. Per-node lets vLLM manage the node-local portion of a

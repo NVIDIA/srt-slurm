@@ -6,10 +6,10 @@
 # - Automatic worker relaunch (`roles.agg.restart: on-failure`) via WorkerSupervisor
 # - Tachometer Prometheus collection (`observability.enabled: true`)
 # - Concurrent `chaos:` timeline exercising:
-#     1. `kill_worker` on the hottest worker (tests migration + failover + automatic respawn)
-#     2. `stall_process` on a random worker's scheduler (tests SIGSTOP/SIGCONT stall recovery)
-#     3. `kill_process` on rank 0 of a worker (tests subprocess crash detection + respawn)
-#     4. `rolling_replace` with `max_unavailable: 1` (tests graceful rolling replacement under load)
+#     1. `kill` on the hottest worker with `respawn` + `wait_ready` (tests migration + failover + respawn)
+#     2. `freeze` on a random worker's engine process (tests SIGSTOP/SIGCONT stall recovery)
+#     3. `kill` with `process: rank` on the hottest worker (tests subprocess crash + respawn)
+#     4. `rolling_restart` with `max_unavailable: 1` (tests graceful rolling restart under load)
 #
 # Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
 
@@ -75,31 +75,32 @@ chaos:
   events:
     - name: "kill-hottest-worker"
       after_seconds: 45
-      type: kill_worker
+      type: kill
       role: agg
-      select: hottest
+      workers: hottest
       signal: KILL
       respawn: true
-    - name: "stall-scheduler"
-      after_seconds: 150
-      type: stall_process
+      wait_ready: true
+    - name: "freeze-scheduler"
+      after_seconds: 30
+      type: freeze
       role: agg
-      select: random
-      target: worker
-      rank: 0
+      workers: random
+      process: engine
       duration_seconds: 15
     - name: "kill-scheduler-rank0"
-      after_seconds: 45
-      type: kill_process
+      after_seconds: 30
+      type: kill
       role: agg
-      select: hottest
-      target: worker
+      workers: hottest
+      process: rank
       rank: 0
       signal: KILL
       respawn: true
-    - name: "rolling-replace-graceful"
-      after_seconds: 150
-      type: rolling_replace
+      wait_ready: true
+    - name: "rolling-restart-graceful"
+      after_seconds: 30
+      type: rolling_restart
       role: agg
       max_unavailable: 1
       graceful: true

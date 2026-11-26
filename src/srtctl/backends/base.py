@@ -168,13 +168,13 @@ class Backend(ABC):
     #: Environment that turns on the engine's own NVTX ranges; the automatic nsys
     #: preset (``observability.nsys``) sets it on every worker it wraps.
     nvtx_environment: ClassVar[Mapping[str, str]] = {}
-    #: Semantic process target name (``main``, ``engine``, ``worker``) -> cmdline
-    #: substring matched on the worker node by ``kill_process`` and ``stall_process``
-    #: chaos events.
+    #: Semantic process target name (``main``, ``engine``, ``rank``) -> cmdline
+    #: substring matched on the worker node by ``kill`` (with ``process:``) and
+    #: ``freeze`` chaos events.
     fault_process_targets: ClassVar[Mapping[str, str]] = {}
 
     def fault_process_target(self, target: str) -> str | None:
-        """Resolve a semantic process target (``main``, ``engine``, or ``worker``) to a cmdline substring."""
+        """Resolve a semantic process target (``main``, ``engine``, or ``rank``) to a cmdline substring."""
         return self.fault_process_targets.get(target)
 
     @property

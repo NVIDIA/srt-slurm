@@ -569,28 +569,23 @@ def show_config_details(config: SrtConfig) -> None:
         chaos_table.add_column("Role", style="white", width=8)
         chaos_table.add_column("Target / Options", style="white")
         for idx, ev in enumerate(config.chaos.events):
-            if ev.type == "rolling_replace":
+            if ev.type == "rolling_restart":
                 detail = (
                     f"max_unavailable={ev.max_unavailable} "
                     f"{'graceful' if ev.graceful else 'force'} timeout={ev.timeout_seconds:g}s"
                 )
             else:
-                sel = (
-                    f"index={ev.indices}"
-                    if ev.select == "index"
-                    else f"{ev.select}({ev.count})"
-                    if ev.select in ("hottest", "random")
-                    else "all"
-                )
-                parts = [sel]
-                if ev.type in ("kill_process", "stall_process"):
-                    proc = ev.process_name or f"target={ev.target}"
-                    parts.append(f"{proc} rank={ev.rank}")
-                if ev.type in ("kill_worker", "kill_process"):
+                parts = [f"workers={ev.workers}"]
+                proc = ev.effective_process
+                if proc is not None:
+                    parts.append(f"process={proc} rank={ev.rank}")
+                if ev.type == "kill":
                     parts.append(f"SIG{ev.normalized_signal}")
                     if ev.respawn:
                         parts.append("respawn")
-                elif ev.type == "stall_process":
+                    if ev.wait_ready:
+                        parts.append("wait_ready")
+                elif ev.type == "freeze":
                     parts.append(
                         f"duration={ev.duration_seconds:g}s" if ev.duration_seconds is not None else "hold-until-end"
                     )

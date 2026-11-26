@@ -374,7 +374,7 @@ class TRTLLMBackend(Backend):
     fault_process_targets: ClassVar[Mapping[str, str]] = {
         "main": "dynamo.trtllm",
         "engine": "tensorrt_llm.llmapi.mgmn_worker_node",
-        "worker": "tensorrt_llm.llmapi.mgmn_worker_node",
+        "rank": "tensorrt_llm.llmapi.mgmn_worker_node",
     }
 
     def __post_init__(self) -> None:
