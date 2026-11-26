@@ -82,7 +82,7 @@ set -e
 # Setup directories
 SRTCTL_SOURCE="{{ srtctl_source }}"
 OUTPUT_BASE="{{ output_base }}"
-# SRTCTL_JOB_ID is set by launcher: docker, which runs this script without sbatch.
+# SRTCTL_JOB_ID is set by launcher: docker or host, which run this script without sbatch.
 JOB_ID="${SLURM_JOB_ID:-${SRTCTL_JOB_ID}}"
 OUTPUT_DIR="${OUTPUT_BASE}/${JOB_ID}"
 LOG_DIR="${OUTPUT_DIR}/logs"
@@ -133,7 +133,7 @@ export PATH="${SRTCTL_SOURCE}/bin:$HOME/.local/bin:$PATH"
 
 # Under Slurm, use a compute-specific venv so we don't pick up the login node's .venv/
 # (which may be built for a different arch, e.g. x86_64 login vs aarch64 compute).
-# A launcher: docker job (SRTCTL_JOB_ID) runs on the machine that ran apply, so it uses .venv.
+# A launcher: docker or host job (SRTCTL_JOB_ID) runs on the machine that ran apply, so it uses .venv.
 if [ -n "${SRTCTL_JOB_ID:-}" ]; then
     export UV_PROJECT_ENVIRONMENT="${SRTCTL_SOURCE}/.venv"
 else
@@ -176,8 +176,13 @@ cd "${SRTCTL_SOURCE}"
 # it down + rebuild; if N jobs do that at once they stomp each other with
 # "Directory not empty" / "Failed to spawn 'python -m'" / missing CACHEDIR.TAG
 # errors. The flock serializes only the venv init; the lock is released
-# before the actual sweep so jobs still run in parallel.
-flock -x "${UV_PROJECT_ENVIRONMENT}.lock" uv sync --python 3.12 --no-dev
+# before the actual sweep so jobs still run in parallel. macOS ships no flock(1); a
+# single-machine job there runs alone, so it syncs without the lock.
+if command -v flock &> /dev/null; then
+    flock -x "${UV_PROJECT_ENVIRONMENT}.lock" uv sync --python 3.12 --no-dev
+else
+    uv sync --python 3.12 --no-dev
+fi
 uv run --python 3.12 --no-dev --no-sync -m srtctl.cli.do_sweep "${OUTPUT_DIR}/{{ runtime_config_filename }}"{% if serve_only %} --serve-only{% endif %}
 EXIT_CODE=$?
 set -e  # Re-enable exit-on-error

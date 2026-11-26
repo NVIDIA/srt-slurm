@@ -1,0 +1,52 @@
+# vLLM aggregated on one GPU, for `launcher: host` (a machine with neither Slurm nor a
+# container runtime).
+#
+# Install vLLM so `vllm` is on the PATH of the shell you run srtctl from (a virtualenv
+# is fine), set `launcher: host` in srtslurm.yaml, then `srtctl apply -f` this file; see
+# docs/cluster-config.md#launcher-host. `model.container` is ignored under `host` and
+# kept so the same recipe also runs under `launcher: docker` and Slurm.
+#
+# The bundled benchmark scripts write their results to a fixed /logs directory, which
+# `launcher: host` cannot mount, so this recipe benchmarks with `vllm bench serve` as a
+# custom command against the frontend srtctl exports in SRT_FRONTEND_HOST/PORT.
+
+schema: 2
+name: "qwen3-0.6b-vllm-host-agg"
+
+model:
+  path: "hf:Qwen/Qwen3-0.6B"
+  container: "vllm/vllm-openai:v0.11.0"
+  precision: "bf16"
+
+resources:
+  gpu_type: "l4"
+  gpus_per_node: 1
+
+frontend:
+  type: vllm
+  enable_multiple_frontends: false
+
+engine:
+  type: vllm
+  set_visible_devices: true
+
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    env:
+      CUDA_VISIBLE_DEVICES: "0"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+
+benchmark:
+  type: "custom"
+  command: >-
+    vllm bench serve --backend vllm --model Qwen/Qwen3-0.6B
+    --base-url "http://${SRT_FRONTEND_HOST}:${SRT_FRONTEND_PORT}"
+    --dataset-name random --random-input-len 128 --random-output-len 128
+    --num-prompts 64 --max-concurrency 8

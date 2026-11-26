@@ -124,6 +124,16 @@ def test_launcher_and_docker_args_are_visible(tmp_path, monkeypatch, capsys):
     assert "Extra docker run args: --user 1000:1000" in out
 
 
+def test_host_launcher_is_visible(tmp_path, monkeypatch, capsys):
+    cluster_config = tmp_path / "srtslurm.yaml"
+    cluster_config.write_text(yaml.safe_dump({"launcher": "host"}))
+    monkeypatch.setenv("SRTSLURM_CONFIG", str(cluster_config))
+    show_config_details(_make_config())
+    out = capsys.readouterr().out
+    assert "Launcher: host" in out
+    assert "Extra docker run args" not in out
+
+
 def test_default_launcher_is_slurm(tmp_path, monkeypatch, capsys):
     cluster_config = tmp_path / "srtslurm.yaml"
     cluster_config.write_text(yaml.safe_dump({}))

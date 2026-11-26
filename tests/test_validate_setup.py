@@ -34,6 +34,14 @@ def _install(path: Path, image: bytes) -> None:
     path.chmod(0o755)
 
 
+@pytest.fixture(autouse=True)
+def _slurm_launcher(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """validate_setup asks the launcher what it needs; pin the default one, not the developer's srtslurm.yaml."""
+    cluster_config = tmp_path / "srtslurm-test.yaml"
+    cluster_config.write_text("launcher: slurm\n")
+    monkeypatch.setenv("SRTSLURM_CONFIG", str(cluster_config))
+
+
 class TestValidateSetup:
     """Tests for the validate_setup function."""
 

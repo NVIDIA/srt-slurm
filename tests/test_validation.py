@@ -9,6 +9,7 @@ all produce ValidationResult, never raise.
 
 from unittest.mock import patch
 
+import pytest
 import requests
 
 from srtctl.core.validation import (
@@ -663,3 +664,90 @@ class TestPreflightConfigVariants:
 
         assert results[0].ok is True
         assert not any(issue.code == "telemetry-container-not-available" for issue in results[0].errors)
+
+
+class TestPreflightFollowsTheLauncher:
+    """Images are checked only for a launcher that runs them; the model and the topology always are."""
+
+    MISSING_IMAGE = "/nonexistent/cluster/vllm.sqsh"
+
+    def _recipe(self, model_path, **extra):
+        return {
+            "schema": 2,
+            "name": "launcher-preflight",
+            "model": {"path": str(model_path), "container": self.MISSING_IMAGE, "precision": "bf16"},
+            "resources": {"gpu_type": "l4", "gpus_per_node": 1},
+            "roles": {"agg": {"nodes": 1, "workers": 1, "gpus": 1}},
+            **extra,
+        }
+
+    def test_host_ignores_missing_model_and_tachometer_images(self, tmp_path):
+        recipe = self._recipe(
+            tmp_path,
+            observability={
+                "tachometer": {
+                    "enabled": True,
+                    "dcgm_exporter": {"container_image": "/nonexistent/dcgm.sqsh", "port": 9401},
+                    "node_exporter": {"container_image": "/nonexistent/node.sqsh", "port": 9101},
+                },
+            },
+        )
+
+        (result,) = preflight_config_variants(recipe, cluster_config={"launcher": "host"})
+
+        assert result.ok is True
+        assert result.errors == []
+        assert result.container.ok is True
+        assert result.container.source == "launcher:host"
+        assert result.container.raw == self.MISSING_IMAGE
+        assert result.container.message == "not checked: launcher: host runs no container images"
+
+        (result,) = preflight_config_variants(recipe, cluster_config={"launcher": "slurm"})
+        assert {issue.code for issue in result.errors} == {
+            "container-not-available",
+            "tachometer-container-not-available",
+        }
+
+    def test_host_ignores_a_missing_power_exporter_image(self, tmp_path):
+        recipe = TestPreflightConfigVariants()._dcgm_power_recipe(
+            tmp_path, self.MISSING_IMAGE, "/nonexistent/dcgm.sqsh"
+        )
+
+        (result,) = preflight_config_variants(recipe, cluster_config={"launcher": "host"})
+        assert result.ok is True
+
+        (result,) = preflight_config_variants(recipe, cluster_config={"launcher": "slurm"})
+        assert {issue.code for issue in result.errors} == {
+            "container-not-available",
+            "telemetry-container-not-available",
+        }
+
+    def test_host_still_checks_the_model_and_the_topology(self, tmp_path):
+        recipe = self._recipe(tmp_path / "missing-model")
+        recipe["roles"]["agg"]["workers"] = 0
+
+        (result,) = preflight_config_variants(recipe, cluster_config={"launcher": "host"})
+
+        assert result.ok is False
+        assert {issue.code for issue in result.errors} == {"model-not-available", "topology-no-workers"}
+
+    @pytest.mark.parametrize(
+        "cluster_config",
+        [None, {}, {"launcher": "slurm"}, {"launcher": "docker"}, {"launcher": "kubernetes"}],
+        ids=["no-srtslurm-yaml", "default", "slurm", "docker", "unknown"],
+    )
+    def test_other_launchers_still_check_the_image(self, tmp_path, cluster_config):
+        (result,) = preflight_config_variants(self._recipe(tmp_path), cluster_config=cluster_config)
+
+        assert result.ok is False
+        assert [issue.code for issue in result.errors] == ["container-not-available"]
+
+    @pytest.mark.parametrize("launcher", ["host", "slurm"])
+    def test_an_empty_container_is_rejected_under_every_launcher(self, tmp_path, launcher):
+        """Host ignores the image, but the recipe must still name one to run under slurm and docker."""
+        recipe = self._recipe(tmp_path)
+        recipe["model"]["container"] = ""
+
+        (result,) = preflight_config_variants(recipe, cluster_config={"launcher": launcher})
+
+        assert [issue.code for issue in result.errors] == ["container-missing"]

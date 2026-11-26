@@ -951,6 +951,12 @@ class SweepOrchestrator(
             exit_code = self.finalize_cpu_power_host_telemetry(exit_code, interrupted=stop_event.is_set())
             stop_event.set()
             registry.cleanup()
+            # Whatever the job started and still runs (Slurm ends every step with the allocation;
+            # on one machine the launcher has to).
+            try:
+                get_launcher().stop_leftovers()
+            except Exception:
+                logger.exception("Stopping leftover processes failed; some may still be running")
             # After cleanup so the GPUs are idle before node state is reverted.
             self._run_host_teardown()
             if exit_code != 0:
@@ -1012,7 +1018,9 @@ def main():
 
         job_id = get_launcher().job_id()
         if not job_id:
-            logger.error("Not running inside a job (SLURM_JOB_ID, or SRTCTL_JOB_ID under launcher: docker, not set)")
+            logger.error(
+                "Not running inside a job (SLURM_JOB_ID, or SRTCTL_JOB_ID under launcher: docker or host, not set)"
+            )
             sys.exit(1)
 
         # Type narrowing: job_id is str after the check above

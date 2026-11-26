@@ -1,13 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for ``core/launcher.py``: launcher selection, the Docker launcher, and its validation."""
+"""Tests for ``core/launcher.py``: launcher selection, the Docker and host launchers, and their validation."""
 
 from __future__ import annotations
 
 import os
+import shlex
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -15,9 +17,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from srtctl.cli.submit import validate_setup
 from srtctl.core import launcher as launcher_mod
 from srtctl.core.docker import DockerLauncher
-from srtctl.core.launcher import LaunchSpec, SlurmLauncher, get_launcher
+from srtctl.core.host import HOST_PATH_ENV, HOST_VIRTUAL_ENV_ENV, ContainerPaths, HostLauncher, host_environment
+from srtctl.core.launcher import LaunchSpec, SlurmLauncher, get_launcher, launchers
 from srtctl.core.runtime import Nodes
 from srtctl.core.schema import SrtConfig
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
@@ -361,6 +365,673 @@ def test_mock_sweep_under_docker_launcher_places_everything_on_this_host(tmp_pat
     host = socket.gethostname()
     placed = {node for launch in launches for node in launch.get("nodelist") or ()}
     assert placed == {host}
+
+
+@pytest.fixture
+def host(monkeypatch, tmp_path) -> HostLauncher:
+    """A host launcher whose scratch directory lands under ``tmp_path / "tmp"``."""
+    monkeypatch.setenv("SRTCTL_JOB_ID", "host-test")
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr("srtctl.core.host.tempfile.gettempdir", lambda: str(tmp_path / "tmp"))
+    return HostLauncher()
+
+
+class TestHostSelection:
+    def test_host_from_cluster_config(self, cluster):
+        cluster(launcher="host")
+        assert isinstance(get_launcher(), HostLauncher)
+
+    def test_every_launcher_name_is_an_allowed_cluster_value(self):
+        from typing import get_args, get_type_hints
+
+        from srtctl.core.schema import ClusterConfig
+
+        allowed = set(get_args(get_type_hints(ClusterConfig)["launcher"]))
+        assert set(launchers()) == allowed == {"slurm", "docker", "host"}
+
+    def test_hostname_resolution_is_loopback_under_host(self, cluster):
+        cluster(launcher="host")
+        assert get_hostname_ip("any-host", "ib0") == "127.0.0.1"
+
+
+HOST_MOUNTS = {
+    Path("/home/me/outputs/7/logs"): Path("/logs"),
+    Path("/data/qwen"): Path("/model"),
+    Path("/home/me/srt-slurm/configs"): Path("/configs"),
+    Path("/scratch/stage"): Path("/scratch/stage"),
+}
+
+
+class TestContainerPaths:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("/model", "/data/qwen"),
+            ("/logs/sa-bench/result.json", "/home/me/outputs/7/logs/sa-bench/result.json"),
+            ("--model-path=/model", "--model-path=/data/qwen"),
+            ("PATH=/configs:$PATH", "PATH=/home/me/srt-slurm/configs:$PATH"),
+            (
+                "export LOG='/logs/x' && cat \"/logs/y\"",
+                "export LOG='/home/me/outputs/7/logs/x' && cat \"/home/me/outputs/7/logs/y\"",
+            ),
+            ("tee $(ls /logs)", "tee $(ls /home/me/outputs/7/logs)"),
+        ],
+    )
+    def test_container_paths_become_host_paths(self, text, expected):
+        assert ContainerPaths(HOST_MOUNTS).to_host(text) == expected
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "/models/other",  # a longer path segment
+            "/data/logs/old",  # inside another path
+            "http://127.0.0.1:8000/model",  # a URL
+            "/v1/models",
+            "/logs.bak",
+            "/scratch/stage/qwen",  # mounted at its own path
+        ],
+    )
+    def test_lookalikes_are_left_alone(self, text):
+        assert ContainerPaths(HOST_MOUNTS).to_host(text) == text
+
+    def test_a_rewritten_path_is_not_rewritten_again(self):
+        paths = ContainerPaths({Path("/srv/model"): Path("/model"), Path("/x/model"): Path("/srv")})
+        assert paths.to_host("/model /srv") == "/srv/model /x/model"
+
+    def test_no_mounts_leave_text_unchanged(self):
+        assert ContainerPaths(None).to_host("/logs/x") == "/logs/x"
+
+
+class TestHostCommand:
+    def test_command_runs_on_the_host_with_container_paths_rewritten(self, host, cluster):
+        cluster(launcher="host", default_bash_preamble="mkdir -p /logs/cache")
+        spec = LaunchSpec(
+            command=["vllm", "serve", "/model", "--log-file", "/logs/worker.log"],
+            container_image="vllm/vllm-openai:v0.11.0",
+            container_mounts={Path("/data/qwen"): Path("/model"), Path("/home/me/outputs/7/logs"): Path("/logs")},
+            env_to_set={"CUDA_VISIBLE_DEVICES": "0", "HF_HOME": "/model/.hf"},
+            env_to_unset=["NCCL_DEBUG"],
+            bash_preamble="cd /logs",
+            step_name="worker_agg_0",
+        )
+        cmd, _, cwd = host.host_command(spec)
+        assert cmd[:2] == ["bash", "-c"]
+        assert "docker" not in cmd[2] and "vllm-openai" not in cmd[2]
+        assert cmd[2] == (
+            "mkdir -p /home/me/outputs/7/logs/cache && export CUDA_VISIBLE_DEVICES=0 && export HF_HOME=/data/qwen/.hf"
+            " && unset -- NCCL_DEBUG && cd /home/me/outputs/7/logs"
+            " && exec vllm serve /data/qwen --log-file /home/me/outputs/7/logs/worker.log"
+        )
+        # Where the container's process would have started: the job's scratch directory, not the checkout.
+        assert cwd == str(host.scratch_dir())
+
+    def test_the_scratch_directory_is_private_and_outside_the_checkout(self, host, tmp_path):
+        scratch = host.scratch_dir()
+        assert scratch.parent == tmp_path / "tmp" and scratch.name.startswith("srtctl-host-test-")
+        if os.name == "posix":
+            assert scratch.stat().st_mode & 0o777 == 0o700
+        assert host.scratch_dir() == scratch
+
+    def test_srtctls_own_host_commands_keep_the_orchestrators_directory(self, host, cluster):
+        cluster(launcher="host")
+        assert host.host_command(LaunchSpec(command=["tachometer-scraper"]))[2] is None
+
+    def test_unwrapped_command_is_rewritten_argument_by_argument(self, host, cluster):
+        cluster(launcher="host")
+        spec = LaunchSpec(
+            command=["/configs/nats-server", "-c", "/configs/nats.conf"],
+            container_mounts={Path("/repo/configs"): Path("/configs")},
+            use_bash_wrapper=False,
+        )
+        assert host.host_command(spec)[0] == [
+            "bash",
+            "-c",
+            'exec -- "$@"',
+            "bash",
+            "/repo/configs/nats-server",
+            "-c",
+            "/repo/configs/nats.conf",
+        ]
+
+    def test_exported_env_and_workdir_are_rewritten(self, host, cluster, caplog):
+        cluster(launcher="host")
+        spec = LaunchSpec(
+            command=["true"],
+            container_mounts={Path("/gha/workspace"): Path("/infmax-workspace")},
+            srun_export_env={"RESULTS": "/infmax-workspace/results"},
+            srun_options={"container-workdir": "/infmax-workspace", "mem": "0", "gres": "gpu:1"},
+        )
+        with caplog.at_level("WARNING"):
+            _, env, cwd = host.host_command(spec)
+        assert env["RESULTS"] == "/gha/workspace/results"
+        assert cwd == "/gha/workspace"
+        warnings = [r.getMessage() for r in caplog.records if "ignores srun_options" in r.getMessage()]
+        assert warnings == ["launcher: host ignores srun_options gres"]
+
+    def test_bash_wrapper_matches_slurm_without_mounts(self, cluster):
+        cluster(default_bash_preamble="ulimit -n 4096")
+        spec = LaunchSpec(command=["python", "-m", "x"], env_to_set={"A": "a b"}, bash_preamble="echo hi")
+        assert HostLauncher().host_command(spec)[0] == SlurmLauncher().build_task_command(spec)
+
+    def test_container_image_is_ignored_and_logged_once(self, host, cluster, caplog):
+        cluster(launcher="host")
+        with (
+            patch("srtctl.core.local._ProcessGroup", return_value=MagicMock()) as popen,
+            caplog.at_level("INFO"),
+        ):
+            for step in ("a", "b"):
+                host.launch(LaunchSpec(command=["true"], container_image="img:1", step_name=step))
+        assert all(call.args[0][0] == "bash" for call in popen.call_args_list)
+        ignored = [r for r in caplog.records if "ignores container image img:1" in r.getMessage()]
+        assert len(ignored) == 1
+        assert any("host launcher command: bash -c" in r.getMessage() for r in caplog.records)
+
+    def test_multi_task_launch_is_rejected(self, host):
+        with pytest.raises(ValueError, match="launcher: host runs one task per launch"):
+            host.launch(LaunchSpec(command=["true"], ntasks=2))
+
+    def test_other_hosts_are_rejected(self, host):
+        with pytest.raises(ValueError, match="other-node"):
+            host.launch(LaunchSpec(command=["true"], nodelist=["other-node"]))
+
+    def test_a_host_path_a_shell_would_split_is_reached_through_a_symlink(self, host, cluster, tmp_path):
+        cluster(launcher="host")
+        model = tmp_path / "My Models" / "qwen"  # not created yet: the alias must not dangle
+        spec = LaunchSpec(command=["vllm", "serve", "/model"], container_mounts={model: Path("/model")})
+        cmd, _, _ = host.host_command(spec)
+        alias = Path(cmd[2].rsplit(" ", 1)[1])
+        assert alias.parent == host.scratch_dir()
+        assert alias.is_symlink() and os.readlink(alias) == os.path.abspath(model.as_posix())
+        assert model.is_dir()
+        assert host.host_command(spec)[0] == cmd  # one alias per host path
+
+    def test_a_missing_binary_fails_the_process_instead_of_the_orchestrator(self, host, cluster, tmp_path):
+        """As in a container: tachometer-scraper or dcgm-exporter not installed costs that process, not the job."""
+        cluster(launcher="host")
+        out = tmp_path / "exporter.out"
+        proc = host.launch(
+            LaunchSpec(command=["no-such-exporter", "--port", "9401"], use_bash_wrapper=False, output=str(out))
+        )
+        assert proc.wait(timeout=10) == 127
+        assert "not found" in out.read_text()
+
+
+class TestHostEnvironment:
+    """A host process gets this machine's Python, never srtctl's, and pip cannot install outside a virtualenv."""
+
+    def test_pip_cannot_install_outside_a_virtualenv(self):
+        assert host_environment({"PATH": "/usr/bin"}, None)["PIP_REQUIRE_VIRTUALENV"] == "1"
+
+    def test_the_users_own_pip_setting_wins(self):
+        assert host_environment({"PIP_REQUIRE_VIRTUALENV": "0"}, None)["PIP_REQUIRE_VIRTUALENV"] == "0"
+
+    def test_srtctls_own_virtualenv_steps_aside(self, tmp_path):
+        own = tmp_path / "srt-slurm" / ".venv"
+        engine = tmp_path / "vllm-env" / "bin"
+        base = {
+            "PATH": os.pathsep.join([str(own / "bin"), str(engine), "/usr/bin"]),
+            "VIRTUAL_ENV": str(own),
+            "UV_PROJECT_ENVIRONMENT": str(own),
+            "HOME": "/home/me",
+        }
+        env = host_environment(base, str(own))
+        assert env["PATH"].split(os.pathsep) == [str(engine), "/usr/bin", str(own / "bin")]
+        assert "VIRTUAL_ENV" not in env and "UV_PROJECT_ENVIRONMENT" not in env
+        assert env["HOME"] == "/home/me"
+        assert base["VIRTUAL_ENV"] == str(own)  # the caller's mapping is not modified
+
+    def test_path_starts_again_from_the_shell_that_ran_apply(self, tmp_path):
+        """What the job script (bin/, ~/.local/bin) and uv run put first goes after the user's PATH."""
+        own = tmp_path / "srt-slurm" / ".venv"
+        user = [str(tmp_path / "vllm-env" / "bin"), "/usr/bin"]
+        added = [str(tmp_path / "srt-slurm" / "bin"), str(tmp_path / "home" / ".local" / "bin")]
+        base = {"PATH": os.pathsep.join([str(own / "bin"), *added, *user]), HOST_PATH_ENV: os.pathsep.join(user)}
+        env = host_environment(base, str(own))
+        assert env["PATH"].split(os.pathsep) == [*user, *added, str(own / "bin")]
+        assert HOST_PATH_ENV not in env
+
+    def test_the_users_virtualenv_comes_back(self, tmp_path):
+        """uv run replaced it with srtctl's; uv pip install must target the same environment pip does."""
+        own = tmp_path / "srt-slurm" / ".venv"
+        engine = tmp_path / "vllm-env"
+        base = {"VIRTUAL_ENV": str(own), HOST_VIRTUAL_ENV_ENV: str(engine)}
+        env = host_environment(base, str(own))
+        assert env["VIRTUAL_ENV"] == str(engine) and HOST_VIRTUAL_ENV_ENV not in env
+        # None active when apply ran, or apply itself ran from srtctl's virtualenv: none comes back.
+        assert "VIRTUAL_ENV" not in host_environment({"VIRTUAL_ENV": str(own), HOST_VIRTUAL_ENV_ENV: ""}, str(own))
+        assert "VIRTUAL_ENV" not in host_environment({HOST_VIRTUAL_ENV_ENV: str(own)}, str(own))
+
+    def test_uv_run_apply_hides_the_users_virtualenv_and_path_finds_it(self, tmp_path):
+        """`uv run srtctl apply` (the README's command) sets VIRTUAL_ENV to srtctl's before srtctl can see the user's."""
+        own = tmp_path / "srt-slurm" / ".venv"
+        engine = tmp_path / "vllm-env"
+        (engine / "bin").mkdir(parents=True)
+        (engine / "bin" / "python3").write_text("")
+        (engine / "pyvenv.cfg").write_text("home = /usr/bin\n")
+        apply_path = [str(own / "bin"), str(engine / "bin"), "/usr/bin"]
+        base = {
+            "PATH": os.pathsep.join([str(tmp_path / "srt-slurm" / "bin"), str(own / "bin"), *apply_path]),
+            "VIRTUAL_ENV": str(own),
+            HOST_PATH_ENV: os.pathsep.join(apply_path),
+            HOST_VIRTUAL_ENV_ENV: str(own),
+        }
+        env = host_environment(base, str(own))
+        assert env["VIRTUAL_ENV"] == str(engine)
+        assert env["PATH"].split(os.pathsep)[0] == str(engine / "bin")
+        # A python3 that is not a virtualenv's (system, Homebrew, conda) names none.
+        (engine / "pyvenv.cfg").unlink()
+        assert "VIRTUAL_ENV" not in host_environment(base, str(own))
+
+    def test_another_virtualenv_is_left_alone(self, tmp_path):
+        engine = tmp_path / "vllm-env"
+        base = {"PATH": os.pathsep.join([str(engine / "bin"), "/usr/bin"]), "VIRTUAL_ENV": str(engine)}
+        env = host_environment(base, str(tmp_path / "srt-slurm" / ".venv"))
+        assert env["PATH"] == base["PATH"] and env["VIRTUAL_ENV"] == str(engine)
+
+    def test_every_launch_starts_from_it(self, host, cluster, monkeypatch):
+        cluster(launcher="host")
+        monkeypatch.delenv("PIP_REQUIRE_VIRTUALENV", raising=False)
+        _, env, _ = host.host_command(LaunchSpec(command=["true"]))
+        assert env["PIP_REQUIRE_VIRTUALENV"] == "1"
+
+
+class TestHostProcesses:
+    def test_process_runs_with_rewritten_paths_and_writes_output(self, host, cluster, tmp_path):
+        cluster(launcher="host")
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        out = logs / "worker.out"
+        proc = host.launch(
+            LaunchSpec(
+                command=["bash", "-c", 'echo "$GREETING $EXPORTED" > /logs/marker && echo done'],
+                container_image="ignored:1",
+                container_mounts={logs: Path("/logs")},
+                env_to_set={"GREETING": "hello"},
+                srun_export_env={"EXPORTED": "world"},
+                output=str(out),
+            )
+        )
+        assert proc.wait(timeout=10) == 0
+        assert (logs / "marker").read_text().strip() == "hello world"
+        assert out.read_text().strip() == "done"
+
+    def test_paths_a_shell_would_split_still_work(self, host, cluster, tmp_path):
+        cluster(launcher="host")
+        logs = tmp_path / "My Runs" / "it's logs"
+        logs.mkdir(parents=True)
+        out = tmp_path / "o.out"
+        proc = host.launch(
+            LaunchSpec(
+                command=["bash", "-c", "echo ok > /logs/marker && cp /logs/marker '/logs/copy'"],
+                container_mounts={logs: Path("/logs")},
+                bash_preamble="cd /logs",
+                output=str(out),
+            )
+        )
+        assert proc.wait(timeout=10) == 0, out.read_text()
+        assert (logs / "marker").read_text() == "ok\n" and (logs / "copy").exists()
+
+    def test_what_an_exited_process_leaves_running_is_stopped(self, host, cluster, tmp_path):
+        cluster(launcher="host")
+        child = tmp_path / "child.pid"
+        proc = host.launch(
+            LaunchSpec(
+                command=["bash", "-c", f"sleep 300 & echo $! > {shlex.quote(child.as_posix())}"],
+                step_name="engine",
+                output=str(tmp_path / "e.out"),
+            )
+        )
+        assert proc.wait(timeout=10) == 0
+        assert _gone_within(int(child.read_text()))
+
+    def test_groups_still_running_after_cleanup_are_stopped(self, host, cluster, tmp_path):
+        cluster(launcher="host")
+        polite = host.launch(LaunchSpec(command=["sleep", "300"], output=str(tmp_path / "p.out")))
+        ready = tmp_path / "stubborn.ready"
+        stubborn = host.launch(
+            LaunchSpec(
+                command=["bash", "-c", f"trap '' TERM; touch {shlex.quote(ready.as_posix())}; sleep 300"],
+                output=str(tmp_path / "s.out"),
+            )
+        )
+        deadline = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < deadline:  # SIGTERM before the trap would just kill it
+            time.sleep(0.05)
+        host.stop_leftovers(grace=1)
+        assert polite.poll() == -15
+        assert stubborn.poll() == -9
+
+    def test_the_pip_guard_reaches_the_process(self, host, cluster, tmp_path, monkeypatch):
+        cluster(launcher="host")
+        monkeypatch.delenv("PIP_REQUIRE_VIRTUALENV", raising=False)
+        out = tmp_path / "guard.out"
+        proc = host.launch(LaunchSpec(command=["bash", "-c", 'echo "$PIP_REQUIRE_VIRTUALENV"'], output=str(out)))
+        assert proc.wait(timeout=10) == 0
+        assert out.read_text().strip() == "1"
+
+    def test_named_step_is_signalled_through_its_process_group(self, host, cluster, tmp_path):
+        cluster(launcher="host")
+        proc = host.launch(LaunchSpec(command=["sleep", "60"], step_name="worker", output=str(tmp_path / "w.out")))
+        try:
+            assert host.list_step_ids() == {"worker": str(proc.pid)}
+            assert host.signal_step("worker", "TERM")
+            assert proc.wait(timeout=10) == -15
+            assert host.list_step_ids() == {}
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+
+class TestHostJob:
+    def test_every_role_is_this_host(self, host):
+        nodes = host.nodes()
+        this = socket.gethostname()
+        assert (nodes.head, nodes.bench, nodes.infra, nodes.worker) == (this, this, this, (this,))
+
+    def test_job_id_and_submitted_ids(self, host, tmp_path):
+        assert host.job_id() == "host-test"
+        assert host.submit(tmp_path / "s.sh").startswith("host-")
+
+    def test_start_runs_the_staged_script_without_slurm(self, host, tmp_path, monkeypatch):
+        monkeypatch.setenv("SLURM_JOB_ID", "999")
+        (tmp_path / "sbatch_script.sh").write_text('echo "job=${SLURM_JOB_ID:-$SRTCTL_JOB_ID}"\n')
+        assert host.start("host-1", tmp_path) == 0
+        assert (tmp_path / "logs" / "sweep_host-1.log").read_text() == "job=host-1\n"
+
+    def test_start_hands_the_job_this_shells_path_and_virtualenv(self, host, tmp_path, monkeypatch):
+        monkeypatch.setenv("VIRTUAL_ENV", "/opt/vllm-env")
+        (tmp_path / "sbatch_script.sh").write_text(f'echo "${HOST_PATH_ENV}"\necho "${HOST_VIRTUAL_ENV_ENV}"\n')
+        assert host.start("host-2", tmp_path) == 0
+        lines = (tmp_path / "logs" / "sweep_host-2.log").read_text().splitlines()
+        assert lines == [os.environ["PATH"], "/opt/vllm-env"]
+
+    def test_status_hint_finds_the_job_by_id(self, host):
+        assert "grep -F -- host-1" in host.status_hint("host-1")
+
+
+class TestHostSetup:
+    """`srtctl apply` under host asks for uv (and etcd/NATS when used), not the Linux binaries of make setup."""
+
+    @pytest.fixture
+    def source(self, tmp_path, monkeypatch) -> Path:
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+        source = tmp_path / "srt-slurm"
+        source.mkdir()
+        return source
+
+    def test_uv_on_path_is_enough_without_a_discovery_plane(self, tmp_path, cluster, monkeypatch, source):
+        cluster(launcher="host")
+        monkeypatch.setattr("srtctl.core.host.shutil.which", lambda name: f"/opt/homebrew/bin/{name}")
+        config = _config(tmp_path, SINGLE_NODE_DISAGG)
+        assert HostLauncher().setup_problems(source, config) == []
+        validate_setup(source, config)
+
+    def test_missing_uv_is_reported(self, tmp_path, cluster, monkeypatch, source):
+        cluster(launcher="host")
+        monkeypatch.setattr("srtctl.core.host.shutil.which", lambda name: None)
+        config = _config(tmp_path, SINGLE_NODE_DISAGG)
+        problems = HostLauncher().setup_problems(source, config)
+        assert len(problems) == 1 and problems[0].startswith("uv")
+        with pytest.raises(SystemExit):
+            validate_setup(source, config)
+        (tmp_path / "home" / ".local" / "bin").mkdir(parents=True)
+        (tmp_path / "home" / ".local" / "bin" / "uv").write_text("")
+        assert HostLauncher().setup_problems(source, config) == []
+
+    def test_a_dynamo_frontend_needs_its_critical_services_binaries(self, tmp_path, cluster, monkeypatch, source):
+        cluster(launcher="host")
+        monkeypatch.setattr("srtctl.core.host.shutil.which", lambda name: f"/opt/homebrew/bin/{name}")
+        dynamo = {**SINGLE_NODE_DISAGG, "frontend": {"type": "dynamo"}, "dynamo": {"install": False}}
+        problems = HostLauncher().setup_problems(source, _config(tmp_path, dynamo))
+        # Only the services this recipe runs: etcd for discovery (no NATS on its request plane) and the collector.
+        assert {problem.split(",")[0] for problem in problems} == {"configs/etcd", "configs/otelcol-contrib"}
+        # A service the recipe switches off is not required; one it merely makes non-critical still is,
+        # since the collector checks for its binary before it launches.
+        without_otel = {**dynamo, "services": [{"name": "otel-collector", "type": "otel-collector", "enabled": False}]}
+        problems = HostLauncher().setup_problems(source, _config(tmp_path, without_otel))
+        assert {problem.split(",")[0] for problem in problems} == {"configs/etcd"}
+        optional_otel = {
+            **dynamo,
+            "services": [{"name": "otel-collector", "type": "otel-collector", "critical": False}],
+        }
+        problems = HostLauncher().setup_problems(source, _config(tmp_path, optional_otel))
+        assert "configs/otelcol-contrib" in {problem.split(",")[0] for problem in problems}
+
+    def test_slurm_still_needs_make_setup(self, tmp_path, cluster, source):
+        cluster()
+        with pytest.raises(SystemExit):
+            validate_setup(source, _config(tmp_path, SINGLE_NODE_DISAGG))
+
+
+class TestHostValidation:
+    def test_single_node_recipe_is_accepted(self, tmp_path, cluster):
+        cluster(launcher="host")
+        assert HostLauncher().validate(_config(tmp_path, SINGLE_NODE_DISAGG)) == []
+
+    def test_an_enroot_image_file_is_not_an_error(self, tmp_path, cluster):
+        """The image is never used, so a .sqsh path (a Slurm recipe as is) does not block the run."""
+        cluster(launcher="host")
+        image = tmp_path / "vllm.sqsh"
+        image.write_text("")
+        data = {**SINGLE_NODE_DISAGG, "model": {**SINGLE_NODE_DISAGG["model"], "container": str(image)}}
+        assert HostLauncher().validate(_config(tmp_path, data)) == []
+
+    def test_multi_node_and_mpi_step_engines_are_rejected(self, tmp_path, cluster):
+        cluster(launcher="host")
+        two_nodes = {**SINGLE_NODE_DISAGG, "roles": {"agg": {"nodes": 2, "workers": 1}}}
+        assert any(
+            "launcher: host runs on one machine" in p for p in HostLauncher().validate(_config(tmp_path, two_nodes))
+        )
+        trtllm = {
+            **SINGLE_NODE_DISAGG,
+            "frontend": {"type": "dynamo"},
+            "engine": "trtllm",
+            "roles": {"agg": {"nodes": 1, "workers": 1, "gpus": 4}},
+        }
+        problems = HostLauncher().validate(_config(tmp_path, trtllm))
+        assert any("which launcher: host does not support" in p for p in problems)
+
+    def test_installing_dynamo_is_rejected(self, tmp_path, cluster):
+        """The install and its done-marker would land in the user's own Python and outlive the job."""
+        cluster(launcher="host")
+        dynamo = {**SINGLE_NODE_DISAGG, "frontend": {"type": "dynamo"}}
+        assert any("set dynamo.install: false" in p for p in HostLauncher().validate(_config(tmp_path, dynamo)))
+        preinstalled = {**dynamo, "dynamo": {"install": False}}
+        assert HostLauncher().validate(_config(tmp_path, preinstalled)) == []
+
+    def test_ai_analysis_is_rejected(self, tmp_path, cluster):
+        """It curl-installs Claude Code and gh into the home directory."""
+        cluster(launcher="host", reporting={"ai_analysis": {"enabled": True}})
+        problems = HostLauncher().validate(_config(tmp_path, SINGLE_NODE_DISAGG))
+        assert any("set reporting.ai_analysis.enabled: false" in p for p in problems)
+        cluster(launcher="host", reporting={"ai_analysis": {"enabled": False}})
+        assert HostLauncher().validate(_config(tmp_path, SINGLE_NODE_DISAGG)) == []
+
+
+def test_mock_sweep_under_host_launcher_places_everything_on_this_host(tmp_path, cluster):
+    """The real orchestrator, with only process launches faked, carves its nodes from this machine."""
+    cluster(launcher="host")
+    path = tmp_path / "recipe.yaml"
+    path.write_text(yaml.safe_dump(SINGLE_NODE_DISAGG))
+    launches: list[dict] = []
+    with patch.object(HostLauncher, "stop_leftovers") as stop_leftovers:
+        exit_code = run_mock_sweep(
+            config_path=path,
+            output_dir=tmp_path / "out",
+            job_id="host-mock",
+            options=MockOptions(phase_pause_s=0, on_srun=launches.append),
+        )
+    assert exit_code == 0
+    placed = {node for launch in launches for node in launch.get("nodelist") or ()}
+    assert placed == {socket.gethostname()}
+    stop_leftovers.assert_called_once_with()
+
+
+# An image that exists on a Slurm cluster and not on this machine.
+MISSING_IMAGE = "/nonexistent/cluster/vllm.sqsh"
+HOST_EXAMPLE = Path(__file__).resolve().parent.parent / "examples" / "host" / "vllm-agg-1gpu.yaml"
+
+# Every kind of image `launcher: host` ignores: what each case adds to the host example, the
+# preflight errors it gets under slurm (proving the recipe really names a missing image of that
+# kind), and the image files the job's launches still name.
+IGNORED_IMAGES = {
+    "model": ({}, {"container-not-available"}, {"vllm.sqsh"}),
+    "tachometer": (
+        {
+            "observability": {
+                "tachometer": {
+                    "enabled": True,
+                    "dcgm_exporter": {"container_image": "/nonexistent/cluster/dcgm.sqsh", "port": 9401},
+                    "node_exporter": {"container_image": "/nonexistent/cluster/node.sqsh", "port": 9101},
+                }
+            }
+        },
+        {"container-not-available", "tachometer-container-not-available"},
+        {"vllm.sqsh", "dcgm.sqsh", "node.sqsh"},
+    ),
+    "power-telemetry": (
+        {
+            "benchmark": {"concurrencies": [8]},
+            "telemetry": {
+                "enabled": True,
+                "collect_interval_ms": 1000,
+                "storage_subdir": "power",
+                "startup_timeout_seconds": 0.1,  # the mock run starts no collector; do not wait the default 30 s for it
+                "dcgm_exporter": {"container_image": "/nonexistent/cluster/dcgm.sqsh", "port": 9401},
+            },
+        },
+        {"container-not-available", "telemetry-container-not-available"},
+        {"vllm.sqsh", "dcgm.sqsh"},
+    ),
+}
+
+
+def _recipe_with_missing_images(tmp_path: Path, case: str = "model", **model) -> Path:
+    """The host example with ``model.container`` (and ``case``'s exporter images) on no machine here."""
+    data = yaml.safe_load(HOST_EXAMPLE.read_text())
+    data["model"].update(container=MISSING_IMAGE, **model)
+    for key, value in IGNORED_IMAGES[case][0].items():
+        data[key] = {**data.get(key, {}), **value}
+    path = tmp_path / "recipe.yaml"
+    path.write_text(yaml.safe_dump(data))
+    return path
+
+
+def _srtctl(monkeypatch, recipe: Path, command: str, *args: str) -> tuple[int, list[dict]]:
+    """``srtctl <command> -f <recipe>`` through ``main()``, with only the hand-off to the orchestrator stubbed.
+
+    Returns the exit code and the hand-offs. The recipe is passed by its bare name from its
+    directory, since ``-f`` splits ``path:selector`` on the colon of a Windows drive.
+    """
+    from srtctl.cli import submit as submit_cli
+
+    handed_off: list[dict] = []
+    monkeypatch.chdir(recipe.parent)
+    monkeypatch.setattr(sys, "argv", ["srtctl", command, "-f", recipe.name, *args])
+    with patch.object(submit_cli, "submit_with_orchestrator", side_effect=lambda **kwargs: handed_off.append(kwargs)):
+        try:
+            submit_cli.main()
+        except SystemExit as exc:
+            return exc.code if isinstance(exc.code, int) else 1, handed_off
+    return 0, handed_off
+
+
+class TestHostIgnoresImages:
+    """A Slurm recipe's image need not exist on the machine ``launcher: host`` runs on.
+
+    Host never opens an image, so neither preflight nor the job looks for one; the model and the
+    topology are still checked, and the other launchers still require their images.
+    """
+
+    def test_only_host_runs_without_images(self):
+        assert {name: cls.uses_container_images for name, cls in launchers().items()} == {
+            "slurm": True,
+            "docker": True,
+            "host": False,
+        }
+
+    @pytest.mark.parametrize("case", sorted(IGNORED_IMAGES))
+    def test_apply_reaches_submission_under_host_only(self, case, tmp_path, cluster, monkeypatch, capsys):
+        from srtctl.core.config import load_cluster_config
+        from srtctl.core.validation import preflight_config_variants
+
+        recipe = _recipe_with_missing_images(tmp_path, case)
+        cluster(launcher="slurm")
+        (result,) = preflight_config_variants(yaml.safe_load(recipe.read_text()), cluster_config=load_cluster_config())
+        assert {issue.code for issue in result.errors} == IGNORED_IMAGES[case][1]
+
+        for launcher in ("slurm", "docker"):
+            cluster(launcher=launcher)
+            assert _srtctl(monkeypatch, recipe, "apply", "-y") == (1, []), launcher
+            assert "Preflight failed" in capsys.readouterr().out
+
+        cluster(launcher="host")
+        code, handed_off = _srtctl(monkeypatch, recipe, "apply", "-y")
+        assert (code, len(handed_off)) == (0, 1), capsys.readouterr().out
+
+    def test_apply_under_host_still_runs_preflight(self, tmp_path, cluster, monkeypatch, capsys):
+        """Only the image checks are skipped: a missing local model still stops the submission."""
+        recipe = _recipe_with_missing_images(tmp_path, path="/nonexistent/models/qwen")
+        cluster(launcher="host")
+        assert _srtctl(monkeypatch, recipe, "apply", "-y") == (1, [])
+        out = capsys.readouterr().out
+        assert "Preflight failed" in out and "model.path" in out and "model.container" not in out
+
+    def test_preflight_command_says_the_image_is_not_checked(self, tmp_path, cluster, monkeypatch, capsys):
+        recipe = _recipe_with_missing_images(tmp_path)
+        cluster(launcher="host")
+        assert _srtctl(monkeypatch, recipe, "preflight") == (0, [])
+        assert "not checked: launcher: host runs no container images" in " ".join(capsys.readouterr().out.split())
+
+    @pytest.mark.parametrize("case", sorted(IGNORED_IMAGES))
+    def test_the_job_starts_without_the_images(self, case, tmp_path, cluster):
+        """The real orchestrator, with only process launches faked, starts although every image file is missing.
+
+        The launches still name the images; dropping them is HostLauncher.launch's job, tested by
+        test_container_image_is_ignored_and_logged_once.
+        """
+        cluster(launcher="host")
+        launches: list[dict] = []
+        with patch.object(HostLauncher, "stop_leftovers"):
+            exit_code = run_mock_sweep(
+                config_path=_recipe_with_missing_images(tmp_path, case),
+                output_dir=tmp_path / "out",
+                job_id="host-mock",
+                options=MockOptions(phase_pause_s=0, on_srun=launches.append),
+            )
+        assert exit_code == 0
+        named = {Path(str(launch["container_image"])).name for launch in launches if launch.get("container_image")}
+        assert IGNORED_IMAGES[case][2] <= named
+
+    def test_the_job_still_requires_the_image_where_it_runs(self, tmp_path, cluster):
+        from srtctl.core.runtime import RuntimeContext
+
+        cluster(launcher="docker")
+        config = SrtConfig.from_yaml(_recipe_with_missing_images(tmp_path))
+        with pytest.raises(FileNotFoundError, match="vllm.sqsh"):
+            RuntimeContext.from_config(config, job_id="1", log_dir_base=tmp_path / "out")
+
+
+def _alive(pid: int) -> bool:
+    """Whether ``pid`` runs; a killed process waiting for its reaper (a zombie) does not."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return True
+
+
+def _gone_within(pid: int, seconds: float = 10.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while _alive(pid):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
+    return True
 
 
 def test_subprocess_is_not_left_running(docker, cluster, tmp_path):
