@@ -441,6 +441,7 @@ class TestCustomBenchmarkRunner:
             backend = SimpleNamespace(
                 type=backend_type,
                 prometheus_metrics_path="/metrics",
+                get_metrics_path=lambda mode: "/metrics",
                 is_grpc_mode=lambda mode: False,
                 publish_metrics=publish_metrics,
                 publish_events_and_metrics=publish_events_and_metrics,

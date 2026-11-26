@@ -81,6 +81,33 @@ def test_cluster_gpu_visibility_is_visible(tmp_path, monkeypatch, capsys):
     assert "GPU subset visibility variable: ROCR_VISIBLE_DEVICES" in capsys.readouterr().out
 
 
+def test_llamacpp_launch_inputs_and_model_mount_are_visible(capsys):
+    config = _make_config(
+        {
+            "engine": {
+                "type": "llamacpp",
+                "model_file": "nested/qwen.gguf",
+                "server_binary": "/app/llama-server",
+                "metrics": False,
+            },
+            "frontend": {"type": "llamacpp", "enable_multiple_frontends": False},
+            "roles": {"prefill": None, "decode": None, "agg": {"nodes": 1, "workers": 1, "gpus": 1}},
+        }
+    )
+    show_config_details(config)
+    output = capsys.readouterr().out
+    for value in (
+        "Engine Launch Settings",
+        "model_file",
+        "nested/qwen.gguf",
+        "/app/llama-server",
+        "metrics",
+        "false",
+        "/model",
+    ):
+        assert value in output
+
+
 # "release ... post-process" on one logical line, or the srtslurm.yaml key itself.
 _NODE_RELEASE_LINE = re.compile(r"releas\w*[^\n]{0,160}post-?process|release_nodes_before_postprocess")
 

@@ -71,6 +71,7 @@ nav:
       - Topology and Placement: topology.md
       - Frontends:
           - Frontends and Dynamo: frontends.md
+          - llama.cpp: llamacpp.md
           - SGLang Router: sglang-router.md
           - vLLM Router: vllm-router.md
           - Shepherd Model Gateway: smg.md

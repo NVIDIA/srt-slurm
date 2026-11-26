@@ -75,7 +75,7 @@ engine:
   speedup_ratio: 100
 ```
 
-Valid types are `atom`, `sglang`, `tilert`, `trtllm`, `vllm`, and `mocker`. Everything that is per role (the role's environment, its engine CLI flags, `extra_args`, `kv_events`) lives under [roles](topology.md#roles); everything else about the engine lives here. The generated tables under [Engine types](schema-reference.md#engine-types) list every engine-wide knob per engine; the ones worth knowing are:
+Valid types are `atom`, `llamacpp`, `sglang`, `tilert`, `tokenspeed`, `trtllm`, `vllm`, and `mocker`. Everything that is per role (the role's environment, its engine CLI flags, `extra_args`, `kv_events`) lives under [roles](topology.md#roles); everything else about the engine lives here. The generated tables under [Engine types](schema-reference.md#engine-types) list every engine-wide knob per engine; the ones worth knowing are:
 
 | Engine | Engine-wide knobs |
 | --- | --- |
@@ -83,6 +83,9 @@ Valid types are `atom`, `sglang`, `tilert`, `trtllm`, `vllm`, and `mocker`. Ever
 | `vllm` | `connector` (default `nixl`), `dp_launch_mode`, `vllm_serve_binary`, `set_visible_devices`, `allow_prefill_decode_colocation`, `allow_prefill_decode_colocation_across_nodes` |
 | `trtllm` | `served_model_name`, `publish_metrics`, `publish_events_and_metrics`, `sequential_node_start`, `numa_memory_bind`, `numa_cpu_bind` |
 | `mocker` | the simulation parameters: `engine_type`, `speedup_ratio`, `decode_speedup_ratio`, `num_gpu_blocks_override`, `max_num_seqs`, `max_num_batched_tokens`, `block_size`, `data_parallel_size`, ... |
+
+[llama.cpp](llamacpp.md) runs a GGUF model with one aggregate `llama-server`, including
+Linux Docker serving and custom benchmark clients in a separate image.
 
 The v1 spelling of this (`backend.type` plus the engine-wide keys under `backend:`) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
 

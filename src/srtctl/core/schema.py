@@ -42,6 +42,7 @@ from marshmallow_dataclass import dataclass
 from srtctl.backends import (
     AtomBackend,
     BackendConfig,
+    LlamaCppBackend,
     MockerBackend,
     SGLangBackend,
     TileRTBackend,
@@ -840,6 +841,7 @@ class BackendConfigField(fields.Field):
         if isinstance(
             value,
             AtomBackend
+            | LlamaCppBackend
             | SGLangBackend
             | TileRTBackend
             | TokenSpeedBackend
@@ -867,6 +869,8 @@ class BackendConfigField(fields.Field):
 
         if backend_type == "atom":
             return AtomBackend.Schema().load(value)
+        elif backend_type == "llamacpp":
+            return LlamaCppBackend.Schema().load(value)
         elif backend_type == "tilert":
             return TileRTBackend.Schema().load(value)
         elif backend_type == "tokenspeed":
@@ -885,7 +889,8 @@ class BackendConfigField(fields.Field):
             return schema.load(value)
         else:
             raise ValidationError(
-                f"Unknown engine type: {backend_type!r}. Supported types: atom, sglang, tilert, tokenspeed, trtllm, vllm, mocker"
+                f"Unknown engine type: {backend_type!r}. "
+                "Supported types: atom, llamacpp, sglang, tilert, tokenspeed, trtllm, vllm, mocker"
             )
 
     def _serialize(self, value: Any | None, attr: str | None, obj: Any, **kwargs) -> Any:
@@ -900,6 +905,8 @@ class BackendConfigField(fields.Field):
     def _dump(value: Any) -> dict[str, Any]:
         if isinstance(value, AtomBackend):
             return AtomBackend.Schema().dump(value)
+        if isinstance(value, LlamaCppBackend):
+            return LlamaCppBackend.Schema().dump(value)
         if isinstance(value, TileRTBackend):
             return TileRTBackend.Schema().dump(value)
         if isinstance(value, TokenSpeedBackend):
@@ -3035,8 +3042,8 @@ class FrontendConfig:
             SGLang workers register in etcd); "sglang-router" (SGLang Model
             Gateway), "vllm-router", "smg" (Shepherd Model Gateway, any backend), "llm-d"
             (llm-d Endpoint Picker behind Envoy, vLLM), "atomesh", and
-            "tilert-router" (static routers); "sglang", "vllm", and
-            "trtllm_serve" (direct: the single aggregate worker binds the public
+            "tilert-router" (static routers); "sglang", "vllm", "trtllm_serve",
+            and "llamacpp" (direct: the single aggregate worker binds the public
             port, no router process); "none" (services-only job: no router, no
             OpenAI endpoint, no worker-count health gate; requires no engine
             roles). Pre-2.0 recipes spelled the router "sglang"; ``srtctl migrate``
@@ -3928,6 +3935,11 @@ class SrtConfig:
             raise ValidationError(f"frontend.epp_config is not supported with frontend.type: {self.frontend.type}")
         if frontend is None:
             return
+        for role, backend in self.active_role_backends():
+            if backend.required_frontend is not None and self.frontend.type != backend.required_frontend:
+                raise ValidationError(
+                    f"engine {backend.type} ({role}) requires frontend.type: {backend.required_frontend}"
+                )
         required = frontend.required_backend
         incompatible = [
             f"{role}={backend.type}" for role, backend in self.active_role_backends() if backend.type != required

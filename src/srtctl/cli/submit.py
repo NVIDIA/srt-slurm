@@ -292,6 +292,20 @@ def show_config_details(config: SrtConfig) -> None:
         for role, backend in config.active_role_backends():
             console.print(f"{role}: engine={backend.type}, container={config.worker_container_for_role(role)}")
 
+    launch_settings = [
+        (role, key, value)
+        for role, backend in config.active_role_backends()
+        for key, value in backend.launch_settings().items()
+    ]
+    if launch_settings:
+        settings = Table(title="Engine Launch Settings", show_lines=False, pad_edge=False)
+        settings.add_column("Role", style="dim")
+        settings.add_column("Setting", style="yellow")
+        settings.add_column("Value", style="white")
+        for role, key, value in launch_settings:
+            settings.add_row(role, key, value)
+        console.print(settings)
+
     if config.frontend.type == "dynamo" and not config.dynamo.sidecar:
         from srtctl.backends.trtllm import TRTLLMBackend
 
