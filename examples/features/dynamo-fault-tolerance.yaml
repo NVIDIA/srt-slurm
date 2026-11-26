@@ -62,7 +62,7 @@ roles:
 
 observability:
   enabled: true
-  # Killed workers never acknowledge the nsys capture boundary, so chaos kills need nsys off.
+  # chaos cannot run with nsys profiling.
   nsys:
     enabled: false
 

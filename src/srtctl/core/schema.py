@@ -381,8 +381,6 @@ class HostSetupConfig:
 
 ChaosEventType = Literal["kill", "freeze", "rolling_restart"]
 CHAOS_PROCESS_ALIASES: frozenset[str] = frozenset({"main", "engine", "rank"})
-# Event types that end a worker process (so it never answers again in this life).
-CHAOS_DESTRUCTIVE_TYPES: frozenset[str] = frozenset({"kill", "rolling_restart"})
 
 
 def parse_chaos_workers(
@@ -3667,6 +3665,13 @@ class SrtConfig:
             return
         if not self.roles:
             raise ValidationError("chaos requires at least one worker role in roles:")
+        if self.observability_nsys_enabled or self.profiling.type.startswith("nsys"):
+            # Killed, frozen, or relaunched workers break nsys captures (unfinalized reports, missed
+            # capture-boundary acks, reused report paths), so chaos and nsys never run together.
+            raise ValidationError(
+                "chaos cannot run with nsys profiling; set observability.nsys.enabled: false "
+                "and do not use profiling.type: nsys/nsys-time"
+            )
         worker_counts: dict[str, int] = {
             "prefill": self.topology.num_prefill,
             "decode": self.topology.num_decode,
@@ -3706,13 +3711,6 @@ class SrtConfig:
                     raise ValidationError(
                         f"{prefix}.wait_ready=true requires respawn=true or roles.{event.role}.restart enabled"
                     )
-            if event.type in CHAOS_DESTRUCTIVE_TYPES and not self.chaos.leashed and self.observability_nsys_enabled:
-                # A killed worker takes nsys down unfinalized (and never acknowledges a measured-workload
-                # boundary), and its relaunch reuses the same report path.
-                raise ValidationError(
-                    f"{prefix}.type={event.type!r} kills workers, which breaks the observability.nsys capture; "
-                    "set observability.nsys.enabled: false or chaos.leashed: true"
-                )
             proc = event.effective_process
             if proc == "main" and (worker_launch != "dynamo" or self.dynamo.sidecar):
                 raise ValidationError(

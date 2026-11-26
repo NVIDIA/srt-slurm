@@ -130,25 +130,17 @@ class _FakeLauncher:
 
 class TestChaosSchema:
     @pytest.mark.parametrize("capture_window", ["measured_workload", "including_startup"])
-    def test_kill_rejected_with_observability_nsys(self, capture_window: str):
-        with pytest.raises(ValidationError, match="observability.nsys"):
+    @pytest.mark.parametrize("leashed", [False, True])
+    @pytest.mark.parametrize("event_type", ["kill", "freeze", "rolling_restart"])
+    def test_chaos_rejected_with_observability_nsys(self, capture_window: str, leashed: bool, event_type: str):
+        with pytest.raises(ValidationError, match="chaos cannot run with nsys"):
             _load_dict(
                 _base_recipe(
                     benchmark={"type": "sa-bench", "isl": 128, "osl": 128, "concurrencies": "4"},
                     observability={"enabled": True, "nsys": {"capture_window": capture_window}},
-                    chaos={"events": [{"type": "kill", "role": "agg"}]},
+                    chaos={"leashed": leashed, "events": [{"type": event_type, "role": "agg"}]},
                 )
             )
-
-    def test_leashed_kill_allowed_with_observability_nsys(self):
-        cfg = _load_dict(
-            _base_recipe(
-                benchmark={"type": "sa-bench", "isl": 128, "osl": 128, "concurrencies": "4"},
-                observability={"enabled": True},
-                chaos={"leashed": True, "events": [{"type": "kill", "role": "agg"}]},
-            )
-        )
-        assert cfg.chaos.leashed is True
 
     def test_main_alias_rejected_for_native_workers(self):
         with pytest.raises(ValidationError, match="process='main'"):
