@@ -381,6 +381,8 @@ class HostSetupConfig:
 
 ChaosEventType = Literal["kill", "freeze", "rolling_restart"]
 CHAOS_PROCESS_ALIASES: frozenset[str] = frozenset({"main", "engine", "rank"})
+# Event types that end a worker process (so it never answers again in this life).
+CHAOS_DESTRUCTIVE_TYPES: frozenset[str] = frozenset({"kill", "rolling_restart"})
 
 
 def parse_chaos_workers(
@@ -3675,6 +3677,9 @@ class SrtConfig:
         ]
         if self.chaos.schedule is not None:
             items.append(("chaos.schedule", self.chaos.schedule.to_event()))
+        from srtctl.frontends import get_frontend
+
+        worker_launch = None if self.frontend.type == "none" else get_frontend(self.frontend.type).worker_launch
         for prefix, event in items:
             num_workers = worker_counts.get(event.role, 0)
             if event.role not in self.roles or num_workers < 1:
@@ -3701,7 +3706,19 @@ class SrtConfig:
                     raise ValidationError(
                         f"{prefix}.wait_ready=true requires respawn=true or roles.{event.role}.restart enabled"
                     )
+            if event.type in CHAOS_DESTRUCTIVE_TYPES and self.observability_nsys_enabled:
+                # A killed worker never acknowledges the nsys capture boundary, so the benchmark would hang.
+                raise ValidationError(
+                    f"{prefix}.type={event.type!r} kills workers, which strands the observability.nsys capture; "
+                    "set observability.nsys.enabled: false"
+                )
             proc = event.effective_process
+            if proc == "main" and (worker_launch != "dynamo" or self.dynamo.sidecar):
+                raise ValidationError(
+                    f"{prefix}.process='main' names the Dynamo worker module, but this recipe runs the native engine "
+                    f"(frontend.type={self.frontend.type!r}, dynamo.sidecar={bool(self.dynamo.sidecar)}); "
+                    f"set {prefix}.process to an explicit cmdline substring"
+                )
             if proc is not None and proc in CHAOS_PROCESS_ALIASES:
                 role_backend = self.backend_for_role(event.role)
                 if not role_backend.fault_process_target(proc):

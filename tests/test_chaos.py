@@ -9,6 +9,7 @@ import json
 import random
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from subprocess import Popen
 from types import SimpleNamespace
@@ -48,6 +49,14 @@ def _base_recipe(**overrides) -> dict:
     }
     doc.update(overrides)
     return doc
+
+
+def _fake_node_helper(payload: dict, pids: tuple[int, ...] = (777, 778)) -> dict:
+    """Stand-in for the node helper: discovery lists ``pids``; signalling reports ``T`` after SIGSTOP."""
+    if "pids" not in payload:
+        return {"matches": [{"pid": pid, "cmd": payload["pattern"]} for pid in pids], "errors": []}
+    state = "T" if payload["signal"] == "STOP" else "S"
+    return {"signalled": payload["pids"], "verified_states": {str(p): state for p in payload["pids"]}, "errors": []}
 
 
 def _load_dict(doc: dict) -> SrtConfig:
@@ -120,6 +129,26 @@ class _FakeLauncher:
 
 
 class TestChaosSchema:
+    def test_kill_rejected_with_observability_nsys(self):
+        with pytest.raises(ValidationError, match="observability.nsys"):
+            _load_dict(
+                _base_recipe(
+                    benchmark={"type": "sa-bench", "isl": 128, "osl": 128, "concurrencies": "4"},
+                    observability={"enabled": True},
+                    chaos={"events": [{"type": "kill", "role": "agg"}]},
+                )
+            )
+
+    def test_main_alias_rejected_for_native_workers(self):
+        with pytest.raises(ValidationError, match="process='main'"):
+            _load_dict(
+                _base_recipe(
+                    frontend={"type": "sglang-router"},
+                    engine={"type": "sglang"},
+                    chaos={"events": [{"type": "kill", "role": "agg", "process": "main"}]},
+                )
+            )
+
     def test_valid_chaos_events_load(self):
         cfg = _load_dict(
             _base_recipe(
@@ -396,26 +425,7 @@ class TestFaultToleranceAndActions:
 
         def fake_node_python(node, payload, *, log_dir, tag, het_group=None, timeout=30.0):
             calls.append({"node": node, "tag": tag, "payload": payload})
-            if payload["signal"] == "STOP":
-                return {
-                    "matched": 2,
-                    "signalled": [{"pid": 777, "cmd": "dynamo.mocker"}],
-                    "verified_states": {"777": "T"},
-                    "errors": [],
-                }
-            if payload["signal"] == "CONT":
-                return {
-                    "matched": 1,
-                    "signalled": [{"pid": 777, "cmd": ""}],
-                    "verified_states": {"777": "S"},
-                    "errors": [],
-                }
-            return {
-                "matched": 2,
-                "signalled": [{"pid": 888, "cmd": "dynamo.mocker"}],
-                "verified_states": {},
-                "errors": [],
-            }
+            return _fake_node_helper(payload)
 
         chaos = ChaosConfig(
             events=[
@@ -444,11 +454,10 @@ class TestFaultToleranceAndActions:
                 time.sleep(0.05)
             runner.stop(timeout=5.0)
 
-        signals = [c["payload"]["signal"] for c in calls]
-        assert signals == ["STOP", "CONT", "KILL"]
-        assert calls[0]["payload"]["step_num"] == "3"
-        assert calls[0]["payload"]["rank"] == 1
-        assert calls[0]["payload"]["allow_unscoped"] is True
+        signal_calls = [c["payload"] for c in calls if "pids" in c["payload"]]
+        assert [c["signal"] for c in signal_calls] == ["STOP", "CONT", "KILL"]
+        assert all(c["pids"] == [778] for c in signal_calls)  # rank 1 of the discovered PIDs
+        assert calls[0]["payload"] == {"pattern": "dynamo.mocker", "step_num": "3", "allow_unscoped": True}
         assert all(r.status == "completed" for r in runner.records)
 
     def test_unscoped_process_match_only_when_node_not_shared(self):
@@ -456,8 +465,172 @@ class TestFaultToleranceAndActions:
         ctx = SimpleNamespace(endpoint_groups={("agg", 0, 0): [p0], ("agg", 1, 0): [p1], ("agg", 2, 0): [p2]})
         target0 = WorkerTarget(("agg", 0, 0), "agg", 0, (p0,), ("agg_0_node0",))
         target2 = WorkerTarget(("agg", 2, 0), "agg", 2, (p2,), ("agg_2_node1",))
-        assert _shares_node(target0, ctx)  # type: ignore[arg-type]
-        assert not _shares_node(target2, ctx)  # type: ignore[arg-type]
+        assert _shares_node(target0, "node0", ctx)  # type: ignore[arg-type]
+        assert not _shares_node(target2, "node1", ctx)  # type: ignore[arg-type]
+
+    def _runner(self, tmp_path: Path, registry: ProcessRegistry, groups: dict, events: list, **kwargs) -> ChaosRunner:
+        return ChaosRunner(
+            chaos=ChaosConfig(events=events, **kwargs),
+            config=_load_dict(_base_recipe()),
+            runtime=SimpleNamespace(job_id="105", log_dir=tmp_path, network_interface=None),  # type: ignore[arg-type]
+            registry=registry,
+            supervisor=None,
+            endpoint_groups=groups,
+            stop_event=threading.Event(),
+        )
+
+    @staticmethod
+    def _wait_records(runner: ChaosRunner, count: int) -> None:
+        deadline = time.monotonic() + 5.0
+        while len(runner.records) < count or any(r.status == "running" for r in runner.records):
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.02)
+
+    def test_process_kill_with_no_match_leaves_worker_critical(self, tmp_path: Path):
+        registry = ProcessRegistry(job_id="105")
+        step = _FakeStep("agg_0_node0", node="node0")
+        registry.add_process(step.managed)
+        calls: list[dict] = []
+
+        def fake(node, payload, **_kwargs):
+            calls.append(payload)
+            return _fake_node_helper(payload, pids=(777,))
+
+        runner = self._runner(
+            tmp_path,
+            registry,
+            {("agg", 0, 0): [_proc("agg", 0, "node0")]},
+            [ChaosEventConfig(type="kill", role="agg", process="rank", rank=1)],
+        )
+        with (
+            patch("srtctl.chaos.actions.list_step_ids", return_value=None),
+            patch("srtctl.chaos.actions.run_node_python", side_effect=fake),
+        ):
+            runner.start()
+            self._wait_records(runner, 1)
+            runner.stop(timeout=5.0)
+
+        assert runner.records[0].status == "failed"
+        assert all("pids" not in c for c in calls)
+        managed = registry.get_process("agg_0_node0")
+        assert managed is not None and managed.critical is True
+        assert runner._ctx.healthy_worker_count("agg") == 1
+
+    def test_freeze_resolves_every_target_before_pausing(self, tmp_path: Path):
+        registry = ProcessRegistry(job_id="105")
+        for i in (0, 1):
+            registry.add_process(_FakeStep(f"agg_{i}_node{i}", node=f"node{i}").managed)
+        calls: list[tuple[str, dict]] = []
+
+        def fake(node, payload, **_kwargs):
+            calls.append((node, payload))
+            return _fake_node_helper(payload, pids=(777,) if node == "node0" else ())
+
+        runner = self._runner(
+            tmp_path,
+            registry,
+            {("agg", 0, 0): [_proc("agg", 0, "node0")], ("agg", 1, 0): [_proc("agg", 1, "node1")]},
+            [ChaosEventConfig(type="freeze", role="agg", workers="all", duration_seconds=5.0)],
+        )
+        with (
+            patch("srtctl.chaos.actions.list_step_ids", return_value=None),
+            patch("srtctl.chaos.actions.run_node_python", side_effect=fake),
+        ):
+            runner.start()
+            self._wait_records(runner, 1)
+            runner.stop(timeout=5.0)
+
+        assert runner.records[0].status == "failed"
+        assert not any(payload.get("signal") == "STOP" for _, payload in calls)
+
+    def test_rank_all_spans_every_node_of_a_multinode_worker(self, tmp_path: Path):
+        registry = ProcessRegistry(job_id="105")
+        registry.add_process(_FakeStep("agg_0_node0", node="node0").managed)
+        registry.add_process(_FakeStep("agg_0_node1", node="node1").managed)
+        leader, follower = _proc("agg", 0, "node0"), replace(_proc("agg", 0, "node1"), node_rank=1)
+        stops: list[tuple[str, list[int]]] = []
+
+        def fake(node, payload, **_kwargs):
+            if payload.get("signal") == "STOP":
+                stops.append((node, payload["pids"]))
+            return _fake_node_helper(payload)
+
+        runner = self._runner(
+            tmp_path,
+            registry,
+            {("agg", 0, 0): [leader, follower]},
+            [ChaosEventConfig(type="freeze", role="agg", process="engine", rank="all", duration_seconds=0.01)],
+        )
+        with (
+            patch("srtctl.chaos.actions.list_step_ids", return_value={"agg_0_node0": "105.1", "agg_0_node1": "105.2"}),
+            patch("srtctl.chaos.actions.run_node_python", side_effect=fake),
+        ):
+            runner.start()
+            self._wait_records(runner, 1)
+            runner.stop(timeout=5.0)
+
+        assert runner.records[0].status == "completed"
+        assert stops == [("node0", [777, 778]), ("node1", [777, 778])]
+
+    def test_rolling_restart_stops_when_replacement_not_ready(self, tmp_path: Path):
+        registry = ProcessRegistry(job_id="105")
+        steps = [_FakeStep(f"agg_{i}_node{i}", node=f"node{i}") for i in (0, 1)]
+        for step in steps:
+            registry.add_process(step.managed)
+        supervisor = MagicMock()
+        supervisor.active_names.return_value = None
+        supervisor.ensure_relaunch.return_value = 0
+        supervisor.relaunch_status.return_value = (True, "not_ready")
+        runner = ChaosRunner(
+            chaos=ChaosConfig(events=[ChaosEventConfig(type="rolling_restart", role="agg", timeout_seconds=5.0)]),
+            config=_load_dict(_base_recipe()),
+            runtime=SimpleNamespace(job_id="105", log_dir=tmp_path, network_interface=None),  # type: ignore[arg-type]
+            registry=registry,
+            supervisor=supervisor,
+            endpoint_groups={("agg", 0, 0): [_proc("agg", 0, "node0")], ("agg", 1, 0): [_proc("agg", 1, "node1")]},
+            stop_event=threading.Event(),
+        )
+        with (
+            patch("srtctl.chaos.actions.list_step_ids", return_value=None),
+            patch("srtctl.chaos.actions.signal_step", return_value=True),
+        ):
+            runner.start()
+            self._wait_records(runner, 1)
+            runner.stop(timeout=5.0)
+
+        assert runner.records[0].status == "failed"
+        assert "agg_0 replacement not_ready" in (runner.records[0].error or "")
+        assert supervisor.ensure_relaunch.call_count == 1  # agg_1 was never taken down
+
+    def test_untimed_freeze_holds_until_teardown(self, tmp_path: Path):
+        registry = ProcessRegistry(job_id="105")
+        registry.add_process(_FakeStep("agg_0_node0", node="node0").managed)
+        conts: list[list[int]] = []
+
+        def fake(node, payload, **_kwargs):
+            if payload.get("signal") == "CONT":
+                conts.append(payload["pids"])
+            return _fake_node_helper(payload, pids=(777,))
+
+        runner = self._runner(
+            tmp_path,
+            registry,
+            {("agg", 0, 0): [_proc("agg", 0, "node0")]},
+            [ChaosEventConfig(type="freeze", role="agg")],
+        )
+        with (
+            patch("srtctl.chaos.actions.list_step_ids", return_value=None),
+            patch("srtctl.chaos.actions.run_node_python", side_effect=fake),
+        ):
+            runner.start()
+            self._wait_records(runner, 1)
+            assert runner._thread is not None
+            runner._thread.join(timeout=5.0)
+            assert conts == []  # timeline finished; the freeze still holds
+            runner.stop(timeout=5.0)
+
+        assert conts == [[777]]
 
     def test_kill_wait_ready_and_rolling_restart_via_supervisor(self, tmp_path: Path):
         cfg = _load_dict(_base_recipe())
@@ -747,7 +920,14 @@ def test_mock_sweep_runs_chaos_concurrently_and_writes_timeline(tmp_path: Path):
                     "role": "agg",
                     "workers": 0,
                     "respawn": True,
-                }
+                },
+                {
+                    "name": "freeze-agg-1",
+                    "type": "freeze",
+                    "role": "agg",
+                    "workers": 1,
+                    "duration_seconds": 0.05,
+                },
             ],
         },
     )
@@ -772,9 +952,8 @@ def test_mock_sweep_runs_chaos_concurrently_and_writes_timeline(tmp_path: Path):
     events_file = out_dir / "logs" / CHAOS_EVENTS_FILENAME
     assert events_file.exists()
     data = json.loads(events_file.read_text())
-    assert len(data["events"]) == 1
+    assert [ev["name"] for ev in data["events"]] == ["kill-agg-0", "freeze-agg-1"]
+    assert [ev["status"] for ev in data["events"]] == ["completed", "completed"]
     ev = data["events"][0]
-    assert ev["name"] == "kill-agg-0"
-    assert ev["status"] == "completed"
     assert ev["targets"] == ["agg_0"]
     assert ev["started_at_ns"] <= ev["ended_at_ns"]

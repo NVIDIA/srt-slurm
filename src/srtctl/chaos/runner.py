@@ -260,6 +260,7 @@ class ChaosRunner:
         self._write()
 
     def _run(self) -> None:
+        started = time.monotonic()
         try:
             next_idx = 0
             for event in self._chaos.events:
@@ -276,7 +277,9 @@ class ChaosRunner:
 
             schedule = self._chaos.schedule
             if schedule is not None and not self._ctx.should_stop():
-                if schedule.initial_delay_seconds > 0 and self._ctx.wait(schedule.initial_delay_seconds):
+                # initial_delay_seconds counts from benchmark start, not from the last scripted event.
+                warmup_left = started + schedule.initial_delay_seconds - time.monotonic()
+                if warmup_left > 0 and self._ctx.wait(warmup_left):
                     return
                 fired = 0
                 while not self._ctx.should_stop():
@@ -300,9 +303,7 @@ class ChaosRunner:
                     if self._ctx.wait(delay):
                         break
         finally:
-            remaining = self._ctx.drain_active_stalls()
-            if remaining:
-                resume_stalled_processes(remaining, self._ctx, tag="final")
+            # Untimed freezes stay paused until benchmark teardown; stop() resumes them.
             self._write()
 
     def _new_record(self, idx: int, event: ChaosEventConfig, status: str) -> ChaosEventRecord:

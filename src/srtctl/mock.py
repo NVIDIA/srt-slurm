@@ -242,6 +242,19 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
     def _fake_wait_for_port(*_args, **_kwargs) -> bool:
         return True
 
+    def _fake_chaos_node_python(_node: str, payload: dict[str, Any], **_kwargs) -> dict[str, Any]:
+        """Chaos node helper: one matching PID on discovery; SIGSTOP leaves it stopped (``T``), others running."""
+        pids = payload.get("pids")
+        if pids is None:
+            return {"matches": [{"pid": 4242, "cmd": payload.get("pattern", "")}], "errors": [], "returncode": 0}
+        state = "T" if payload.get("signal") == "STOP" else "S"
+        return {
+            "signalled": list(pids),
+            "verified_states": {str(p): state for p in pids},
+            "errors": [],
+            "returncode": 0,
+        }
+
     def _fake_wait_for_model(*_args, **_kwargs) -> bool:
         return True
 
@@ -292,6 +305,7 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
         ("srtctl.cli.mixins.postprocess_stage.start_srun_process", _fake_srun),
         ("srtctl.cli.mixins.service_stage.start_srun_process", _fake_srun),
         ("srtctl.chaos.actions.start_srun_process", _fake_srun),
+        ("srtctl.chaos.actions.run_node_python", _fake_chaos_node_python),
         ("srtctl.chaos.actions.list_step_ids", lambda *args, **kwargs: None),
         ("srtctl.chaos.actions.signal_step", lambda *args, **kwargs: False),
         ("srtctl.chaos.targets.scrape_prometheus_text", lambda *args, **kwargs: None),

@@ -36,21 +36,21 @@ sequenceDiagram
 
 ### Worker Fault Tolerance and Restart Semantics
 
-- **Per-target `critical` scoping:** On `kill` when `respawn: false` and `roles.<role>.restart` is `never`, `ChaosRunner` marks only the targeted worker's step(s) non-critical (`ProcessRegistry.set_critical(name, False)`) right before signalling. Surviving workers keep `critical: true`, so unintended collateral crashes still fail the job.
+- **Per-target `critical` scoping:** On `kill` when `respawn: false` and `roles.<role>.restart` is `never`, `ChaosRunner` marks only the targeted worker's step(s) non-critical (`ProcessRegistry.set_critical(name, False)`) right before signalling. Surviving workers keep `critical: true`, so unintended collateral crashes still fail the job. A worker under `roles.<role>.restart` stays critical: the supervisor relaunches it, and once its restart budget is exhausted the exit fails the job as usual.
 - **Supervisor-backed relaunch:** When `roles.<role>.restart` is enabled, or when an event sets `respawn: true` or uses `rolling_restart`, exits are handled by the existing `WorkerSupervisor` (`worker_restarts.json`, log rotation to `<log>.out.<n>`, `_r<n>` step naming, and `/health` readiness probing). Setting `wait_ready: true` on `kill` waits for the relaunched worker's `/health` probe before starting the next event.
 
 ## Event Types
 
-- `kill`: signals the target worker step(s) through the launcher (`scancel --signal=<sig> --full <job>.<step>` under Slurm). When `process:` is set, runs an overlapping bare-host helper on the worker node to find matching subprocesses (scoped by `SLURM_STEP_ID` when available, falling back to cmdline substring match), picks `rank` (`0`, `1`, ..., `random`, or `all`), and sends `signal`.
-- `freeze`: sends `SIGSTOP` to the matched subprocess rank(s) (defaults to `process: engine`), polls `/proc/<pid>/stat` until state `T` is verified, holds for `duration_seconds` (or until benchmark teardown), then sends `SIGCONT` and verifies state is no longer `T`. Any paused process is unconditionally resumed on teardown.
-- `rolling_restart`: restarts every worker of `role` in a sliding window capped at `max_unavailable`, waiting for each replacement to pass its readiness probe through `WorkerSupervisor` before taking down the next worker.
+- `kill`: signals the target worker step(s) through the launcher (`scancel --signal=<sig> --full <job>.<step>` under Slurm). When `process:` is set, runs an overlapping bare-host helper on every node of the worker to list matching subprocesses (scoped by the worker step's `SLURM_STEP_ID`; a cmdline-only match is used only when no other worker shares the node), picks `rank` (`0`, `1`, ..., `random`, or `all`) from the combined list ordered by node then PID, and sends `signal` to those PIDs. If nothing matches, the event fails before the worker is touched.
+- `freeze`: sends `SIGSTOP` to the matched subprocess rank(s) (defaults to `process: engine`), polls `/proc/<pid>/stat` until state `T` is verified, holds for `duration_seconds` (or, without one, until benchmark teardown even after the timeline has run out of events), then sends `SIGCONT` and verifies state is no longer `T`. Every target is resolved before anything is paused; if a pause fails partway, the processes already paused are resumed at once. Any paused process is unconditionally resumed on teardown.
+- `rolling_restart`: restarts every worker of `role` in a sliding window capped at `max_unavailable`, waiting for each replacement to pass its readiness probe through `WorkerSupervisor` before taking down the next worker. If a replacement fails its readiness probe or cannot be relaunched, the event stops with `status: "failed"` instead of taking down another worker.
 
 ### Worker Selection (`workers:`)
 
 - `0` or `[0, 1]` — zero-based worker index(es) within `role`.
 - `random` or `random:<N>` — picks `N` workers uniformly at random (deterministic when `chaos.seed` is set).
 - `all` — targets every worker of `role`.
-- `hottest` or `hottest:<N>` — scrapes `chaos.hot_metric` (default `dynamo_component_inflight_requests`, falling back to engine running-request gauges) from each worker's Prometheus endpoint and picks the `N` busiest workers. If no worker reports a positive value, falls back to index order and records `fallback: true`.
+- `hottest` or `hottest:<N>` — scrapes `chaos.hot_metric` (default `dynamo_component_inflight_requests`, falling back to engine running-request gauges) from each worker's Prometheus endpoint (under `dynamo.sidecar`, both the sidecar runtime and the native engine listeners) and picks the `N` busiest workers. If no worker reports a positive value, falls back to index order and records `fallback: true`.
 
 ### Engine Process Targets (`process:`)
 
@@ -63,13 +63,14 @@ sequenceDiagram
 | `trtllm` | `dynamo.trtllm` | `tensorrt_llm.llmapi.mgmn_worker_node` | `tensorrt_llm.llmapi.mgmn_worker_node` |
 | `mocker` | `dynamo.mocker` | `dynamo.mocker` | `dynamo.mocker` |
 
-Any other string in `process:` is matched verbatim as a cmdline substring (e.g. `process: "sglang::detokenizer"`), which also works for engines without default aliases.
+`main` names the Dynamo worker module, so it is rejected for native workers (a frontend that launches the engine directly, or `dynamo.sidecar`); use a literal substring there. Any other string in `process:` is matched verbatim as a cmdline substring (e.g. `process: "sglang::detokenizer"`), which also works for engines without default aliases.
 
 ### Safety Guards and Soak Schedules
 
 - **`leashed: true` (live dry-run):** runs target selection, Prometheus `hottest` scraping, `min_healthy` checks, and on-node process discovery without sending any signal. Events are recorded in `chaos_events.json` with `status: "leashed"`.
 - **`min_healthy: N` (blast-radius guard):** refuses to fire a `kill` or `freeze` when fewer than `min_healthy` healthy workers of `role` would remain (recording `status: "skipped"` with `reason: "min_healthy_guard"`), and throttles `rolling_restart` waves so at least `min_healthy` workers stay up.
-- **`schedule:` (stochastic soak mode):** repeatedly injects `kill` or `freeze` faults until the benchmark exits (or `max_events` is reached), drawing inter-event delays with mean `mean_interval_seconds` and floor `min_interval_seconds` (`min + Exp(1 / (mean - min))`).
+- **`schedule:` (stochastic soak mode):** repeatedly injects `kill` or `freeze` faults until the benchmark exits (or `max_events` is reached), drawing inter-event delays with mean `mean_interval_seconds` and floor `min_interval_seconds` (`min + Exp(1 / (mean - min))`). `initial_delay_seconds` counts from benchmark start, so scripted `events` do not push the first soak fault back.
+- **`observability.nsys`:** `kill` and `rolling_restart` are rejected while the automatic nsys preset is on, because a killed worker never acknowledges the capture boundary and the benchmark would hang. Set `observability.nsys.enabled: false`.
 
 ## Example
 

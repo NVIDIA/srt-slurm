@@ -32,23 +32,20 @@ _RESULT_PREFIX = "CHAOS_RESULT "
 # Self-contained stdlib script executed on a worker node to discover and signal
 # matching processes belonging to a worker step, with optional /proc/<pid>/stat verification.
 _NODE_PROC_SIGNAL_SCRIPT = r"""
-import json, os, random, signal, sys, time
+import json, os, signal, sys, time
 
 cfg = json.loads(sys.argv[1])
-pattern = cfg["pattern"]
+pattern = cfg.get("pattern", "")
 step_num = cfg.get("step_num")
-rank = cfg["rank"]
-sig_name = cfg["signal"]
+allow_unscoped = bool(cfg.get("allow_unscoped", False))
+explicit_pids = cfg.get("pids")
+sig_name = cfg.get("signal")
 verify_state = cfg.get("verify_state")
 verify_not_state = cfg.get("verify_not_state")
 verify_timeout = float(cfg.get("verify_timeout", 5.0))
-explicit_pids = cfg.get("pids")
-dry_run = bool(cfg.get("dry_run", False))
-seed = cfg.get("seed")
-allow_unscoped = bool(cfg.get("allow_unscoped", False))
-errors = []
 my_pid = os.getpid()
 my_uid = os.getuid()
+errors = []
 
 def read_stat_state(pid):
     try:
@@ -91,16 +88,14 @@ def discover(use_step_filter):
         cmd = raw_cmd.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
         if pattern not in cmd:
             continue
-        if use_step_filter and step_num is not None and not env_has_step(pid, step_num):
+        if use_step_filter and not env_has_step(pid, step_num):
             continue
         found.append((pid, cmd))
     found.sort(key=lambda item: item[0])
     return found
 
-if explicit_pids is not None:
-    chosen = [(int(p), "") for p in explicit_pids]
-    matched_count = len(chosen)
-else:
+if explicit_pids is None:
+    # Discovery only: list matching PIDs; the caller picks ranks and signals them by PID.
     matches = discover(use_step_filter=True) if step_num is not None else []
     if not matches and allow_unscoped:
         # Containerized children may clear SLURM_STEP_ID. A pattern-only match is
@@ -108,36 +103,27 @@ else:
         matches = discover(use_step_filter=False)
     elif not matches and step_num is None:
         errors.append("worker step id unknown and another worker shares this node; refusing unscoped match")
-    matched_count = len(matches)
-    if not matches:
-        chosen = []
-    elif rank == "all":
-        chosen = matches
-    elif rank == "random":
-        rng = random.Random(seed)
-        chosen = [rng.choice(matches)]
-    else:
-        idx = int(rank)
-        chosen = [matches[idx]] if 0 <= idx < len(matches) else []
+    print("CHAOS_RESULT " + json.dumps({
+        "matches": [{"pid": pid, "cmd": cmd[:120]} for pid, cmd in matches],
+        "errors": errors,
+    }))
+    sys.exit(0)
 
 sig_num = getattr(signal, f"SIG{sig_name}")
 signalled = []
-for pid, cmd in chosen:
-    if dry_run:
-        signalled.append({"pid": pid, "cmd": cmd[:120]})
-        continue
+for pid in explicit_pids:
     try:
-        os.kill(pid, sig_num)
-        signalled.append({"pid": pid, "cmd": cmd[:120]})
+        os.kill(int(pid), sig_num)
+        signalled.append(int(pid))
     except ProcessLookupError:
         errors.append(f"pid {pid} exited before SIG{sig_name}")
     except OSError as exc:
         errors.append(f"pid {pid}: {exc}")
 
 verified = {}
-if signalled and not dry_run and (verify_state is not None or verify_not_state is not None):
+if signalled and (verify_state is not None or verify_not_state is not None):
     deadline = time.monotonic() + verify_timeout
-    pending = {item["pid"] for item in signalled}
+    pending = set(signalled)
     while pending:
         for pid in list(pending):
             st = read_stat_state(pid)
@@ -153,23 +139,19 @@ if signalled and not dry_run and (verify_state is not None or verify_not_state i
             break
         time.sleep(0.2)
 
-print("CHAOS_RESULT " + json.dumps({
-    "matched": matched_count,
-    "signalled": signalled,
-    "verified_states": verified,
-    "errors": errors,
-}))
+print("CHAOS_RESULT " + json.dumps({"signalled": signalled, "verified_states": verified, "errors": errors}))
 """
 
 
 @dataclass(frozen=True)
 class StalledProcess:
-    """One process currently paused with ``SIGSTOP`` that must be resumed on teardown."""
+    """One matched worker subprocess on ``node``; paused ones must be resumed on teardown."""
 
     node: str
     pid: int
     worker: str
     het_group: int | None = None
+    cmd: str = ""
 
 
 def _step_numeric_id(step_id: str | None) -> str | None:
@@ -240,8 +222,12 @@ def _prepare_destructive_target(
             backoff_seconds=backoff_seconds,
         )
     # Mark only the targeted worker's step(s) non-critical so surviving workers stay critical.
+    # A step under roles.<role>.restart stays critical: the supervisor relaunches it and,
+    # once its budget is exhausted, hands the exit back to the registry's failure check.
     for name in live_names:
-        ctx.registry.set_critical(name, False)
+        proc = ctx.registry.get_process(name)
+        if proc is None or not proc.supervised:
+            ctx.registry.set_critical(name, False)
         ctx.mark_step_killed(name)
     return None
 
@@ -318,10 +304,102 @@ def _signal_worker_steps(
     return results
 
 
-def _shares_node(target: WorkerTarget, ctx: ChaosContext) -> bool:
-    """True when another worker endpoint has a process on ``target``'s leader node."""
-    node = target.leader.node
+def _shares_node(target: WorkerTarget, node: str, ctx: ChaosContext) -> bool:
+    """True when another worker endpoint has a process on ``node``."""
     return any(key != target.key and any(p.node == node for p in procs) for key, procs in ctx.endpoint_groups.items())
+
+
+def _step_for_node(ctx: ChaosContext, live_names: list[str], node: str) -> str | None:
+    """The live step of a worker that runs on ``node``; a single multi-node step (MPI launch) covers every node."""
+    for name in live_names:
+        proc = ctx.registry.get_process(name)
+        if proc is not None and proc.node == node:
+            return name
+    return live_names[0] if len(live_names) == 1 else None
+
+
+def _discover_processes(
+    target: WorkerTarget,
+    pattern: str,
+    ctx: ChaosContext,
+    step_ids: dict[str, str],
+    *,
+    tag: str,
+) -> tuple[list[StalledProcess], list[str]]:
+    """Matching subprocesses on every node of ``target`` (node order, then PID), plus helper errors."""
+    live_names = ctx.active_step_names(target)
+    found: list[StalledProcess] = []
+    errors: list[str] = []
+    seen: set[str] = set()
+    for proc in target.processes:
+        if proc.node in seen:
+            continue
+        seen.add(proc.node)
+        step_name = _step_for_node(ctx, live_names, proc.node)
+        payload = {
+            "pattern": pattern,
+            "step_num": _step_numeric_id(step_ids.get(step_name)) if step_name else None,
+            "allow_unscoped": not _shares_node(target, proc.node, ctx),
+        }
+        res = run_node_python(
+            proc.node, payload, log_dir=ctx.runtime.log_dir, tag=f"{tag}_discover", het_group=proc.het_group
+        )
+        errors.extend(f"{proc.node}: {err}" for err in res.get("errors") or [])
+        found.extend(
+            StalledProcess(
+                node=proc.node, pid=int(m["pid"]), worker=target.label, het_group=proc.het_group, cmd=m.get("cmd", "")
+            )
+            for m in res.get("matches") or []
+        )
+    return found, errors
+
+
+def _select_rank(matches: list[StalledProcess], rank: int | str, ctx: ChaosContext) -> list[StalledProcess]:
+    if rank == "all":
+        return list(matches)
+    if not matches:
+        return []
+    if rank == "random":
+        return [ctx.rng.choice(matches)]
+    idx = int(rank)
+    return [matches[idx]] if idx < len(matches) else []
+
+
+def _signal_processes(
+    procs: list[StalledProcess],
+    sig: str,
+    ctx: ChaosContext,
+    *,
+    tag: str,
+    verify_state: str | None = None,
+    verify_not_state: str | None = None,
+) -> list[dict[str, Any]]:
+    """Send ``sig`` to ``procs`` by PID, one helper per node, and report each node's verified states."""
+    by_node: dict[tuple[str, int | None], list[int]] = {}
+    for item in procs:
+        by_node.setdefault((item.node, item.het_group), []).append(item.pid)
+    results: list[dict[str, Any]] = []
+    for (node, het_group), pids in by_node.items():
+        payload: dict[str, Any] = {"pids": pids, "signal": sig, "verify_timeout": 5.0}
+        if verify_state is not None:
+            payload["verify_state"] = verify_state
+        if verify_not_state is not None:
+            payload["verify_not_state"] = verify_not_state
+        res = run_node_python(node, payload, log_dir=ctx.runtime.log_dir, tag=tag, het_group=het_group)
+        results.append(
+            {
+                "node": node,
+                "pids": pids,
+                "signalled": res.get("signalled") or [],
+                "verified_states": res.get("verified_states") or {},
+                "errors": res.get("errors") or [],
+            }
+        )
+    return results
+
+
+def _proc_info(procs: list[StalledProcess]) -> list[dict[str, Any]]:
+    return [{"node": p.node, "pid": p.pid, "cmd": p.cmd} for p in procs]
 
 
 def _resolve_process_pattern(event: ChaosEventConfig, ctx: ChaosContext) -> str | None:
@@ -354,19 +432,14 @@ def execute_kill(
     outcomes: list[dict[str, Any]] = []
     relaunch_watch: list[tuple[WorkerTarget, int]] = []
 
-    for target in targets:
-        live_names = ctx.active_step_names(target)
-        if not ctx.leashed:
-            prev_restarts = _prepare_destructive_target(
-                ctx,
-                target,
-                respawn=event.respawn,
-                wait_ready=event.wait_ready,
-            )
-            if prev_restarts is not None and event.wait_ready:
-                relaunch_watch.append((target, prev_restarts))
+    def arm(target: WorkerTarget) -> None:
+        prev_restarts = _prepare_destructive_target(ctx, target, respawn=event.respawn, wait_ready=event.wait_ready)
+        if prev_restarts is not None and event.wait_ready:
+            relaunch_watch.append((target, prev_restarts))
 
+    for target in targets:
         if pattern is None:
+            live_names = ctx.active_step_names(target)
             if ctx.leashed:
                 step_results = [
                     {"step": name, "signal": f"SIG{sig}", "method": "leashed", "delivered": False}
@@ -380,6 +453,7 @@ def execute_kill(
                     live_names,
                 )
             else:
+                arm(target)
                 step_results = _signal_worker_steps(ctx, live_names, sig, step_ids=step_ids or None)
                 logger.warning(
                     "Chaos[%d] kill (step): %s -> SIG%s (%s, respawn=%s, wait_ready=%s)",
@@ -391,62 +465,49 @@ def execute_kill(
                     event.wait_ready,
                 )
             outcomes.append({"worker": target.label, "steps": step_results, "respawn": event.respawn})
+            continue
+
+        # Discover before arming, so a selector that matches nothing leaves the worker untouched.
+        tag = f"kill_{event_index}_{target.label}"
+        matches, errors = _discover_processes(target, pattern, ctx, step_ids, tag=tag)
+        chosen = _select_rank(matches, event.rank, ctx)
+        if not chosen and not ctx.leashed:
+            raise RuntimeError(
+                f"kill matched {len(matches)} process(es) for pattern={pattern!r} rank={event.rank!r} "
+                f"on {target.label}; nothing to signal; errors={errors}"
+            )
+        signal_results: list[dict[str, Any]] = []
+        if ctx.leashed:
+            logger.info(
+                "Chaos[%d] LEASHED kill (process): would send SIG%s to %s pattern=%r %s",
+                event_index,
+                sig,
+                target.label,
+                pattern,
+                _proc_info(chosen),
+            )
         else:
-            step_num = _step_numeric_id(step_ids.get(live_names[0])) if live_names else None
-            node = target.leader.node
-            payload: dict[str, Any] = {
+            arm(target)
+            signal_results = _signal_processes(chosen, sig, ctx, tag=tag)
+            logger.warning(
+                "Chaos[%d] kill (process): %s pattern=%r rank=%r -> SIG%s %s",
+                event_index,
+                target.label,
+                pattern,
+                event.rank,
+                sig,
+                _proc_info(chosen),
+            )
+        outcomes.append(
+            {
+                "worker": target.label,
                 "pattern": pattern,
-                "step_num": step_num,
-                "allow_unscoped": not _shares_node(target, ctx),
-                "rank": event.rank,
-                "signal": sig,
-                "dry_run": ctx.leashed,
-                "seed": ctx.rng.randint(0, 2**31 - 1),
+                "matched": len(matches),
+                "chosen": _proc_info(chosen),
+                "signal_results": signal_results,
+                "errors": errors,
             }
-            res = run_node_python(
-                node,
-                payload,
-                log_dir=ctx.runtime.log_dir,
-                tag=f"kill_{event_index}_{target.label}",
-                het_group=target.leader.het_group,
-            )
-            signalled = res.get("signalled") or []
-            if not signalled and not ctx.leashed:
-                raise RuntimeError(
-                    f"kill matched {res.get('matched', 0)} process(es) for pattern={pattern!r} "
-                    f"rank={event.rank!r} on {target.label} ({node}); nothing signalled; errors={res.get('errors')}"
-                )
-            if ctx.leashed:
-                logger.info(
-                    "Chaos[%d] LEASHED kill (process): would send SIG%s to %s (%s) pattern=%r pids=%s",
-                    event_index,
-                    sig,
-                    target.label,
-                    node,
-                    pattern,
-                    [item["pid"] for item in signalled],
-                )
-            else:
-                logger.warning(
-                    "Chaos[%d] kill (process): %s (%s) pattern=%r rank=%r -> SIG%s pids=%s",
-                    event_index,
-                    target.label,
-                    node,
-                    pattern,
-                    event.rank,
-                    sig,
-                    [item["pid"] for item in signalled],
-                )
-            outcomes.append(
-                {
-                    "worker": target.label,
-                    "node": node,
-                    "pattern": pattern,
-                    "matched": res.get("matched", 0),
-                    "signalled": signalled,
-                    "errors": res.get("errors") or [],
-                }
-            )
+        )
 
     details: dict[str, Any] = {
         "scope": "process" if pattern is not None else "step",
@@ -475,44 +536,30 @@ def resume_stalled_processes(
     ctx: ChaosContext,
     *,
     tag: str,
-) -> list[dict[str, Any]]:
-    """Send ``SIGCONT`` to every paused process in ``stalled`` and verify state != ``T``."""
-    by_node: dict[tuple[str, int | None], list[StalledProcess]] = {}
-    for item in stalled:
-        by_node.setdefault((item.node, item.het_group), []).append(item)
+) -> list[StalledProcess]:
+    """Send ``SIGCONT`` to ``stalled``, verify state != ``T``, and stop tracking the ones that resumed or exited.
 
-    results: list[dict[str, Any]] = []
-    for (node, het_group), items in by_node.items():
-        pids = [item.pid for item in items]
-        payload = {
-            "pattern": "",
-            "rank": "all",
-            "signal": "CONT",
-            "pids": pids,
-            "verify_not_state": "T",
-            "verify_timeout": 5.0,
-        }
-        try:
-            res = run_node_python(
-                node,
-                payload,
-                log_dir=ctx.runtime.log_dir,
-                tag=f"resume_{tag}",
-                het_group=het_group,
-            )
-            results.append(
-                {
-                    "node": node,
-                    "pids": pids,
-                    "verified_states": res.get("verified_states") or {},
-                    "errors": res.get("errors") or [],
-                }
-            )
-            logger.info("Chaos resume: SIGCONT on %s pids=%s states=%s", node, pids, res.get("verified_states"))
-        except Exception as exc:  # noqa: BLE001 - best effort on teardown
-            logger.warning("Chaos resume failed on %s pids=%s: %s", node, pids, exc)
-            results.append({"node": node, "pids": pids, "error": str(exc)})
-    return results
+    Returns the processes still not confirmed resumed; they stay registered so teardown retries them.
+    """
+    if not stalled:
+        return []
+    try:
+        results = _signal_processes(stalled, "CONT", ctx, tag=f"resume_{tag}", verify_not_state="T")
+    except Exception as exc:  # noqa: BLE001 - best effort; teardown retries what stays registered
+        logger.warning("Chaos resume (%s) failed: %s", tag, exc)
+        return list(stalled)
+    resumed = {(r["node"], int(pid)) for r in results for pid, state in r["verified_states"].items() if state != "T"}
+    for r in results:
+        logger.info(
+            "Chaos resume: SIGCONT on %s pids=%s states=%s errors=%s",
+            r["node"],
+            r["pids"],
+            r["verified_states"],
+            r["errors"],
+        )
+    done = [sp for sp in stalled if (sp.node, sp.pid) in resumed]
+    ctx.unregister_stalls(done)
+    return [sp for sp in stalled if (sp.node, sp.pid) not in resumed]
 
 
 def execute_freeze(
@@ -525,92 +572,95 @@ def execute_freeze(
     pattern = _resolve_process_pattern(event, ctx)
     assert pattern is not None  # effective_process defaults to "engine" on freeze
     step_ids = list_step_ids(ctx.runtime.job_id) or {}
-    stalled_now: list[StalledProcess] = []
-    worker_outcomes: list[dict[str, Any]] = []
 
+    # Resolve every target before pausing anything, so a later discovery failure cannot strand earlier pauses.
+    plans: list[tuple[WorkerTarget, list[StalledProcess], list[StalledProcess], list[str]]] = []
     for target in targets:
-        live_names = ctx.active_step_names(target)
-        step_num = _step_numeric_id(step_ids.get(live_names[0])) if live_names else None
-        node = target.leader.node
-        payload: dict[str, Any] = {
-            "pattern": pattern,
-            "step_num": step_num,
-            "allow_unscoped": not _shares_node(target, ctx),
-            "rank": event.rank,
-            "signal": "STOP",
-            "dry_run": ctx.leashed,
-            "verify_state": "T",
-            "verify_timeout": 5.0,
-            "seed": ctx.rng.randint(0, 2**31 - 1),
-        }
-        res = run_node_python(
-            node,
-            payload,
-            log_dir=ctx.runtime.log_dir,
-            tag=f"freeze_{event_index}_{target.label}",
-            het_group=target.leader.het_group,
+        matches, errors = _discover_processes(
+            target, pattern, ctx, step_ids, tag=f"freeze_{event_index}_{target.label}"
         )
-        signalled = res.get("signalled") or []
-        if not signalled and not ctx.leashed:
+        chosen = _select_rank(matches, event.rank, ctx)
+        if not chosen and not ctx.leashed:
             raise RuntimeError(
-                f"freeze matched {res.get('matched', 0)} process(es) for pattern={pattern!r} "
-                f"rank={event.rank!r} on {target.label} ({node}); nothing frozen; errors={res.get('errors')}"
+                f"freeze matched {len(matches)} process(es) for pattern={pattern!r} rank={event.rank!r} "
+                f"on {target.label}; nothing to freeze; errors={errors}"
             )
-        verified = res.get("verified_states") or {}
-        if ctx.leashed:
-            logger.info(
-                "Chaos[%d] LEASHED freeze: would SIGSTOP %s (%s) pattern=%r pids=%s",
-                event_index,
-                target.label,
-                node,
-                pattern,
-                [item["pid"] for item in signalled],
-            )
-        else:
-            for item in signalled:
-                sp = StalledProcess(
-                    node=node, pid=int(item["pid"]), worker=target.label, het_group=target.leader.het_group
-                )
-                stalled_now.append(sp)
-                ctx.register_stall(sp)
-            bad_states = {pid: st for pid, st in verified.items() if st != "T"}
-            if bad_states:
-                raise RuntimeError(f"freeze SIGSTOP verification failed on {target.label} ({node}): {bad_states}")
-            logger.warning(
-                "Chaos[%d] freeze: %s (%s) SIGSTOP verified (state=T) pids=%s",
-                event_index,
-                target.label,
-                node,
-                [item["pid"] for item in signalled],
-            )
-        worker_outcomes.append(
-            {
-                "worker": target.label,
-                "node": node,
-                "pattern": pattern,
-                "signalled": signalled,
-                "verified_states": verified,
-            }
-        )
+        plans.append((target, matches, chosen, errors))
 
-    resume_results: list[dict[str, Any]] = []
-    if not ctx.leashed and event.duration_seconds is not None:
+    worker_outcomes: list[dict[str, Any]] = []
+    if ctx.leashed:
+        for target, matches, chosen, errors in plans:
+            logger.info(
+                "Chaos[%d] LEASHED freeze: would SIGSTOP %s pattern=%r %s",
+                event_index,
+                target.label,
+                pattern,
+                _proc_info(chosen),
+            )
+            worker_outcomes.append(
+                {"worker": target.label, "matched": len(matches), "chosen": _proc_info(chosen), "errors": errors}
+            )
+        return {
+            "pattern": pattern,
+            "duration_seconds": event.duration_seconds,
+            "workers": worker_outcomes,
+            "leashed": True,
+        }
+
+    stalled_now: list[StalledProcess] = []
+    try:
+        for target, matches, chosen, errors in plans:
+            for sp in chosen:
+                ctx.register_stall(sp)
+                stalled_now.append(sp)
+            results = _signal_processes(
+                chosen, "STOP", ctx, tag=f"freeze_{event_index}_{target.label}", verify_state="T"
+            )
+            bad = {
+                f"{r['node']}:{pid}": state
+                for r in results
+                for pid, state in r["verified_states"].items()
+                if state != "T"
+            }
+            unsignalled = [
+                p.pid for p in chosen if all(p.pid not in r["signalled"] for r in results if r["node"] == p.node)
+            ]
+            if bad or unsignalled:
+                raise RuntimeError(
+                    f"freeze SIGSTOP failed on {target.label}: states={bad} unsignalled={unsignalled} "
+                    f"errors={[e for r in results for e in r['errors']]}"
+                )
+            logger.warning(
+                "Chaos[%d] freeze: %s SIGSTOP verified (state=T) %s", event_index, target.label, _proc_info(chosen)
+            )
+            worker_outcomes.append(
+                {
+                    "worker": target.label,
+                    "matched": len(matches),
+                    "chosen": _proc_info(chosen),
+                    "verified_states": {r["node"]: r["verified_states"] for r in results},
+                    "errors": errors,
+                }
+            )
+    except BaseException:
+        resume_stalled_processes(stalled_now, ctx, tag=f"{event_index}_abort")
+        raise
+
+    not_resumed: list[StalledProcess] = []
+    if event.duration_seconds is not None:
         logger.info("Chaos[%d] freeze: holding for %.1fs before SIGCONT", event_index, event.duration_seconds)
         try:
             ctx.wait(event.duration_seconds)
         finally:
-            resume_results = resume_stalled_processes(stalled_now, ctx, tag=f"{event_index}")
-            ctx.unregister_stalls(stalled_now)
+            not_resumed = resume_stalled_processes(stalled_now, ctx, tag=f"{event_index}")
+        if not_resumed:
+            raise RuntimeError(f"freeze SIGCONT not verified for {_proc_info(not_resumed)}; retrying on teardown")
 
-    out: dict[str, Any] = {
-        "pattern": pattern,
-        "duration_seconds": event.duration_seconds,
-        "workers": worker_outcomes,
-        "resumed": resume_results,
-    }
-    if ctx.leashed:
-        out["leashed"] = True
-    return out
+    return {"pattern": pattern, "duration_seconds": event.duration_seconds, "workers": worker_outcomes}
+
+
+# Relaunch outcomes after which the replacement counts as serving (see WorkerSupervisor.relaunch_status).
+_SERVING_OUTCOMES = frozenset({"ready", "relaunched", "untracked"})
 
 
 def execute_rolling_restart(
@@ -688,11 +738,17 @@ def execute_rolling_restart(
         still_in_flight: list[tuple[WorkerTarget, int]] = []
         for target, prev_restarts in in_flight:
             done, outcome = ctx.supervisor.relaunch_status(target.key, prev_restarts=prev_restarts)
-            if done:
-                restarted.append({"worker": target.label, "outcome": outcome})
-                logger.info("Chaos[%d] rolling_restart: %s replacement %s", event_index, target.label, outcome)
-            else:
+            if not done:
                 still_in_flight.append((target, prev_restarts))
+                continue
+            restarted.append({"worker": target.label, "outcome": outcome})
+            logger.info("Chaos[%d] rolling_restart: %s replacement %s", event_index, target.label, outcome)
+            if outcome not in _SERVING_OUTCOMES:
+                # Never take down the next worker while a replacement is not serving.
+                raise RuntimeError(
+                    f"rolling_restart stopped: {target.label} replacement {outcome} "
+                    f"({len(restarted)}/{len(ordered)} restarted)"
+                )
         in_flight = still_in_flight
 
         if not queue and not in_flight:

@@ -62,6 +62,9 @@ roles:
 
 observability:
   enabled: true
+  # Killed workers never acknowledge the nsys capture boundary, so chaos kills need nsys off.
+  nsys:
+    enabled: false
 
 benchmark:
   type: "sa-bench"

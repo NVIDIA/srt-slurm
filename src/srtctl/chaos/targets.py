@@ -15,6 +15,7 @@ import requests
 
 from srtctl.core.ip_utils import url_host
 from srtctl.core.slurm import get_hostname_ip
+from srtctl.core.telemetry import sidecar_worker_metrics_targets
 from srtctl.frontends import FRONTEND_NONE, get_frontend
 
 if TYPE_CHECKING:
@@ -78,21 +79,24 @@ def parse_prometheus_metric(text: str, metric_name: str) -> float | None:
     return total if found else None
 
 
-def worker_metrics_url(target: WorkerTarget, config: SrtConfig, runtime: RuntimeContext) -> str | None:
-    """HTTP Prometheus ``/metrics`` URL for ``target``'s leader process, or None when unavailable."""
+def worker_metrics_urls(target: WorkerTarget, config: SrtConfig, runtime: RuntimeContext) -> list[str]:
+    """HTTP Prometheus ``/metrics`` URLs for ``target``; under Dynamo sidecars, the runtime and native engine listeners."""
     if config.frontend.type == FRONTEND_NONE:
-        return None
+        return []
     frontend = get_frontend(config.frontend.type)
+    backend = config.backend_for_role(target.mode)
+    if config.dynamo.sidecar:
+        return [
+            f"http://{url_host(get_hostname_ip(t.process.node, runtime.network_interface))}:{t.port}{t.path}"
+            for t in sidecar_worker_metrics_targets(target.processes, backend, frontend)
+        ]
     leader = target.leader
     port = frontend.worker_metrics_port(leader, runtime)
-    if port is None or port <= 0:
-        return None
-    backend = config.backend_for_role(target.mode)
     path = frontend.worker_metrics_path(backend, target.mode)
-    if not path:
-        return None
+    if port is None or port <= 0 or not path:
+        return []
     host = get_hostname_ip(leader.node, runtime.network_interface)
-    return f"http://{url_host(host)}:{port}{path}"
+    return [f"http://{url_host(host)}:{port}{path}"]
 
 
 def scrape_prometheus_text(url: str, *, timeout: float = 3.0) -> str | None:
@@ -153,8 +157,8 @@ def resolve_worker_targets(
     metric_chain = tuple(dict.fromkeys((hot_metric, *FALLBACK_HOT_METRICS)))
     raw_texts: dict[str, str | None] = {}
     for target in ordered:
-        url = worker_metrics_url(target, config, runtime)
-        raw_texts[target.label] = scraper(url) if url is not None else None
+        texts = [text for url in worker_metrics_urls(target, config, runtime) if (text := scraper(url))]
+        raw_texts[target.label] = "\n".join(texts) if texts else None
 
     used_metric: str | None = None
     scores: list[tuple[float, int, WorkerTarget]] = []
