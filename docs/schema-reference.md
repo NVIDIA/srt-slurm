@@ -331,7 +331,10 @@ Concurrent fault injection timeline executed while the benchmark runs.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `events` | list[[ChaosEventConfig](#chaoseventconfig)] | `[]` | Ordered list of fault events to execute during the benchmark. |
-| `seed` | int \| None | `None` | Optional RNG seed for deterministic ``workers: random`` and ``rank: random`` selection. |
+| `schedule` | [ChaosScheduleConfig](#chaosscheduleconfig) \| None | `None` | Optional stochastic soak schedule (MTBF + minimum gap) that repeatedly injects faults until the benchmark finishes or ``max_events`` is reached. |
+| `leashed` | bool | `False` | Dry-run mode on a live cluster. Runs target selection, ``min_healthy`` checks, and on-node process discovery, logging what would be signalled into ``chaos_events.json`` with status ``leashed`` without sending any signals. |
+| `min_healthy` | int | `0` | Blast-radius guard: minimum number of workers in the targeted role that must remain healthy and running after a fault. Events that would drop healthy capacity below ``min_healthy`` are skipped (or, for ``rolling_restart``, deferred until enough workers are ready). ``0`` disables the guard. |
+| `seed` | int \| None | `None` | Optional RNG seed for deterministic ``workers: random``, ``rank: random``, and stochastic schedule draws. |
 | `hot_metric` | str | `'dynamo_component_inflight_requests'` | Primary Prometheus metric scraped from candidate workers when resolving ``workers: hottest``. Falls back to engine running-request gauges, then worker index order. |
 
 ### ServiceConfig
@@ -537,6 +540,27 @@ One scheduled fault injection event executed alongside the benchmark.
 | `graceful` | bool | `True` | When true on ``rolling_restart``, stop workers with ``SIGTERM`` instead of ``SIGKILL``. |
 | `timeout_seconds` | float | `600.0` | Maximum time in seconds for ``rolling_restart`` or ``kill`` with ``wait_ready: true``. |
 | `name` | str \| None | `None` | Optional label recorded in ``chaos_events.json``. |
+
+### ChaosScheduleConfig
+
+Stochastic soak schedule (MTBF ``mean_interval_seconds`` with minimum gap ``min_interval_seconds``).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `mean_interval_seconds` | float | required | Mean time between faults in seconds (must be > 0). |
+| `min_interval_seconds` | float | `0.0` | Minimum enforced delay in seconds between consecutive faults (must satisfy ``0 <= min_interval_seconds <= mean_interval_seconds``). |
+| `initial_delay_seconds` | float | `0.0` | Warmup delay in seconds after benchmark start before the first scheduled fault. |
+| `max_events` | int \| None | `None` | Optional cap on total scheduled faults. Omit to run for the entire benchmark duration. |
+| `type` | one of `'kill'`, `'freeze'` | `'kill'` | Fault action fired each tick (``kill`` or ``freeze``). |
+| `role` | one of `'prefill'`, `'decode'`, `'agg'` | `'agg'` | Worker role to target (``prefill``, ``decode``, or ``agg``). |
+| `workers` | int \| list[int] \| str | `'random'` | Worker selector within ``role`` (default ``random``). |
+| `process` | str \| None | `None` | Optional process selector (``main``, ``engine``, ``rank``, or literal cmdline substring). On ``freeze``, defaults to ``engine``. |
+| `rank` | int \| one of `'random'`, `'all'` | `0` | Which matched subprocess rank to signal inside the targeted worker. |
+| `signal` | str | `'KILL'` | Signal sent when ``type`` is ``kill``. |
+| `duration_seconds` | float \| None | `None` | Hold duration in seconds when ``type`` is ``freeze``. |
+| `respawn` | bool | `True` | Hand killed endpoints to the worker supervisor for in-place relaunch (default true for soak schedules). |
+| `wait_ready` | bool | `False` | Wait for the relaunched worker's readiness probe before drawing the next interval. |
+| `timeout_seconds` | float | `600.0` | Maximum wait in seconds when ``wait_ready`` is true. |
 
 ### SourceConfig
 

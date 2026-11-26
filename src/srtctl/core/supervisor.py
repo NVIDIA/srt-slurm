@@ -277,6 +277,14 @@ class WorkerSupervisor:
             state.override_backoff_seconds = backoff_seconds
             return state.restarts
 
+    def is_endpoint_ready(self, key: EndpointKey) -> bool:
+        """True when ``key`` is not currently stopping, backing off, or waiting on a readiness probe."""
+        with self._lock:
+            state = self._endpoints.get(key)
+            if state is None:
+                return True
+            return state.due_at is None and not state.stopping and state.ready_deadline is None
+
     def relaunch_status(self, key: EndpointKey, *, prev_restarts: int) -> tuple[bool, str | None]:
         """Whether a relaunch past ``prev_restarts`` has finished (ready, relaunched, or failed)."""
         with self._lock:

@@ -537,36 +537,154 @@ class ChaosEventConfig:
 
 
 @dataclass(frozen=True)
+class ChaosScheduleConfig:
+    """Stochastic soak schedule (MTBF ``mean_interval_seconds`` with minimum gap ``min_interval_seconds``).
+
+    Fires faults repeatedly until the benchmark exits (or ``max_events`` is
+    reached). Inter-event waits are drawn as ``min_interval_seconds +
+    Exp(1 / (mean_interval_seconds - min_interval_seconds))`` so the average
+    interval matches ``mean_interval_seconds`` while guaranteeing at least
+    ``min_interval_seconds`` between faults.
+
+    Attributes:
+        mean_interval_seconds: Mean time between faults in seconds (must be > 0).
+        min_interval_seconds: Minimum enforced delay in seconds between
+            consecutive faults (must satisfy ``0 <= min_interval_seconds <=
+            mean_interval_seconds``).
+        initial_delay_seconds: Warmup delay in seconds after benchmark start
+            before the first scheduled fault.
+        max_events: Optional cap on total scheduled faults. Omit to run for the
+            entire benchmark duration.
+        type: Fault action fired each tick (``kill`` or ``freeze``).
+        role: Worker role to target (``prefill``, ``decode``, or ``agg``).
+        workers: Worker selector within ``role`` (default ``random``).
+        process: Optional process selector (``main``, ``engine``, ``rank``, or
+            literal cmdline substring). On ``freeze``, defaults to ``engine``.
+        rank: Which matched subprocess rank to signal inside the targeted worker.
+        signal: Signal sent when ``type`` is ``kill``.
+        duration_seconds: Hold duration in seconds when ``type`` is ``freeze``.
+        respawn: Hand killed endpoints to the worker supervisor for in-place
+            relaunch (default true for soak schedules).
+        wait_ready: Wait for the relaunched worker's readiness probe before
+            drawing the next interval.
+        timeout_seconds: Maximum wait in seconds when ``wait_ready`` is true.
+    """
+
+    mean_interval_seconds: float
+    min_interval_seconds: float = 0.0
+    initial_delay_seconds: float = 0.0
+    max_events: int | None = None
+    type: Literal["kill", "freeze"] = "kill"
+    role: WorkerMode = "agg"
+    workers: int | list[int] | str = "random"
+    process: str | None = None
+    rank: int | Literal["random", "all"] = 0
+    signal: str = "KILL"
+    duration_seconds: float | None = None
+    respawn: bool = True
+    wait_ready: bool = False
+    timeout_seconds: float = 600.0
+
+    Schema: ClassVar[builtins.type[Schema]] = Schema
+
+    def to_event(self, *, name: str | None = None, after_seconds: float = 0.0) -> ChaosEventConfig:
+        """Materialize one ``ChaosEventConfig`` from this schedule template."""
+        return ChaosEventConfig(
+            type=self.type,
+            after_seconds=after_seconds,
+            role=self.role,
+            workers=self.workers,
+            process=self.process,
+            rank=self.rank,
+            signal=self.signal,
+            duration_seconds=self.duration_seconds,
+            respawn=self.respawn,
+            wait_ready=self.wait_ready,
+            timeout_seconds=self.timeout_seconds,
+            name=name,
+        )
+
+    def __post_init__(self) -> None:
+        if not _is_finite_positive(self.mean_interval_seconds):
+            raise ValidationError(
+                f"chaos.schedule.mean_interval_seconds must be finite and > 0, got {self.mean_interval_seconds!r}"
+            )
+        if (
+            isinstance(self.min_interval_seconds, bool)
+            or not math.isfinite(self.min_interval_seconds)
+            or self.min_interval_seconds < 0
+        ):
+            raise ValidationError(
+                f"chaos.schedule.min_interval_seconds must be finite and >= 0, got {self.min_interval_seconds!r}"
+            )
+        if self.min_interval_seconds > self.mean_interval_seconds:
+            raise ValidationError(
+                f"chaos.schedule.min_interval_seconds ({self.min_interval_seconds}) cannot exceed "
+                f"mean_interval_seconds ({self.mean_interval_seconds})"
+            )
+        if (
+            isinstance(self.initial_delay_seconds, bool)
+            or not math.isfinite(self.initial_delay_seconds)
+            or self.initial_delay_seconds < 0
+        ):
+            raise ValidationError(
+                f"chaos.schedule.initial_delay_seconds must be finite and >= 0, got {self.initial_delay_seconds!r}"
+            )
+        if self.max_events is not None and (isinstance(self.max_events, bool) or self.max_events < 1):
+            raise ValidationError(f"chaos.schedule.max_events must be >= 1 when set, got {self.max_events!r}")
+        # Validate action/targeting fields through the same event validator.
+        self.to_event()
+
+
+@dataclass(frozen=True)
 class ChaosConfig:
     """Concurrent fault injection timeline executed while the benchmark runs.
 
-    Events run in order on a background thread once the deployment is healthy
-    and the benchmark starts. Each event is recorded with UTC timestamps and
-    target details in ``chaos_events.json`` inside the run's log directory.
+    Events (and an optional stochastic soak ``schedule``) run on a background
+    thread once the deployment is healthy and the benchmark starts. Each event
+    is recorded with UTC timestamps and target details in ``chaos_events.json``
+    inside the run's log directory.
 
     Attributes:
         events: Ordered list of fault events to execute during the benchmark.
-        seed: Optional RNG seed for deterministic ``workers: random`` and
-            ``rank: random`` selection.
+        schedule: Optional stochastic soak schedule (MTBF + minimum gap) that
+            repeatedly injects faults until the benchmark finishes or
+            ``max_events`` is reached.
+        leashed: Dry-run mode on a live cluster. Runs target selection,
+            ``min_healthy`` checks, and on-node process discovery, logging what
+            would be signalled into ``chaos_events.json`` with status
+            ``leashed`` without sending any signals.
+        min_healthy: Blast-radius guard: minimum number of workers in the
+            targeted role that must remain healthy and running after a fault.
+            Events that would drop healthy capacity below ``min_healthy`` are
+            skipped (or, for ``rolling_restart``, deferred until enough workers
+            are ready). ``0`` disables the guard.
+        seed: Optional RNG seed for deterministic ``workers: random``,
+            ``rank: random``, and stochastic schedule draws.
         hot_metric: Primary Prometheus metric scraped from candidate workers
             when resolving ``workers: hottest``. Falls back to engine
             running-request gauges, then worker index order.
     """
 
     events: list[ChaosEventConfig] = field(default_factory=list)
+    schedule: ChaosScheduleConfig | None = None
+    leashed: bool = False
+    min_healthy: int = 0
     seed: int | None = None
     hot_metric: str = "dynamo_component_inflight_requests"
 
     Schema: ClassVar[type[Schema]] = Schema
 
     def __post_init__(self) -> None:
+        if isinstance(self.min_healthy, bool) or self.min_healthy < 0:
+            raise ValidationError(f"chaos.min_healthy must be >= 0, got {self.min_healthy!r}")
         if not self.hot_metric.strip():
             raise ValidationError("chaos.hot_metric must be non-empty")
 
     @property
     def enabled(self) -> bool:
-        """True when at least one chaos event is configured."""
-        return bool(self.events)
+        """True when at least one chaos event or a stochastic schedule is configured."""
+        return bool(self.events or self.schedule is not None)
 
 
 @dataclass
@@ -3543,23 +3661,32 @@ class SrtConfig:
             )
 
     def _validate_chaos(self) -> None:
-        """Validate chaos fault-injection events against the recipe's active roles and backends."""
+        """Validate chaos fault-injection events and schedule against active roles and backends."""
         if not self.chaos.enabled:
             return
         if not self.roles:
-            raise ValidationError("chaos.events requires at least one worker role in roles:")
+            raise ValidationError("chaos requires at least one worker role in roles:")
         worker_counts: dict[str, int] = {
             "prefill": self.topology.num_prefill,
             "decode": self.topology.num_decode,
             "agg": self.topology.num_agg,
         }
-        for i, event in enumerate(self.chaos.events):
-            prefix = f"chaos.events[{i}]"
+        items: list[tuple[str, ChaosEventConfig]] = [
+            (f"chaos.events[{i}]", ev) for i, ev in enumerate(self.chaos.events)
+        ]
+        if self.chaos.schedule is not None:
+            items.append(("chaos.schedule", self.chaos.schedule.to_event()))
+        for prefix, event in items:
             num_workers = worker_counts.get(event.role, 0)
             if event.role not in self.roles or num_workers < 1:
                 active = ", ".join(sorted(r for r, c in worker_counts.items() if c > 0)) or "none"
                 raise ValidationError(
                     f"{prefix}.role={event.role!r} has no workers in this recipe (active roles: {active})"
+                )
+            if self.chaos.min_healthy >= num_workers:
+                raise ValidationError(
+                    f"chaos.min_healthy={self.chaos.min_healthy} must be less than the {num_workers} worker(s) "
+                    f"in role {event.role!r} (referenced by {prefix})"
                 )
             mode, indices, _ = event.parse_workers()
             if event.type != "rolling_restart" and mode == "index":

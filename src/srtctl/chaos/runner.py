@@ -23,9 +23,19 @@ if TYPE_CHECKING:
     from srtctl.backends.base import WorkerMode
     from srtctl.core.processes import ProcessRegistry
     from srtctl.core.runtime import RuntimeContext
-    from srtctl.core.schema import ChaosConfig, ChaosEventConfig, SrtConfig
+    from srtctl.core.schema import ChaosConfig, ChaosEventConfig, ChaosScheduleConfig, SrtConfig
     from srtctl.core.supervisor import EndpointKey, WorkerSupervisor
     from srtctl.core.topology import Process
+
+
+def sample_schedule_delay(schedule: ChaosScheduleConfig, rng: random.Random) -> float:
+    """Draw the next inter-fault interval (seconds) with mean ``mean_interval_seconds`` and floor ``min_interval_seconds``."""
+    floor = schedule.min_interval_seconds
+    tail_mean = schedule.mean_interval_seconds - floor
+    if tail_mean <= 0.0:
+        return floor
+    return floor + rng.expovariate(1.0 / tail_mean)
+
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +84,8 @@ class ChaosContext:
         stop_event: threading.Event,
         done_event: threading.Event,
         rng: random.Random,
+        leashed: bool = False,
+        min_healthy: int = 0,
     ) -> None:
         self.config = config
         self.runtime = runtime
@@ -83,6 +95,8 @@ class ChaosContext:
         self.stop_event = stop_event
         self.done_event = done_event
         self.rng = rng
+        self.leashed = leashed
+        self.min_healthy = min_healthy
         self._stall_lock = threading.Lock()
         self._active_stalls: list[StalledProcess] = []
 
@@ -138,6 +152,24 @@ class ChaosContext:
         targets.sort(key=lambda t: (t.index, t.key[2]))
         return targets
 
+    def healthy_worker_count(self, role: str) -> int:
+        """Count endpoints of ``role`` whose steps are running, not frozen, and ready in the supervisor."""
+        with self._stall_lock:
+            frozen_workers = {s.worker for s in self._active_stalls}
+        healthy = 0
+        for target in self.candidates_for_role(role):
+            if target.label in frozen_workers:
+                continue
+            if self.supervisor is not None and not self.supervisor.is_endpoint_ready(target.key):
+                continue
+            live_names = self.active_step_names(target)
+            if not live_names:
+                continue
+            procs = [self.registry.get_process(name) for name in live_names]
+            if all(proc is not None and proc.is_running for proc in procs):
+                healthy += 1
+        return healthy
+
     def register_stall(self, stalled: StalledProcess) -> None:
         with self._stall_lock:
             self._active_stalls.append(stalled)
@@ -182,6 +214,8 @@ class ChaosRunner:
             stop_event=stop_event,
             done_event=self._done_event,
             rng=self._rng,
+            leashed=chaos.leashed,
+            min_healthy=chaos.min_healthy,
         )
         self._lock = threading.Lock()
         self._records: list[ChaosEventRecord] = []
@@ -220,14 +254,44 @@ class ChaosRunner:
 
     def _run(self) -> None:
         try:
-            for idx, event in enumerate(self._chaos.events):
+            next_idx = 0
+            for event in self._chaos.events:
                 if event.after_seconds > 0 and self._ctx.wait(event.after_seconds):
-                    self._record_skipped(idx, event, "stopped before scheduled time")
+                    self._record_skipped(next_idx, event, "stopped before scheduled time")
+                    next_idx += 1
                     continue
                 if self._ctx.should_stop():
-                    self._record_skipped(idx, event, "stopped before execution")
+                    self._record_skipped(next_idx, event, "stopped before execution")
+                    next_idx += 1
                     continue
-                self._execute_event(idx, event)
+                self._execute_event(next_idx, event)
+                next_idx += 1
+
+            schedule = self._chaos.schedule
+            if schedule is not None and not self._ctx.should_stop():
+                if schedule.initial_delay_seconds > 0 and self._ctx.wait(schedule.initial_delay_seconds):
+                    return
+                fired = 0
+                while not self._ctx.should_stop():
+                    if schedule.max_events is not None and fired >= schedule.max_events:
+                        break
+                    ev = schedule.to_event(name=f"soak_{fired}")
+                    self._execute_event(next_idx, ev)
+                    next_idx += 1
+                    fired += 1
+                    if schedule.max_events is not None and fired >= schedule.max_events:
+                        break
+                    delay = sample_schedule_delay(schedule, self._rng)
+                    logger.info(
+                        "Chaos schedule: next %s on %s in %.1fs (mean=%.1fs, min=%.1fs)",
+                        schedule.type,
+                        schedule.role,
+                        delay,
+                        schedule.mean_interval_seconds,
+                        schedule.min_interval_seconds,
+                    )
+                    if self._ctx.wait(delay):
+                        break
         finally:
             remaining = self._ctx.drain_active_stalls()
             if remaining:
@@ -289,9 +353,28 @@ class ChaosRunner:
             rec.selection = sel_info
             if not chosen:
                 raise RuntimeError(f"No worker endpoints matched for role={event.role!r} workers={event.workers!r}")
+            if event.type != "rolling_restart" and self._ctx.min_healthy > 0:
+                healthy = self._ctx.healthy_worker_count(event.role)
+                if healthy - len(chosen) < self._ctx.min_healthy:
+                    logger.warning(
+                        "Chaos[%d] %s skipped by min_healthy guard (healthy=%d, targets=%d, min_healthy=%d)",
+                        idx,
+                        rec.name,
+                        healthy,
+                        len(chosen),
+                        self._ctx.min_healthy,
+                    )
+                    rec.status = "skipped"
+                    rec.details = {
+                        "reason": "min_healthy_guard",
+                        "healthy": healthy,
+                        "min_healthy": self._ctx.min_healthy,
+                        "requested_targets": len(chosen),
+                    }
+                    return
             handler = ACTION_HANDLERS[event.type]
             rec.details = handler(event, chosen, self._ctx, idx)
-            rec.status = "completed"
+            rec.status = "leashed" if self._ctx.leashed else "completed"
         except Exception as exc:
             logger.exception("Chaos event %d (%s) failed", idx, rec.name)
             rec.status = "failed"
@@ -304,6 +387,8 @@ class ChaosRunner:
 
     def _write(self) -> None:
         payload = {
+            "leashed": self._chaos.leashed,
+            "min_healthy": self._chaos.min_healthy,
             "seed": self._chaos.seed,
             "hot_metric": self._chaos.hot_metric,
             "events": [asdict(rec) for rec in self.records],

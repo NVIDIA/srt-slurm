@@ -43,6 +43,7 @@ verify_state = cfg.get("verify_state")
 verify_not_state = cfg.get("verify_not_state")
 verify_timeout = float(cfg.get("verify_timeout", 5.0))
 explicit_pids = cfg.get("pids")
+dry_run = bool(cfg.get("dry_run", False))
 seed = cfg.get("seed")
 my_pid = os.getpid()
 my_uid = os.getuid()
@@ -118,6 +119,9 @@ sig_num = getattr(signal, f"SIG{sig_name}")
 signalled = []
 errors = []
 for pid, cmd in chosen:
+    if dry_run:
+        signalled.append({"pid": pid, "cmd": cmd[:120]})
+        continue
     try:
         os.kill(pid, sig_num)
         signalled.append({"pid": pid, "cmd": cmd[:120]})
@@ -127,7 +131,7 @@ for pid, cmd in chosen:
         errors.append(f"pid {pid}: {exc}")
 
 verified = {}
-if signalled and (verify_state is not None or verify_not_state is not None):
+if signalled and not dry_run and (verify_state is not None or verify_not_state is not None):
     deadline = time.monotonic() + verify_timeout
     pending = {item["pid"] for item in signalled}
     while pending:
@@ -341,26 +345,40 @@ def execute_kill(
 
     for target in targets:
         live_names = ctx.active_step_names(target)
-        prev_restarts = _prepare_destructive_target(
-            ctx,
-            target,
-            respawn=event.respawn,
-            wait_ready=event.wait_ready,
-        )
-        if prev_restarts is not None and event.wait_ready:
-            relaunch_watch.append((target, prev_restarts))
+        if not ctx.leashed:
+            prev_restarts = _prepare_destructive_target(
+                ctx,
+                target,
+                respawn=event.respawn,
+                wait_ready=event.wait_ready,
+            )
+            if prev_restarts is not None and event.wait_ready:
+                relaunch_watch.append((target, prev_restarts))
 
         if pattern is None:
-            step_results = _signal_worker_steps(ctx, live_names, sig, step_ids=step_ids or None)
-            logger.warning(
-                "Chaos[%d] kill (step): %s -> SIG%s (%s, respawn=%s, wait_ready=%s)",
-                event_index,
-                target.label,
-                sig,
-                live_names,
-                event.respawn,
-                event.wait_ready,
-            )
+            if ctx.leashed:
+                step_results = [
+                    {"step": name, "signal": f"SIG{sig}", "method": "leashed", "delivered": False}
+                    for name in live_names
+                ]
+                logger.info(
+                    "Chaos[%d] LEASHED kill (step): would send SIG%s to %s (%s)",
+                    event_index,
+                    sig,
+                    target.label,
+                    live_names,
+                )
+            else:
+                step_results = _signal_worker_steps(ctx, live_names, sig, step_ids=step_ids or None)
+                logger.warning(
+                    "Chaos[%d] kill (step): %s -> SIG%s (%s, respawn=%s, wait_ready=%s)",
+                    event_index,
+                    target.label,
+                    sig,
+                    live_names,
+                    event.respawn,
+                    event.wait_ready,
+                )
             outcomes.append({"worker": target.label, "steps": step_results, "respawn": event.respawn})
         else:
             step_num = _step_numeric_id(step_ids.get(live_names[0])) if live_names else None
@@ -370,6 +388,7 @@ def execute_kill(
                 "step_num": step_num,
                 "rank": event.rank,
                 "signal": sig,
+                "dry_run": ctx.leashed,
                 "seed": ctx.rng.randint(0, 2**31 - 1),
             }
             res = run_node_python(
@@ -380,21 +399,32 @@ def execute_kill(
                 het_group=target.leader.het_group,
             )
             signalled = res.get("signalled") or []
-            if not signalled:
+            if not signalled and not ctx.leashed:
                 raise RuntimeError(
                     f"kill matched {res.get('matched', 0)} process(es) for pattern={pattern!r} "
                     f"rank={event.rank!r} on {target.label} ({node}); nothing signalled"
                 )
-            logger.warning(
-                "Chaos[%d] kill (process): %s (%s) pattern=%r rank=%r -> SIG%s pids=%s",
-                event_index,
-                target.label,
-                node,
-                pattern,
-                event.rank,
-                sig,
-                [item["pid"] for item in signalled],
-            )
+            if ctx.leashed:
+                logger.info(
+                    "Chaos[%d] LEASHED kill (process): would send SIG%s to %s (%s) pattern=%r pids=%s",
+                    event_index,
+                    sig,
+                    target.label,
+                    node,
+                    pattern,
+                    [item["pid"] for item in signalled],
+                )
+            else:
+                logger.warning(
+                    "Chaos[%d] kill (process): %s (%s) pattern=%r rank=%r -> SIG%s pids=%s",
+                    event_index,
+                    target.label,
+                    node,
+                    pattern,
+                    event.rank,
+                    sig,
+                    [item["pid"] for item in signalled],
+                )
             outcomes.append(
                 {
                     "worker": target.label,
@@ -411,9 +441,11 @@ def execute_kill(
         "signal": f"SIG{sig}",
         "workers": outcomes,
     }
+    if ctx.leashed:
+        details["leashed"] = True
     if pattern is not None:
         details["pattern"] = pattern
-    if event.wait_ready and relaunch_watch:
+    if not ctx.leashed and event.wait_ready and relaunch_watch:
         recovered, timed_out = _wait_for_relaunches(
             ctx,
             relaunch_watch,
@@ -493,6 +525,7 @@ def execute_freeze(
             "step_num": step_num,
             "rank": event.rank,
             "signal": "STOP",
+            "dry_run": ctx.leashed,
             "verify_state": "T",
             "verify_timeout": 5.0,
             "seed": ctx.rng.randint(0, 2**31 - 1),
@@ -505,26 +538,38 @@ def execute_freeze(
             het_group=target.leader.het_group,
         )
         signalled = res.get("signalled") or []
-        if not signalled:
+        if not signalled and not ctx.leashed:
             raise RuntimeError(
                 f"freeze matched {res.get('matched', 0)} process(es) for pattern={pattern!r} "
                 f"rank={event.rank!r} on {target.label} ({node}); nothing frozen"
             )
         verified = res.get("verified_states") or {}
-        for item in signalled:
-            sp = StalledProcess(node=node, pid=int(item["pid"]), worker=target.label, het_group=target.leader.het_group)
-            stalled_now.append(sp)
-            ctx.register_stall(sp)
-        bad_states = {pid: st for pid, st in verified.items() if st != "T"}
-        if bad_states:
-            raise RuntimeError(f"freeze SIGSTOP verification failed on {target.label} ({node}): {bad_states}")
-        logger.warning(
-            "Chaos[%d] freeze: %s (%s) SIGSTOP verified (state=T) pids=%s",
-            event_index,
-            target.label,
-            node,
-            [item["pid"] for item in signalled],
-        )
+        if ctx.leashed:
+            logger.info(
+                "Chaos[%d] LEASHED freeze: would SIGSTOP %s (%s) pattern=%r pids=%s",
+                event_index,
+                target.label,
+                node,
+                pattern,
+                [item["pid"] for item in signalled],
+            )
+        else:
+            for item in signalled:
+                sp = StalledProcess(
+                    node=node, pid=int(item["pid"]), worker=target.label, het_group=target.leader.het_group
+                )
+                stalled_now.append(sp)
+                ctx.register_stall(sp)
+            bad_states = {pid: st for pid, st in verified.items() if st != "T"}
+            if bad_states:
+                raise RuntimeError(f"freeze SIGSTOP verification failed on {target.label} ({node}): {bad_states}")
+            logger.warning(
+                "Chaos[%d] freeze: %s (%s) SIGSTOP verified (state=T) pids=%s",
+                event_index,
+                target.label,
+                node,
+                [item["pid"] for item in signalled],
+            )
         worker_outcomes.append(
             {
                 "worker": target.label,
@@ -536,7 +581,7 @@ def execute_freeze(
         )
 
     resume_results: list[dict[str, Any]] = []
-    if event.duration_seconds is not None:
+    if not ctx.leashed and event.duration_seconds is not None:
         logger.info("Chaos[%d] freeze: holding for %.1fs before SIGCONT", event_index, event.duration_seconds)
         try:
             ctx.wait(event.duration_seconds)
@@ -544,12 +589,15 @@ def execute_freeze(
             resume_results = resume_stalled_processes(stalled_now, ctx, tag=f"{event_index}")
             ctx.unregister_stalls(stalled_now)
 
-    return {
+    out: dict[str, Any] = {
         "pattern": pattern,
         "duration_seconds": event.duration_seconds,
         "workers": worker_outcomes,
         "resumed": resume_results,
     }
+    if ctx.leashed:
+        out["leashed"] = True
+    return out
 
 
 def execute_rolling_restart(
@@ -559,12 +607,31 @@ def execute_rolling_restart(
     event_index: int,
 ) -> dict[str, Any]:
     """Restart every worker of ``event.role`` in a sliding window capped at ``max_unavailable``."""
-    if ctx.supervisor is None:
-        raise RuntimeError("rolling_restart requires WorkerSupervisor on the orchestrator")
-
     ordered = sorted(targets, key=lambda t: (t.index, t.key[2]))
     sig = "TERM" if event.graceful else "KILL"
     cap = min(event.max_unavailable, len(ordered))
+    if ctx.leashed:
+        logger.info(
+            "Chaos[%d] LEASHED rolling_restart: would restart %d %s worker(s) (max_unavailable=%d, SIG%s)",
+            event_index,
+            len(ordered),
+            event.role,
+            cap,
+            sig,
+        )
+        return {
+            "role": event.role,
+            "signal": f"SIG{sig}",
+            "max_unavailable": cap,
+            "total": len(ordered),
+            "restarted": [{"worker": t.label, "outcome": "leashed"} for t in ordered],
+            "timed_out": False,
+            "leashed": True,
+        }
+
+    if ctx.supervisor is None:
+        raise RuntimeError("rolling_restart requires WorkerSupervisor on the orchestrator")
+
     queue = list(ordered)
     in_flight: list[tuple[WorkerTarget, int]] = []  # (target, prev_restarts)
     restarted: list[dict[str, Any]] = []
@@ -581,15 +648,20 @@ def execute_rolling_restart(
     )
 
     while (queue or in_flight) and not ctx.should_stop():
-        if queue and len(in_flight) < cap:
+        room = cap - len(in_flight)
+        if ctx.min_healthy > 0:
+            healthy = ctx.healthy_worker_count(event.role)
+            room = min(room, max(0, healthy - ctx.min_healthy))
+        if queue and room > 0:
             step_ids = list_step_ids(ctx.runtime.job_id)
-            while queue and len(in_flight) < cap:
+            while queue and room > 0:
                 target = queue.pop(0)
                 live_names = ctx.active_step_names(target)
                 prev_restarts = _prepare_destructive_target(ctx, target, respawn=True, backoff_seconds=0.0)
                 assert prev_restarts is not None
                 _signal_worker_steps(ctx, live_names, sig, step_ids=step_ids)
                 in_flight.append((target, prev_restarts))
+                room -= 1
                 logger.info(
                     "Chaos[%d] rolling_restart: stopped %s (%s); in_flight=%d/%d remaining=%d",
                     event_index,

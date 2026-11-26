@@ -654,6 +654,28 @@
           "description": "Ordered list of fault events to execute during the benchmark.",
           "default": []
         },
+        "schedule": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChaosScheduleConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional stochastic soak schedule (MTBF + minimum gap) that repeatedly injects faults until the benchmark finishes or ``max_events`` is reached.",
+          "default": null
+        },
+        "leashed": {
+          "type": "boolean",
+          "description": "Dry-run mode on a live cluster. Runs target selection, ``min_healthy`` checks, and on-node process discovery, logging what would be signalled into ``chaos_events.json`` with status ``leashed`` without sending any signals.",
+          "default": false
+        },
+        "min_healthy": {
+          "type": "integer",
+          "description": "Blast-radius guard: minimum number of workers in the targeted role that must remain healthy and running after a fault. Events that would drop healthy capacity below ``min_healthy`` are skipped (or, for ``rolling_restart``, deferred until enough workers are ready). ``0`` disables the guard.",
+          "default": 0
+        },
         "seed": {
           "anyOf": [
             {
@@ -663,7 +685,7 @@
               "type": "null"
             }
           ],
-          "description": "Optional RNG seed for deterministic ``workers: random`` and ``rank: random`` selection.",
+          "description": "Optional RNG seed for deterministic ``workers: random``, ``rank: random``, and stochastic schedule draws.",
           "default": null
         },
         "hot_metric": {
@@ -803,6 +825,136 @@
       "description": "One scheduled fault injection event executed alongside the benchmark.",
       "required": [
         "type"
+      ]
+    },
+    "ChaosScheduleConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mean_interval_seconds": {
+          "type": "number",
+          "description": "Mean time between faults in seconds (must be > 0)."
+        },
+        "min_interval_seconds": {
+          "type": "number",
+          "description": "Minimum enforced delay in seconds between consecutive faults (must satisfy ``0 <= min_interval_seconds <= mean_interval_seconds``).",
+          "default": 0.0
+        },
+        "initial_delay_seconds": {
+          "type": "number",
+          "description": "Warmup delay in seconds after benchmark start before the first scheduled fault.",
+          "default": 0.0
+        },
+        "max_events": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional cap on total scheduled faults. Omit to run for the entire benchmark duration.",
+          "default": null
+        },
+        "type": {
+          "enum": [
+            "kill",
+            "freeze"
+          ],
+          "description": "Fault action fired each tick (``kill`` or ``freeze``).",
+          "default": "kill"
+        },
+        "role": {
+          "enum": [
+            "prefill",
+            "decode",
+            "agg"
+          ],
+          "description": "Worker role to target (``prefill``, ``decode``, or ``agg``).",
+          "default": "agg"
+        },
+        "workers": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              }
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Worker selector within ``role`` (default ``random``).",
+          "default": "random"
+        },
+        "process": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional process selector (``main``, ``engine``, ``rank``, or literal cmdline substring). On ``freeze``, defaults to ``engine``.",
+          "default": null
+        },
+        "rank": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "enum": [
+                "random",
+                "all"
+              ]
+            }
+          ],
+          "description": "Which matched subprocess rank to signal inside the targeted worker.",
+          "default": 0
+        },
+        "signal": {
+          "type": "string",
+          "description": "Signal sent when ``type`` is ``kill``.",
+          "default": "KILL"
+        },
+        "duration_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Hold duration in seconds when ``type`` is ``freeze``.",
+          "default": null
+        },
+        "respawn": {
+          "type": "boolean",
+          "description": "Hand killed endpoints to the worker supervisor for in-place relaunch (default true for soak schedules).",
+          "default": true
+        },
+        "wait_ready": {
+          "type": "boolean",
+          "description": "Wait for the relaunched worker's readiness probe before drawing the next interval.",
+          "default": false
+        },
+        "timeout_seconds": {
+          "type": "number",
+          "description": "Maximum wait in seconds when ``wait_ready`` is true.",
+          "default": 600.0
+        }
+      },
+      "description": "Stochastic soak schedule (MTBF ``mean_interval_seconds`` with minimum gap ``min_interval_seconds``).",
+      "required": [
+        "mean_interval_seconds"
       ]
     },
     "CpuPowerConfig": {

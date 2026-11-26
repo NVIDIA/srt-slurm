@@ -2,7 +2,7 @@
 
 The top-level `chaos:` block schedules worker and process faults concurrently while a benchmark runs, recording exact UTC timestamps, resolved targets, and verification state to `logs/chaos_events.json`.
 
-Fields: [ChaosConfig](schema-reference.md#chaosconfig) and [ChaosEventConfig](schema-reference.md#chaoseventconfig).
+Fields: [ChaosConfig](schema-reference.md#chaosconfig), [ChaosEventConfig](schema-reference.md#chaoseventconfig), and [ChaosScheduleConfig](schema-reference.md#chaosscheduleconfig).
 
 ## How It Works
 
@@ -65,6 +65,12 @@ sequenceDiagram
 
 Any other string in `process:` is matched verbatim as a cmdline substring (e.g. `process: "sglang::detokenizer"`), which also works for engines without default aliases.
 
+### Safety Guards and Soak Schedules
+
+- **`leashed: true` (live dry-run):** runs target selection, Prometheus `hottest` scraping, `min_healthy` checks, and on-node process discovery without sending any signal. Events are recorded in `chaos_events.json` with `status: "leashed"`.
+- **`min_healthy: N` (blast-radius guard):** refuses to fire a `kill` or `freeze` when fewer than `min_healthy` healthy workers of `role` would remain (recording `status: "skipped"` with `reason: "min_healthy_guard"`), and throttles `rolling_restart` waves so at least `min_healthy` workers stay up.
+- **`schedule:` (stochastic soak mode):** repeatedly injects `kill` or `freeze` faults until the benchmark exits (or `max_events` is reached), drawing inter-event delays with mean `mean_interval_seconds` and floor `min_interval_seconds` (`min + Exp(1 / (mean - min))`).
+
 ## Example
 
 See [examples/features/chaos.yaml](../examples/features/chaos.yaml) (mocker) and [examples/features/dynamo-fault-tolerance.yaml](../examples/features/dynamo-fault-tolerance.yaml) (SGLang + Dynamo KV routing + request migration + worker restart) for runnable recipes, or combine `chaos:` with [Config Overrides](overrides.md) (`base:` + `override_*`) to compare a clean baseline against fault variants from one file.
@@ -101,6 +107,8 @@ benchmark:
   concurrencies: "8"
 
 chaos:
+  min_healthy: 1
+  leashed: false
   seed: 7
   events:
     - after_seconds: 30
@@ -109,4 +117,13 @@ chaos:
       workers: hottest
       respawn: true
       wait_ready: true
+  schedule:
+    initial_delay_seconds: 60
+    mean_interval_seconds: 180
+    min_interval_seconds: 90
+    max_events: 4
+    type: kill
+    role: agg
+    workers: random
+    respawn: true
 ```

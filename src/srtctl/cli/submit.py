@@ -563,8 +563,8 @@ def show_config_details(config: SrtConfig) -> None:
     # --- Chaos fault injection (runs concurrently alongside the benchmark) ---
     if config.chaos.enabled:
         chaos_table = Table(title="Chaos Fault Injection", show_lines=False, pad_edge=False)
-        chaos_table.add_column("#", style="dim", width=3, justify="right")
-        chaos_table.add_column("After", style="cyan", width=8, justify="right")
+        chaos_table.add_column("#", style="dim", width=5, justify="right")
+        chaos_table.add_column("After", style="cyan", width=10, justify="right")
         chaos_table.add_column("Type", style="yellow", width=16)
         chaos_table.add_column("Role", style="white", width=8)
         chaos_table.add_column("Target / Options", style="white")
@@ -592,12 +592,35 @@ def show_config_details(config: SrtConfig) -> None:
                 detail = " ".join(parts)
             label = f" [{ev.name}]" if ev.name else ""
             chaos_table.add_row(str(idx), f"+{ev.after_seconds:g}s", ev.type, ev.role, detail + label)
-        console.print(Panel(chaos_table, border_style="red"))
-        seed_note = f" seed={config.chaos.seed}" if config.chaos.seed is not None else ""
-        console.print(
-            f"[dim]chaos:[/] {len(config.chaos.events)} event(s) -> chaos_events.json "
-            f"(hot_metric={config.chaos.hot_metric}{seed_note})"
-        )
+        if config.chaos.schedule is not None:
+            sched = config.chaos.schedule
+            sched_parts = [
+                f"mean={sched.mean_interval_seconds:g}s",
+                f"min={sched.min_interval_seconds:g}s",
+                f"workers={sched.workers}",
+            ]
+            if sched.max_events is not None:
+                sched_parts.append(f"max={sched.max_events}")
+            if sched.respawn and sched.type == "kill":
+                sched_parts.append("respawn")
+            if sched.wait_ready and sched.type == "kill":
+                sched_parts.append("wait_ready")
+            chaos_table.add_row(
+                "soak",
+                f"+{sched.initial_delay_seconds:g}s",
+                sched.type,
+                sched.role,
+                " ".join(sched_parts),
+            )
+        console.print(Panel(chaos_table, border_style="yellow" if config.chaos.leashed else "red"))
+        meta_parts = [f"hot_metric={config.chaos.hot_metric}"]
+        if config.chaos.leashed:
+            meta_parts.append("leashed=true (observe only; no signals sent)")
+        if config.chaos.min_healthy > 0:
+            meta_parts.append(f"min_healthy={config.chaos.min_healthy}")
+        if config.chaos.seed is not None:
+            meta_parts.append(f"seed={config.chaos.seed}")
+        console.print(f"[dim]chaos:[/] -> chaos_events.json ({' '.join(meta_parts)})")
 
     # --- Node release before post-processing (srtslurm.yaml) ---
     if get_srtslurm_setting("release_nodes_before_postprocess", False):

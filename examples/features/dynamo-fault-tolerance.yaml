@@ -71,6 +71,7 @@ benchmark:
   concurrencies: "16"
 
 chaos:
+  min_healthy: 1
   seed: 42
   events:
     - name: "kill-hottest-worker"

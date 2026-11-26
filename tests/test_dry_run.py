@@ -1589,6 +1589,8 @@ class TestChaosDryRun:
                 "frontend": {"type": "dynamo", "enable_multiple_frontends": False},
                 "roles": {"agg": {"nodes": 1, "workers": 2}},
                 "chaos": {
+                    "leashed": True,
+                    "min_healthy": 1,
                     "seed": 7,
                     "events": [
                         {
@@ -1607,6 +1609,12 @@ class TestChaosDryRun:
                             "max_unavailable": 1,
                         },
                     ],
+                    "schedule": {
+                        "mean_interval_seconds": 180,
+                        "min_interval_seconds": 90,
+                        "max_events": 4,
+                        "role": "agg",
+                    },
                 },
             }
         )
@@ -1617,6 +1625,10 @@ class TestChaosDryRun:
         assert "workers=hottest" in output
         assert "wait_ready" in output
         assert "rolling_restart" in output
+        assert "soak" in output
+        assert "mean=180s" in output
+        assert "leashed=true" in output
+        assert "min_healthy=1" in output
         assert "chaos_events.json" in output
         assert "seed=7" in output
 

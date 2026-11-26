@@ -24,10 +24,11 @@ from srtctl.chaos import (
     WorkerTarget,
     parse_prometheus_metric,
     resolve_worker_targets,
+    sample_schedule_delay,
 )
 from srtctl.core.config import load_config
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
-from srtctl.core.schema import ChaosConfig, ChaosEventConfig, SrtConfig
+from srtctl.core.schema import ChaosConfig, ChaosEventConfig, ChaosScheduleConfig, SrtConfig
 from srtctl.core.supervisor import WorkerSupervisor
 from srtctl.core.topology import Process
 from srtctl.mock import MockOptions, run_mock_sweep
@@ -203,6 +204,44 @@ class TestChaosSchema:
         doc["chaos"]["events"][0]["process"] = "my_custom_worker"
         cfg = _load_dict(doc)
         assert cfg.chaos.events[0].effective_process == "my_custom_worker"
+
+    def test_min_healthy_must_be_less_than_role_workers(self):
+        with pytest.raises(ValidationError, match="min_healthy"):
+            _load_dict(_base_recipe(chaos={"min_healthy": 2, "events": [{"type": "kill", "role": "agg"}]}))
+
+    def test_schedule_validation(self):
+        with pytest.raises(ValidationError, match="cannot exceed mean_interval_seconds"):
+            _load_dict(
+                _base_recipe(
+                    chaos={
+                        "schedule": {
+                            "mean_interval_seconds": 30,
+                            "min_interval_seconds": 60,
+                            "role": "agg",
+                        }
+                    }
+                )
+            )
+        cfg = _load_dict(
+            _base_recipe(
+                chaos={
+                    "leashed": True,
+                    "min_healthy": 1,
+                    "seed": 5,
+                    "schedule": {
+                        "mean_interval_seconds": 120,
+                        "min_interval_seconds": 60,
+                        "max_events": 3,
+                        "role": "agg",
+                    },
+                }
+            )
+        )
+        assert cfg.chaos.enabled is True
+        assert cfg.chaos.leashed is True
+        assert cfg.chaos.min_healthy == 1
+        assert cfg.chaos.schedule is not None
+        assert cfg.chaos.schedule.max_events == 3
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +528,143 @@ class TestFaultToleranceAndActions:
         # agg_0 restarted twice (kill + rolling_restart), agg_1 once (rolling_restart).
         assert registry.get_process("agg_0_node0_r2") is not None
         assert registry.get_process("agg_1_node0_r1") is not None
+
+    def test_leashed_mode_logs_targets_without_signalling(self, tmp_path: Path):
+        cfg = _load_dict(_base_recipe())
+        runtime = SimpleNamespace(job_id="103", log_dir=tmp_path, network_interface=None)
+        registry = ProcessRegistry(job_id="103")
+        p0, p1 = _proc("agg", 0, "node0"), _proc("agg", 1, "node0")
+        s0, s1 = _FakeStep("agg_0_node0", node="node0"), _FakeStep("agg_1_node0", node="node0")
+        registry.add_process(s0.managed)
+        registry.add_process(s1.managed)
+
+        chaos = ChaosConfig(
+            leashed=True,
+            events=[
+                ChaosEventConfig(type="kill", role="agg", workers=0),
+                ChaosEventConfig(type="rolling_restart", role="agg", max_unavailable=1),
+            ],
+        )
+        runner = ChaosRunner(
+            chaos=chaos,
+            config=cfg,
+            runtime=runtime,  # type: ignore[arg-type]
+            registry=registry,
+            supervisor=None,
+            endpoint_groups={("agg", 0, 0): [p0], ("agg", 1, 0): [p1]},
+            stop_event=threading.Event(),
+        )
+        with (
+            patch("srtctl.chaos.actions.list_step_ids", return_value=None),
+            patch("srtctl.chaos.actions.signal_step", return_value=False),
+        ):
+            runner.start()
+            deadline = time.monotonic() + 5.0
+            while len(runner.records) < 2 or any(r.status == "running" for r in runner.records):
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+            runner.stop(timeout=5.0)
+
+        # Neither worker was terminated or marked non-critical.
+        assert s0.managed.is_running is True
+        assert s1.managed.is_running is True
+        assert s0.managed.critical is True
+        assert [r.status for r in runner.records] == ["leashed", "leashed"]
+        assert all(r.details.get("leashed") is True for r in runner.records)
+
+    def test_min_healthy_guard_skips_kill_when_capacity_at_floor(self, tmp_path: Path):
+        cfg = _load_dict(_base_recipe())
+        runtime = SimpleNamespace(job_id="104", log_dir=tmp_path, network_interface=None)
+        registry = ProcessRegistry(job_id="104")
+        p0, p1 = _proc("agg", 0, "node0"), _proc("agg", 1, "node0")
+        s0, s1 = _FakeStep("agg_0_node0", node="node0"), _FakeStep("agg_1_node0", node="node0")
+        registry.add_process(s0.managed)
+        registry.add_process(s1.managed)
+
+        # Kill worker 0 (2 -> 1 >= min_healthy=1), then attempt to kill worker 1 (1 -> 0 < 1 -> skipped).
+        chaos = ChaosConfig(
+            min_healthy=1,
+            events=[
+                ChaosEventConfig(type="kill", role="agg", workers=0),
+                ChaosEventConfig(type="kill", role="agg", workers=1),
+            ],
+        )
+        runner = ChaosRunner(
+            chaos=chaos,
+            config=cfg,
+            runtime=runtime,  # type: ignore[arg-type]
+            registry=registry,
+            supervisor=None,
+            endpoint_groups={("agg", 0, 0): [p0], ("agg", 1, 0): [p1]},
+            stop_event=threading.Event(),
+        )
+        with (
+            patch("srtctl.chaos.actions.list_step_ids", return_value=None),
+            patch("srtctl.chaos.actions.signal_step", return_value=False),
+        ):
+            runner.start()
+            deadline = time.monotonic() + 5.0
+            while len(runner.records) < 2 or any(r.status == "running" for r in runner.records):
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+            runner.stop(timeout=5.0)
+
+        assert not s0.managed.is_running
+        assert s1.managed.is_running is True
+        assert [r.status for r in runner.records] == ["completed", "skipped"]
+        assert runner.records[1].details["reason"] == "min_healthy_guard"
+
+    def test_stochastic_schedule_fires_up_to_max_events_and_respects_floor(self, tmp_path: Path):
+        sched = ChaosScheduleConfig(mean_interval_seconds=0.04, min_interval_seconds=0.02, max_events=3, role="agg")
+        rng = random.Random(11)
+        draws = [sample_schedule_delay(sched, rng) for _ in range(50)]
+        assert all(d >= 0.02 for d in draws)
+
+        cfg = _load_dict(_base_recipe())
+        runtime = SimpleNamespace(job_id="105", log_dir=tmp_path, network_interface=None)
+        registry = ProcessRegistry(job_id="105")
+        p0, p1 = _proc("agg", 0, "node0"), _proc("agg", 1, "node0")
+        s0, s1 = _FakeStep("agg_0_node0", node="node0"), _FakeStep("agg_1_node0", node="node0")
+        registry.add_process(s0.managed)
+        registry.add_process(s1.managed)
+
+        chaos = ChaosConfig(
+            leashed=True,
+            seed=11,
+            schedule=ChaosScheduleConfig(
+                mean_interval_seconds=0.02,
+                min_interval_seconds=0.01,
+                max_events=3,
+                role="agg",
+                workers="random",
+            ),
+        )
+        runner = ChaosRunner(
+            chaos=chaos,
+            config=cfg,
+            runtime=runtime,  # type: ignore[arg-type]
+            registry=registry,
+            supervisor=None,
+            endpoint_groups={("agg", 0, 0): [p0], ("agg", 1, 0): [p1]},
+            stop_event=threading.Event(),
+        )
+        with (
+            patch("srtctl.chaos.actions.list_step_ids", return_value=None),
+            patch("srtctl.chaos.actions.signal_step", return_value=False),
+        ):
+            runner.start()
+            deadline = time.monotonic() + 5.0
+            while len(runner.records) < 3 or any(r.status == "running" for r in runner.records):
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.02)
+            runner.stop(timeout=5.0)
+
+        assert len(runner.records) == 3
+        assert [r.name for r in runner.records] == ["soak_0", "soak_1", "soak_2"]
+        assert all(r.status == "leashed" for r in runner.records)
 
 
 # ---------------------------------------------------------------------------
