@@ -26,6 +26,7 @@ from srtctl.chaos import (
     resolve_worker_targets,
     sample_schedule_delay,
 )
+from srtctl.chaos.actions import _shares_node
 from srtctl.core.config import load_config
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.schema import ChaosConfig, ChaosEventConfig, ChaosScheduleConfig, SrtConfig
@@ -447,7 +448,16 @@ class TestFaultToleranceAndActions:
         assert signals == ["STOP", "CONT", "KILL"]
         assert calls[0]["payload"]["step_num"] == "3"
         assert calls[0]["payload"]["rank"] == 1
+        assert calls[0]["payload"]["allow_unscoped"] is True
         assert all(r.status == "completed" for r in runner.records)
+
+    def test_unscoped_process_match_only_when_node_not_shared(self):
+        p0, p1, p2 = _proc("agg", 0, "node0"), _proc("agg", 1, "node0"), _proc("agg", 2, "node1")
+        ctx = SimpleNamespace(endpoint_groups={("agg", 0, 0): [p0], ("agg", 1, 0): [p1], ("agg", 2, 0): [p2]})
+        target0 = WorkerTarget(("agg", 0, 0), "agg", 0, (p0,), ("agg_0_node0",))
+        target2 = WorkerTarget(("agg", 2, 0), "agg", 2, (p2,), ("agg_2_node1",))
+        assert _shares_node(target0, ctx)  # type: ignore[arg-type]
+        assert not _shares_node(target2, ctx)  # type: ignore[arg-type]
 
     def test_kill_wait_ready_and_rolling_restart_via_supervisor(self, tmp_path: Path):
         cfg = _load_dict(_base_recipe())

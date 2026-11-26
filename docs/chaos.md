@@ -73,7 +73,7 @@ Any other string in `process:` is matched verbatim as a cmdline substring (e.g. 
 
 ## Example
 
-See [examples/features/chaos.yaml](../examples/features/chaos.yaml) (mocker) and [examples/features/dynamo-fault-tolerance.yaml](../examples/features/dynamo-fault-tolerance.yaml) (SGLang + Dynamo KV routing + request migration + worker restart) for runnable recipes, or combine `chaos:` with [Config Overrides](overrides.md) (`base:` + `override_*`) to compare a clean baseline against fault variants from one file.
+See [examples/features/chaos.yaml](https://github.com/NVIDIA/srt-slurm/blob/main/examples/features/chaos.yaml) (mocker) and [examples/features/dynamo-fault-tolerance.yaml](https://github.com/NVIDIA/srt-slurm/blob/main/examples/features/dynamo-fault-tolerance.yaml) (SGLang + Dynamo KV routing + request migration + worker restart) for runnable recipes, or combine `chaos:` with [Config Overrides](overrides.md) (`base:` + `override_*`) to compare a clean baseline against fault variants from one file.
 
 ```yaml
 schema: 2

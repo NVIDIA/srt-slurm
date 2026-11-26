@@ -45,6 +45,8 @@ verify_timeout = float(cfg.get("verify_timeout", 5.0))
 explicit_pids = cfg.get("pids")
 dry_run = bool(cfg.get("dry_run", False))
 seed = cfg.get("seed")
+allow_unscoped = bool(cfg.get("allow_unscoped", False))
+errors = []
 my_pid = os.getpid()
 my_uid = os.getuid()
 
@@ -99,10 +101,13 @@ if explicit_pids is not None:
     chosen = [(int(p), "") for p in explicit_pids]
     matched_count = len(chosen)
 else:
-    matches = discover(use_step_filter=step_num is not None)
-    if not matches and step_num is not None:
-        # Containerized children may clear SLURM_STEP_ID; fall back to pattern-only match.
+    matches = discover(use_step_filter=True) if step_num is not None else []
+    if not matches and allow_unscoped:
+        # Containerized children may clear SLURM_STEP_ID. A pattern-only match is
+        # safe only when no other worker shares this node.
         matches = discover(use_step_filter=False)
+    elif not matches and step_num is None:
+        errors.append("worker step id unknown and another worker shares this node; refusing unscoped match")
     matched_count = len(matches)
     if not matches:
         chosen = []
@@ -117,7 +122,6 @@ else:
 
 sig_num = getattr(signal, f"SIG{sig_name}")
 signalled = []
-errors = []
 for pid, cmd in chosen:
     if dry_run:
         signalled.append({"pid": pid, "cmd": cmd[:120]})
@@ -313,6 +317,12 @@ def _signal_worker_steps(
     return results
 
 
+def _shares_node(target: WorkerTarget, ctx: ChaosContext) -> bool:
+    """True when another worker endpoint has a process on ``target``'s leader node."""
+    node = target.leader.node
+    return any(key != target.key and any(p.node == node for p in procs) for key, procs in ctx.endpoint_groups.items())
+
+
 def _resolve_process_pattern(event: ChaosEventConfig, ctx: ChaosContext) -> str | None:
     """Resolve ``event.effective_process`` to a cmdline substring, or None for step-level kills."""
     proc = event.effective_process
@@ -386,6 +396,7 @@ def execute_kill(
             payload: dict[str, Any] = {
                 "pattern": pattern,
                 "step_num": step_num,
+                "allow_unscoped": not _shares_node(target, ctx),
                 "rank": event.rank,
                 "signal": sig,
                 "dry_run": ctx.leashed,
@@ -402,7 +413,7 @@ def execute_kill(
             if not signalled and not ctx.leashed:
                 raise RuntimeError(
                     f"kill matched {res.get('matched', 0)} process(es) for pattern={pattern!r} "
-                    f"rank={event.rank!r} on {target.label} ({node}); nothing signalled"
+                    f"rank={event.rank!r} on {target.label} ({node}); nothing signalled; errors={res.get('errors')}"
                 )
             if ctx.leashed:
                 logger.info(
@@ -523,6 +534,7 @@ def execute_freeze(
         payload: dict[str, Any] = {
             "pattern": pattern,
             "step_num": step_num,
+            "allow_unscoped": not _shares_node(target, ctx),
             "rank": event.rank,
             "signal": "STOP",
             "dry_run": ctx.leashed,
@@ -541,7 +553,7 @@ def execute_freeze(
         if not signalled and not ctx.leashed:
             raise RuntimeError(
                 f"freeze matched {res.get('matched', 0)} process(es) for pattern={pattern!r} "
-                f"rank={event.rank!r} on {target.label} ({node}); nothing frozen"
+                f"rank={event.rank!r} on {target.label} ({node}); nothing frozen; errors={res.get('errors')}"
             )
         verified = res.get("verified_states") or {}
         if ctx.leashed:

@@ -2364,7 +2364,7 @@
         },
         "chaos": {
           "$ref": "#/$defs/ChaosConfig",
-          "description": "Concurrent fault injection timeline (kill/stall/rolling replace) run alongside the benchmark; recorded in `chaos_events.json`. See docs/chaos.md."
+          "description": "Concurrent fault injection timeline (kill/freeze/rolling_restart) run alongside the benchmark; recorded in `chaos_events.json`. See docs/chaos.md."
         },
         "services": {
           "type": "array",
@@ -2593,7 +2593,7 @@
         },
         "chaos": {
           "$ref": "#/$defs/ChaosConfig",
-          "description": "Concurrent fault injection timeline (kill/stall/rolling replace) run alongside the benchmark; recorded in `chaos_events.json`. See docs/chaos.md."
+          "description": "Concurrent fault injection timeline (kill/freeze/rolling_restart) run alongside the benchmark; recorded in `chaos_events.json`. See docs/chaos.md."
         },
         "services": {
           "type": "array",

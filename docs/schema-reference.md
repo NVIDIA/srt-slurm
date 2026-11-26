@@ -34,7 +34,7 @@ Top-level keys of a recipe YAML.
 | `enable_config_dump` | bool | `True` | Accepted for compatibility; srtctl does not read it. Workers dump their config where the engine supports it. |
 | `setup_script` | str \| None | `None` | Custom setup script (runs before dynamo install and worker startup) e.g. "custom-setup.sh" -> runs /configs/custom-setup.sh |
 | `host_setup` | [HostSetupConfig](#hostsetupconfig) | `HostSetupConfig()` | Commands run on each node's bare host, outside the container, before any worker starts. Cluster-wide default lives in srtslurm.yaml as default_host_setup; a recipe that sets this block replaces that default. |
-| `chaos` | [ChaosConfig](#chaosconfig) | `ChaosConfig()` | Concurrent fault injection timeline (kill/stall/rolling replace) run alongside the benchmark; recorded in `chaos_events.json`. See docs/chaos.md. |
+| `chaos` | [ChaosConfig](#chaosconfig) | `ChaosConfig()` | Concurrent fault injection timeline (kill/freeze/rolling_restart) run alongside the benchmark; recorded in `chaos_events.json`. See docs/chaos.md. |
 | `services` | list[[ServiceConfig](#serviceconfig)] | `[]` | Long-running processes launched next to the job: generic sidecars (an experimental router built from a PR) and typed ones (a standalone Mooncake store per worker node). See docs/services.md. |
 | `post_eval` | [PostEvalConfig](#postevalconfig) | `PostEvalConfig()` | Post-benchmark / eval-only evaluation dispatch: extra env forwarded into the eval process and an optional command override. Replaces the downstream source patch that used to extend the passthrough list in do_sweep.py. |
 | `identity` | [IdentityConfig](#identityconfig) | `IdentityConfig()` | Virtual identity — declares what *should* be running (verified against fingerprint) |

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from srtctl.chaos.actions import ACTION_HANDLERS, StalledProcess, resume_stalled_processes
-from srtctl.chaos.targets import WorkerTarget, resolve_worker_targets, scrape_prometheus_text
+from srtctl.chaos.targets import WorkerTarget, resolve_worker_targets
 
 if TYPE_CHECKING:
     from srtctl.backends.base import WorkerMode
@@ -28,6 +28,11 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Process
 
 
+logger = logging.getLogger(__name__)
+
+CHAOS_EVENTS_FILENAME = "chaos_events.json"
+
+
 def sample_schedule_delay(schedule: ChaosScheduleConfig, rng: random.Random) -> float:
     """Draw the next inter-fault interval (seconds) with mean ``mean_interval_seconds`` and floor ``min_interval_seconds``."""
     floor = schedule.min_interval_seconds
@@ -35,11 +40,6 @@ def sample_schedule_delay(schedule: ChaosScheduleConfig, rng: random.Random) -> 
     if tail_mean <= 0.0:
         return floor
     return floor + rng.expovariate(1.0 / tail_mean)
-
-
-logger = logging.getLogger(__name__)
-
-CHAOS_EVENTS_FILENAME = "chaos_events.json"
 
 
 def _now_utc() -> tuple[str, int]:
@@ -199,7 +199,7 @@ class ChaosRunner:
         supervisor: WorkerSupervisor | None,
         endpoint_groups: dict[EndpointKey, list[Process]],
         stop_event: threading.Event,
-        scraper: Callable[[str], str | None] = scrape_prometheus_text,
+        scraper: Callable[[str], str | None] | None = None,
     ) -> None:
         self._chaos = chaos
         self._done_event = threading.Event()
@@ -298,7 +298,7 @@ class ChaosRunner:
                 resume_stalled_processes(remaining, self._ctx, tag="final")
             self._write()
 
-    def _record_skipped(self, idx: int, event: ChaosEventConfig, reason: str) -> None:
+    def _new_record(self, idx: int, event: ChaosEventConfig, status: str) -> ChaosEventRecord:
         iso, ns = _now_utc()
         rec = ChaosEventRecord(
             index=idx,
@@ -306,32 +306,22 @@ class ChaosRunner:
             type=event.type,
             role=event.role,
             workers="all" if event.type == "rolling_restart" else event.workers,
-            status="skipped",
+            status=status,
             started_at=iso,
             started_at_ns=ns,
-            ended_at=iso,
-            ended_at_ns=ns,
-            details={"reason": reason},
         )
         with self._lock:
             self._records.append(rec)
+        return rec
+
+    def _record_skipped(self, idx: int, event: ChaosEventConfig, reason: str) -> None:
+        rec = self._new_record(idx, event, "skipped")
+        rec.ended_at, rec.ended_at_ns = rec.started_at, rec.started_at_ns
+        rec.details = {"reason": reason}
         self._write()
 
     def _execute_event(self, idx: int, event: ChaosEventConfig) -> None:
-        started_iso, started_ns = _now_utc()
-        workers_label: int | list[int] | str = "all" if event.type == "rolling_restart" else event.workers
-        rec = ChaosEventRecord(
-            index=idx,
-            name=event.name or f"{event.type}_{idx}",
-            type=event.type,
-            role=event.role,
-            workers=workers_label,
-            status="running",
-            started_at=started_iso,
-            started_at_ns=started_ns,
-        )
-        with self._lock:
-            self._records.append(rec)
+        rec = self._new_record(idx, event, "running")
         self._write()
 
         try:

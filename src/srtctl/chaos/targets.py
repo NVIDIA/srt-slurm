@@ -114,13 +114,14 @@ def resolve_worker_targets(
     runtime: RuntimeContext,
     hot_metric: str,
     rng: random.Random,
-    scraper: Callable[[str], str | None] = scrape_prometheus_text,
+    scraper: Callable[[str], str | None] | None = None,
 ) -> tuple[list[WorkerTarget], dict[str, Any]]:
     """Select target worker endpoint(s) from ``candidates`` according to ``event.workers``.
 
     ``candidates`` must be sorted deterministically by ``(index, engine)``.
     Returns ``(chosen_targets, selection_details)``.
     """
+    scraper = scraper or scrape_prometheus_text
     ordered = sorted(candidates, key=lambda t: (t.index, t.key[2]))
     mode, indices, count = event.parse_workers()
     if not ordered:

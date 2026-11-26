@@ -35,18 +35,18 @@ import json
 import logging
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from srtctl.core.processes import ManagedProcess, ProcessRegistry, list_step_ids
 from srtctl.core.readiness import probe_http
+from srtctl.core.schema import RestartPolicy
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
-    from srtctl.core.schema import RestartPolicy
     from srtctl.core.topology import Process
 
 logger = logging.getLogger(__name__)
@@ -233,15 +233,11 @@ class WorkerSupervisor:
 
         When ``key`` is already tracked under ``roles.<role>.restart``, this
         keeps its existing state and guarantees room for one additional relaunch
-        (even on a clean exit code 0, e.g. graceful ``rolling_replace``). When
+        (even on a clean exit code 0, e.g. graceful ``rolling_restart``). When
         ``key`` is not yet tracked, it adopts the endpoint's live steps so the
         relaunch reuses the same log rotation, ``_r<n>`` step naming, health
         probing, and ``worker_restarts.json`` bookkeeping.
         """
-        from dataclasses import replace
-
-        from srtctl.core.schema import RestartPolicy
-
         with self._lock:
             state = self._endpoints.get(key)
             if state is None:

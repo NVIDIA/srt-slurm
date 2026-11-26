@@ -295,7 +295,6 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
         ("srtctl.chaos.actions.list_step_ids", lambda *args, **kwargs: None),
         ("srtctl.chaos.actions.signal_step", lambda *args, **kwargs: False),
         ("srtctl.chaos.targets.scrape_prometheus_text", lambda *args, **kwargs: None),
-        ("srtctl.chaos.runner.scrape_prometheus_text", lambda *args, **kwargs: None),
         # Node release before post-processing (srtslurm.yaml release_nodes_before_postprocess).
         ("srtctl.cli.mixins.postprocess_stage.get_batch_host", _fake_batch_host),
         ("srtctl.cli.mixins.postprocess_stage.shrink_job_allocation", _fake_shrink),

@@ -19,6 +19,7 @@ import logging
 import math
 import os
 import shlex
+import signal
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import field
 from enum import Enum
@@ -514,8 +515,6 @@ class ChaosEventConfig:
         return parse_chaos_workers(self.workers)
 
     def __post_init__(self) -> None:
-        import signal as _signal
-
         if isinstance(self.after_seconds, bool) or not math.isfinite(self.after_seconds) or self.after_seconds < 0:
             raise ValidationError(f"chaos event after_seconds must be finite and >= 0, got {self.after_seconds!r}")
         parse_chaos_workers(self.workers)
@@ -524,7 +523,7 @@ class ChaosEventConfig:
         if self.process is not None and not self.process.strip():
             raise ValidationError("chaos event process must be non-empty when set")
         sig = self.normalized_signal
-        if not sig or not hasattr(_signal, f"SIG{sig}"):
+        if not sig or not hasattr(signal, f"SIG{sig}"):
             raise ValidationError(f"chaos event signal {self.signal!r} is not a recognized POSIX signal")
         if self.duration_seconds is not None and not _is_finite_positive(self.duration_seconds):
             raise ValidationError(
@@ -3260,7 +3259,7 @@ class SrtConfig:
     # default_host_setup; a recipe that sets this block replaces that default.
     host_setup: HostSetupConfig = field(default_factory=HostSetupConfig)
 
-    # Concurrent fault injection timeline (kill/stall/rolling replace) run
+    # Concurrent fault injection timeline (kill/freeze/rolling_restart) run
     # alongside the benchmark; recorded in `chaos_events.json`. See docs/chaos.md.
     chaos: ChaosConfig = field(default_factory=ChaosConfig)
 

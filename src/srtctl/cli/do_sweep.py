@@ -822,7 +822,6 @@ class SweepOrchestrator(
         # The supervisor relaunches workers whose role has a restart policy; it
         # runs inside the monitor tick, ahead of the critical-failure check.
         supervisor = self.build_worker_supervisor(registry, stop_event)
-        self._supervisor = supervisor
         start_process_monitor(stop_event, registry, reconcile=supervisor.reconcile)
 
         exit_code = 1
@@ -912,7 +911,7 @@ class SweepOrchestrator(
             self._print_connection_info()
 
             if self.serve_only:
-                exit_code = self.run_benchmark(registry, stop_event, reporter)
+                exit_code = self.run_benchmark(registry, stop_event, reporter, supervisor=supervisor)
             elif os.environ.get("EVAL_ONLY", "false").lower() == "true":
                 reporter.report(JobStatus.BENCHMARK, JobStage.BENCHMARK, "Running eval-only evaluation")
                 logger.info("EVAL_ONLY=true: Skipping benchmark stage and running lm-eval evaluation...")
@@ -927,7 +926,7 @@ class SweepOrchestrator(
                 exit_code = 1
             else:
                 # Stage 4: Benchmark (status reported AFTER health check passes)
-                exit_code = self.run_benchmark(registry, stop_event, reporter)
+                exit_code = self.run_benchmark(registry, stop_event, reporter, supervisor=supervisor)
 
                 # Stage 5: Post-benchmark eval (optional, non-fatal)
                 if os.environ.get("RUN_EVAL", "false").lower() == "true" and exit_code == 0:
