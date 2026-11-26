@@ -44,11 +44,17 @@ class ServiceLaunchContext:
     # The whole recipe, for kinds whose launch depends on facts outside their own block
     # (the GMS kind reads ``engine.failover``); None in previews.
     config: SrtConfig | None = None
+    # Public frontend endpoint, when the recipe has a frontend (not ``frontend.type: none``).
+    frontend_node: str | None = None
+    frontend_ip: str | None = None
+    frontend_port: int | None = None
 
     @classmethod
     def preview(cls, node: str = "<node>") -> ServiceLaunchContext:
         """A context for rendering commands without a job (dry-run): placeholders stand in for runtime values."""
         from types import SimpleNamespace
+
+        from srtctl.ports import FRONTEND_PUBLIC_PORT
 
         runtime = SimpleNamespace(
             nodes=SimpleNamespace(head="<head>", infra="<infra>", worker=()),
@@ -64,6 +70,9 @@ class ServiceLaunchContext:
             node_id=0,
             index=0,
             role="<role>",
+            frontend_node="<frontend_node>",
+            frontend_ip="<frontend_ip>",
+            frontend_port=FRONTEND_PUBLIC_PORT,
         )
 
     def template_vars(self) -> dict[str, str]:
@@ -95,6 +104,12 @@ class ServiceLaunchContext:
             "master_port": str(MOONCAKE_MASTER_PORT),
             "metadata_port": str(MOONCAKE_HTTP_METADATA_PORT),
         }
+        if self.frontend_node is not None:
+            values["frontend_node"] = self.frontend_node
+        if self.frontend_ip is not None:
+            values["frontend_ip"] = self.frontend_ip
+        if self.frontend_port is not None:
+            values["frontend_port"] = str(self.frontend_port)
         if self.process is not None:
             # placement.per: worker. The instance runs in this worker's device view, so
             # {worker_gpus} is what its CUDA_VISIBLE_DEVICES is set to.
@@ -180,7 +195,7 @@ class ServiceKind:
 
     def host_native(self, service: ServiceConfig) -> bool:
         """True to run the command straight on the node, with no container (a static host binary)."""
-        return False
+        return service.host_native
 
     def prepare(self, service: ServiceConfig, runtime: RuntimeContext, config: SrtConfig) -> None:
         """Write anything the command needs into the run's log dir; called once per service, before launch."""

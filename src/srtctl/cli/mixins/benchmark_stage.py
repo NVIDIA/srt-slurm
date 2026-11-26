@@ -13,6 +13,7 @@ import re
 import shlex
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -347,7 +348,24 @@ class BenchmarkStageMixin:
                 get_hostname_ip(node, self.runtime.network_interface) for node in nodes
             )
             env[f"SRT_SERVICE_{key}_NODE_COUNT"] = str(len(nodes))
+            if service.effective_port is not None:
+                env[f"SRT_SERVICE_{key}_PORT"] = str(service.effective_port)
         return env
+
+    def _benchmark_target(self) -> tuple[str, int] | None:
+        """Resolved ``(ip, port)`` when ``benchmark.target_service`` is set, else None."""
+        target_name = getattr(getattr(self.config, "benchmark", None), "target_service", None)
+        if not isinstance(target_name, str):
+            return None
+        resolved = self.config.resolve_benchmark_target_service()
+        if resolved is None:
+            return None
+        service, port = resolved
+        service_nodes = getattr(self, "service_nodes", None)
+        nodes = service_nodes(service) if service_nodes is not None else []
+        if not nodes:
+            raise RuntimeError(f"benchmark.target_service {service.name!r} selected no nodes in this allocation")
+        return get_hostname_ip(nodes[0], self.runtime.network_interface), port
 
     def run_benchmark(
         self, registry: "ProcessRegistry", stop_event: threading.Event, reporter: StatusReporter | None = None
@@ -499,12 +517,17 @@ class BenchmarkStageMixin:
         stop_event: threading.Event,
     ) -> int:
         """Run the actual benchmark script."""
-
-        cmd = runner.build_command(self.config, self.runtime)
+        target = self._benchmark_target()
+        bench_runtime = (
+            replace(self.runtime, benchmark_target_host=target[0], benchmark_target_port=target[1])
+            if target is not None
+            else self.runtime
+        )
+        cmd = runner.build_command(self.config, bench_runtime)
         env_to_set = self._get_benchmark_env(runner)
-        env_to_set.update(runner.get_environment(self.config, self.runtime))
-        container_image = runner.get_container_image(self.config, self.runtime)
-        container_mounts = runner.get_container_mounts(self.config, self.runtime)
+        env_to_set.update(runner.get_environment(self.config, bench_runtime))
+        container_image = runner.get_container_image(self.config, bench_runtime)
+        container_mounts = runner.get_container_mounts(self.config, bench_runtime)
 
         logger.info("Script: %s", runner.script_path)
         logger.info("Command: %s", shlex.join(cmd))
@@ -892,8 +915,13 @@ class BenchmarkStageMixin:
         # a different node than the orchestrator (e.g. benchmark.placement.node: last_decode
         # with frontend.placement.node: first_decode), "localhost" is wrong — the
         # command should target http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT.
-        # A services-only job (frontend.type none) has no endpoint to point at.
-        if self.config.frontend.type != "none":
+        # When benchmark.target_service is set, redirect the benchmark endpoint to
+        # that service (e.g. a gateway in front of the frontend).
+        resolved_target = self._benchmark_target()
+        if resolved_target is not None:
+            env["SRT_FRONTEND_HOST"] = resolved_target[0]
+            env["SRT_FRONTEND_PORT"] = str(resolved_target[1])
+        elif self.config.frontend.type != "none":
             env["SRT_FRONTEND_HOST"] = get_hostname_ip(self._public_api_node(), self.runtime.network_interface)
             env["SRT_FRONTEND_PORT"] = str(self.runtime.frontend_port)
 

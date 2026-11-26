@@ -14,6 +14,7 @@ job builds exactly what the lockfile says and build caches key on the commit.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 from typing import Any, ClassVar
@@ -59,6 +60,9 @@ def resolve_rev(git: str, rev: str, *, timeout: float = 60.0) -> str:
         return rev
     patterns = [rev, f"refs/tags/{rev}", f"refs/heads/{rev}"] if not rev.startswith("refs/") else [rev]
     cmd = ["git", "-c", "http.version=HTTP/1.1", "ls-remote", git, *patterns, *(f"{p}^{{}}" for p in patterns)]
+    git_env = {k: v for k, v in os.environ.items() if k in ("HOME", "USER", "SSH_AUTH_SOCK", "GIT_SSH_COMMAND")}
+    git_env["GIT_TERMINAL_PROMPT"] = "0"
+    git_env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin")
     try:
         result = subprocess.run(
             cmd,
@@ -66,7 +70,7 @@ def resolve_rev(git: str, rev: str, *, timeout: float = 60.0) -> str:
             text=True,
             timeout=timeout,
             check=False,
-            env={"GIT_TERMINAL_PROMPT": "0", "PATH": "/usr/bin:/bin:/usr/local/bin"},
+            env=git_env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f"git ls-remote {git} {rev} failed: {exc}") from exc

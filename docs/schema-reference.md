@@ -209,6 +209,8 @@ Benchmark configuration.
 | `command` | str \| None | `None` | Custom benchmark hook. ``command`` is passed to ``bash -lc`` verbatim; srtctl does NOT substitute placeholders like ``{nginx_url}`` or ``{slurm_job_id}``. Render any parameters when generating the recipe. See srtctl.benchmarks.custom.CustomBenchmarkRunner for details. |
 | `container_image` | str \| None | `None` | Image the benchmark client runs in (custom, agentperf); unset uses `model.container`. |
 | `env` | dict[str, str] | `{}` | Extra environment variables for the benchmark client (custom, agentperf). |
+| `target_service` | str \| None | `None` | Name of a services[] entry the benchmark client sends requests to instead of the frontend (e.g. a gateway). |
+| `target_port` | int \| None | `None` | Port on target_service to send benchmark requests to; defaults to that service's tcp/http readiness port. |
 | `aiperf_package` | str \| None | `None` | aiperf pip install spec (e.g., "aiperf>=0.7.0", "aiperf @ git+https://...@commit") If set, runs pip install <spec> before benchmarking. Upgrades if already installed. |
 | `aiperf_args` | dict[str, Any] | `{}` | Extra aiperf CLI flags passed through to bench.sh (e.g., benchmark-duration: 600, workers-max: 200) |
 | `slow_down_sleep_time` | float \| None | `None` | SA-Bench: optional SGLang /slow_down on decode workers (sglang frontend only; see benchmark_stage) |
@@ -216,7 +218,7 @@ Benchmark configuration.
 
 #### Benchmark types
 
-`benchmark.type` selects a runner. Every type accepts the shared keys `aiperf_args`, `aiperf_package`, `colocate_with_frontend`, `concurrencies`, `placement`, `stream_output`, `sweep`, `type` plus the keys in its row; a recipe that sets any other `benchmark` key fails to load. Generated from the benchmark registry.
+`benchmark.type` selects a runner. Every type accepts the shared keys `aiperf_args`, `aiperf_package`, `colocate_with_frontend`, `concurrencies`, `placement`, `stream_output`, `sweep`, `target_port`, `target_service`, `type` plus the keys in its row; a recipe that sets any other `benchmark` key fails to load. Generated from the benchmark registry.
 
 | Type | Description | Keys beyond the shared ones |
 |---|---|---|
@@ -334,6 +336,7 @@ One entry of the top-level ``services:`` list.
 | `command` | list[str] \| None | `None` | Argv to launch (not shell-interpreted). Required for ``generic``; typed kinds supply a default. |
 | `args` | list[str] | `[]` | Extra argv appended to ``command``. |
 | `container` | str \| None | `None` | Container image or ``srtslurm.yaml`` alias. Defaults to the kind's fallback image, then the job container. |
+| `host_native` | bool | `False` | Run the service (and its ``build_command``, if any) directly on the bare host node without a container image or container mounts. Cannot be combined with ``container``. |
 | `env` | dict[str, str] | `{}` | Environment for the service process, on top of what the kind injects. |
 | `source` | [SourceConfig](#sourceconfig) \| None | `None` | Optional git source to clone before ``build_command`` and ``command`` run. Single-node placements only. |
 | `build_command` | list[str] \| None | `None` | Argv run once inside the service container, from the clone, before ``command`` starts. Only meaningful with ``source``. |

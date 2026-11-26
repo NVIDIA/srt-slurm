@@ -58,7 +58,7 @@ class RouterRunner(BenchmarkRunner):
         runtime: RuntimeContext,
     ) -> list[str]:
         b = config.benchmark
-        endpoint = f"http://localhost:{runtime.frontend_port}"
+        endpoint = self.target_endpoint(runtime)
 
         # Format prefix ratios
         prefix_ratios = b.prefix_ratios or "0.1 0.3 0.5 0.7 0.9"

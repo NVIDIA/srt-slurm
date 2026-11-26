@@ -678,6 +678,7 @@ def show_config_details(config: SrtConfig) -> None:
     show_extensions = (
         config.benchmark.type == "custom"
         or config.benchmark.container_image
+        or config.benchmark.target_service is not None
         or config.observability.enabled
         or config.observability.tachometer.enabled
         or config.telemetry.enabled
@@ -695,6 +696,11 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("benchmark", "type", config.benchmark.type)
             if config.benchmark.command:
                 details.add_row("benchmark", "command", config.benchmark.command)
+
+        resolved_target = config.resolve_benchmark_target_service()
+        if resolved_target is not None:
+            target_svc, target_port = resolved_target
+            details.add_row("benchmark", "target_service", f"{target_svc.name} (:{target_port})")
 
         # Surface a non-default benchmark container regardless of type — accuracy
         # benchmarks like AIME (run via type: custom + the NeMo Skills container)

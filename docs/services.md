@@ -58,7 +58,8 @@ services:
     args:                        # appended to command
       - --flag
     container: my-image          # image or srtslurm.yaml alias; default: job container
-    env:                         # environment for the service process
+    host_native: false           # true runs command (and build_command) on the bare host without a container
+    env:                         # environment for the service process (and build_command)
       MY_FLAG: "1"
     options:                     # kind-specific knobs (nats: max_payload_mb; exporters: port, collect_interval_ms)
       max_payload_mb: 24
@@ -98,8 +99,9 @@ services:
 | `options` | `{}` | Kind-specific knobs; unknown keys are rejected. `nats`: `max_payload_mb`. `dcgm-exporter`, `node-exporter`: `port`, `collect_interval_ms`. `mooncake-master`: `store_config` (vLLM, TRT-LLM), `device_names_by_gpu` (vLLM). |
 | `command` | type default | Argv passed directly to the process. `generic` has no default, so it is required there. |
 | `args` | `[]` | Appended to `command`. Handy with typed services that supply the command. |
-| `container` | type fallback, then job container | Aliases resolve through `srtslurm.yaml` like every other container key. |
-| `env` | `{}` | Merged over the type's defaults; see [Environment](#environment). |
+| `container` | type fallback, then job container | Aliases resolve through `srtslurm.yaml` like every other container key. Cannot be combined with `host_native: true`. |
+| `host_native` | `false` | Run the service (and its `build_command`, if any) directly on the bare host node without a container image or mounts. Useful for daemons that need host sockets, cgroups, or devices (such as a sandbox service). |
+| `env` | `{}` | Merged over the type's defaults and passed to both `build_command` and `command`; see [Environment](#environment). |
 | `placement.node` | type default | `generic`: `head`. See [Placement](#placement). `compute` is every engine worker node plus every pool; `all` adds the head, infra and client nodes. |
 | `placement.pool` | none | Run on the nodes another service owns, one instance per node of that pool. Replaces `node`. See [pools.md](pools.md). |
 | `placement.per` | `node` | `worker`: one instance per engine worker on each placed node instead of one per node, attached to that worker (its `CUDA_VISIBLE_DEVICES`, the `{worker_*}` placeholders). See [Placement](#placement). |
@@ -115,9 +117,10 @@ services:
 | `source`, `build_command` | none | See [Building From Source](#building-from-source). |
 | `build_timeout_seconds` | `1800` | `build_command` is killed when this runs out, so a hung build cannot hold the allocation. |
 
-`command`, `args`, `env` values, and `preamble` may use these placeholders: `{node}`, `{node_ip}`,
+`command`, `args`, `build_command`, `env` values, and `preamble` may use these placeholders: `{node}`, `{node_ip}`,
 `{node_id}` (position in the worker list), `{index}` (instance index within the service), `{role}`
 (the `placement.node` value), `{head_node}`, `{head_ip}`, `{infra_node}`, `{infra_ip}`,
+`{frontend_node}`, `{frontend_ip}`, `{frontend_port}` (when `frontend.type` is not `none`),
 `{master_port}`, `{metadata_port}`, `{gpus_per_node}`, and the service's own node set: `{pool_node}` /
 `{pool_ip}` (its first node), `{pool_nodes}` / `{pool_ips}` (every node, comma-separated, in order),
 `{pool_node_count}`. Only those names are substituted; other braces (JSON in an env value) are left alone.
@@ -222,8 +225,7 @@ declaration order:
 - `infra`: the discovery plane (etcd, NATS). Nothing else should need this phase.
 - `before_workers`: after the discovery plane, before any worker. The Mooncake master, standalone
   stores, anything workers connect to at startup.
-- `after_frontend`: once workers and the frontend are healthy, before the scraper. The exporters,
-  sidecars that register into a running job.
+- `after_frontend`: launched right after the frontend process starts (overlapping worker model load, before the worker-count health gate and the scraper). The exporters, gateways, and sidecars that sit beside or in front of the frontend.
 
 Within a phase, services start one after another. The instances of one service launch together, and a
 service with `readiness` blocks until its probe passes on every instance; the probes run concurrently,

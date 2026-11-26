@@ -119,7 +119,7 @@ class SABenchRunner(BenchmarkRunner):
     ) -> list[str]:
         b = config.benchmark
         r = config.topology
-        endpoint = f"http://localhost:{runtime.frontend_port}"
+        endpoint = self.target_endpoint(runtime)
 
         # Format concurrencies as x-separated string if it's a list
         concurrencies = b.concurrencies

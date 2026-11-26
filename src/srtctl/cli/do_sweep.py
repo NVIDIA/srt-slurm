@@ -881,7 +881,8 @@ class SweepOrchestrator(
                 registry.add_process(proc)
 
             # Stage 3b: sidecar services (start: after_frontend, the default),
-            # once workers and the frontend are healthy and before telemetry.
+            # launched right after the frontend process starts (overlapping model
+            # load before the worker-count health gate and telemetry).
             self.start_services("after_frontend", registry)
 
             if self.config.telemetry.enabled:

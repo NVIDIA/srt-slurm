@@ -16,7 +16,9 @@ reach the log, so clients must flush their output (for Python clients, set
 `PYTHONUNBUFFERED: "1"` in their environment). Manual/serve-only jobs have no
 benchmark client to stream, and separate post-eval logs are not included.
 
-**Per-type fields.** Every type accepts the shared fields (`placement`, `colocate_with_frontend`, `stream_output`, `aiperf_package`, `aiperf_args`, and `concurrencies`, which power telemetry reads for its measurement windows whatever the type) plus the fields its runner reads. [Benchmark types](schema-reference.md#benchmark-types), generated from the runner registry, lists them per type.
+**Per-type fields.** Every type accepts the shared fields (`placement`, `colocate_with_frontend`, `stream_output`, `aiperf_package`, `aiperf_args`, `target_service`, `target_port`, and `concurrencies`, which power telemetry reads for its measurement windows whatever the type) plus the fields its runner reads. [Benchmark types](schema-reference.md#benchmark-types), generated from the runner registry, lists them per type.
+
+**Targeting a service (`target_service`).** By default, benchmarks target the job's frontend (`http://localhost:<frontend_port>` and `SRT_FRONTEND_HOST`/`SRT_FRONTEND_PORT`). When a `services:` entry sits in front of the frontend (for example, a gateway proxying inference requests alongside a sandbox service), set `benchmark.target_service: <service-name>` (and optionally `benchmark.target_port`, which defaults to that service's TCP/HTTP `readiness` port). Both built-in runners and `SRT_FRONTEND_HOST`/`SRT_FRONTEND_PORT` then point at the first node of `<service-name>` on that port. See [examples/features/gateway-and-sandbox.yaml](https://github.com/NVIDIA/srt-slurm/blob/main/examples/features/gateway-and-sandbox.yaml).
 
 A `schema: 2` recipe that sets a field its type does not use is rejected at load with the list of accepted fields. Before this, such a field was a silent no-op (`isl` on `gsm8k`, `num_shots` on `sa-bench`). Each runner declares its fields as `config_fields`; adding a field to a runner means adding it there.
 
@@ -66,6 +68,7 @@ Every custom benchmark command receives frontend metadata plus mode-specific met
 | `SRT_SERVICE_<NAME>_NODES`      | comma-separated hostnames      | Nodes each launched service runs on, in placement order; `<NAME>` is the service name upper-cased with non-alphanumerics as `_` |
 | `SRT_SERVICE_<NAME>_IPS`        | comma-separated IPs            | The same nodes' fabric IPs (the first is the head of a `ray` service) |
 | `SRT_SERVICE_<NAME>_NODE_COUNT` | int                            | How many nodes the service spans |
+| `SRT_SERVICE_<NAME>_PORT`       | port                           | First declared or kind-default TCP/HTTP readiness port of the service (when present) |
 | `SRT_GPUS_PER_NODE`             | int                            | `resources.gpus_per_node` |
 | `SRT_WORKER_NODES`              | comma-separated hostnames      | Every engine worker node (empty when the job has no engine roles) |
 

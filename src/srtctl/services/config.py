@@ -306,6 +306,9 @@ class ServiceConfig:
         args: Extra argv appended to ``command``.
         container: Container image or ``srtslurm.yaml`` alias. Defaults to the
             kind's fallback image, then the job container.
+        host_native: Run the service (and its ``build_command``, if any) directly
+            on the bare host node without a container image or container mounts.
+            Cannot be combined with ``container``.
         env: Environment for the service process, on top of what the kind injects.
         source: Optional git source to clone before ``build_command`` and
             ``command`` run. Single-node placements only.
@@ -365,6 +368,7 @@ class ServiceConfig:
     command: list[str] | None = None
     args: list[str] = field(default_factory=list)
     container: str | None = None
+    host_native: bool = False
     env: dict[str, str] = field(default_factory=dict)
     source: ServiceSourceConfig | None = None
     build_command: list[str] | None = None
@@ -409,6 +413,10 @@ class ServiceConfig:
             raise ValidationError(f"{label}.command/args must not contain empty arguments")
         if self.build_command is not None and not self.build_command:
             raise ValidationError(f"{label}.build_command, if set, must be non-empty (omit it entirely instead)")
+        if self.host_native and self.container is not None:
+            raise ValidationError(
+                f"{label}: host_native: true cannot be combined with container ({self.container!r}); drop one"
+            )
         if self.source is not None and self.effective_placement not in SINGLE_NODE_PLACEMENTS:
             raise ValidationError(
                 f"{label}.source requires a single-node placement (head or infra); got placement.node="
@@ -527,3 +535,13 @@ class ServiceConfig:
         from srtctl.services.registry import get_service_kind
 
         return self.critical if self.critical is not None else get_service_kind(self.type).default_critical
+
+    @property
+    def effective_port(self) -> int | None:
+        """First declared or kind-default readiness TCP/HTTP port, if any."""
+        from srtctl.services.registry import get_service_kind
+
+        if self.readiness is not None:
+            return self.readiness.probe_port
+        ports = get_service_kind(self.type).default_readiness_ports
+        return ports[0] if ports else None

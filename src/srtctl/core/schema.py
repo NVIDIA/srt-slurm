@@ -1296,6 +1296,10 @@ class BenchmarkConfig:
     container_image: str | None = None
     # Extra environment variables for the benchmark client (custom, agentperf).
     env: dict[str, str] = field(default_factory=dict)
+    # Name of a services[] entry the benchmark client sends requests to instead of the frontend (e.g. a gateway).
+    target_service: str | None = None
+    # Port on target_service to send benchmark requests to; defaults to that service's tcp/http readiness port.
+    target_port: int | None = None
     # aiperf pip install spec (e.g., "aiperf>=0.7.0", "aiperf @ git+https://...@commit")
     # If set, runs pip install <spec> before benchmarking. Upgrades if already installed.
     aiperf_package: str | None = None
@@ -3290,6 +3294,47 @@ class SrtConfig:
                 raise ValidationError(
                     f"services[{svc.name}].terminal needs a process to wait for; an external service launches nothing"
                 )
+        self._validate_benchmark_target_service()
+
+    def resolve_benchmark_target_service(self) -> tuple[ServiceConfig, int] | None:
+        """Return ``(service, port)`` when ``benchmark.target_service`` is set, else None."""
+        target_name = self.benchmark.target_service
+        if target_name is None:
+            return None
+        from srtctl.services.implicit import effective_services
+
+        for entry in effective_services(self):
+            if entry.service.name == target_name and not entry.service.external:
+                port = (
+                    self.benchmark.target_port
+                    if self.benchmark.target_port is not None
+                    else entry.service.effective_port
+                )
+                if port is None:
+                    raise ValidationError(
+                        f"benchmark.target_service {target_name!r} has no tcp/http readiness port; "
+                        "set benchmark.target_port"
+                    )
+                return entry.service, port
+        available = [entry.service.name for entry in effective_services(self) if not entry.service.external]
+        raise ValidationError(
+            f"benchmark.target_service {target_name!r} names no launched service "
+            f"(available: {', '.join(available) or 'none'})"
+        )
+
+    def _validate_benchmark_target_service(self) -> None:
+        b = self.benchmark
+        if b.target_port is not None:
+            if not 1 <= b.target_port <= 65535:
+                raise ValidationError(f"benchmark.target_port must be between 1 and 65535; got {b.target_port}")
+            if b.target_service is None:
+                raise ValidationError("benchmark.target_port requires benchmark.target_service")
+        if b.target_service is not None:
+            if not str(b.target_service).strip():
+                raise ValidationError("benchmark.target_service must be a non-empty service name")
+            if b.type == "manual":
+                raise ValidationError("benchmark.target_service is only valid when benchmark.type is not 'manual'")
+            self.resolve_benchmark_target_service()
 
     def _validate_benchmark_type(self) -> None:
         """Reject a benchmark.type that no runner is registered for.
