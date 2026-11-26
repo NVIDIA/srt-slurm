@@ -87,6 +87,11 @@ JOB_ID="${SLURM_JOB_ID:-${SRTCTL_JOB_ID}}"
 OUTPUT_DIR="${OUTPUT_BASE}/${JOB_ID}"
 LOG_DIR="${OUTPUT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
+{% if companion_submit %}
+# slurm.dedicated_partition: request the companion job for the dedicated nodes now, so its
+# queue wait overlaps the setup below. The orchestrator adopts it, or submits one if this failed.
+export SRTCTL_COMPANION_SUBMITTED="$({{ companion_submit }} 2>>"${LOG_DIR}/companion_submit.err" | cut -d';' -f1)" || true
+{% endif %}
 {% if staged_config_dir %}
 # Rendered by `srtctl render`: nothing submitted this script, so nothing copied the
 # recipe into OUTPUT_DIR after sbatch handed back the job id. Stage it here instead.

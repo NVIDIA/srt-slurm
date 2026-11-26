@@ -861,7 +861,7 @@ roles:
       moe_expert_parallel_size: 4
 """)
     config = load_config(recipe)
-    runtime = SimpleNamespace(nodes=SimpleNamespace(het=False, worker=("A", "B", "C", "D")))
+    runtime = SimpleNamespace(nodes=SimpleNamespace(het=False, prefill_decode_split=False, worker=("A", "B", "C", "D")))
     assert config.total_nodes == 4
     assert _backend_gpus_by_node(config, runtime) == {"A": 4, "B": 4, "C": 4, "D": 4}
 

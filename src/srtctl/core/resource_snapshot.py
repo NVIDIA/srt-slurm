@@ -119,7 +119,7 @@ def _backend_gpus_by_node(config: SrtConfig, runtime: RuntimeContext) -> dict[st
     """Return backend GPU demand by node, using the same endpoint placement as workers."""
     resources = config.topology
     try:
-        if runtime.nodes.het:
+        if runtime.nodes.prefill_decode_split:
             from srtctl.core.topology import allocate_endpoints_het
 
             endpoints = allocate_endpoints_het(

@@ -2050,6 +2050,14 @@
           "description": "Extra `#SBATCH --key=value` lines (empty value -> `--key`); wins over the cluster defaults.",
           "default": {}
         },
+        "dedicated_sbatch_directives": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "sbatch options for the `slurm.dedicated_partition` companion job instead of `sbatch_directives`, over its whole-node defaults (`exclusive`, `mem: 0`); e.g. `qos: cpu-short` where the default QOS requires GPUs.",
+          "default": {}
+        },
         "enable_config_dump": {
           "type": "boolean",
           "description": "Accepted for compatibility; srtctl does not read it. Workers dump their config where the engine supports it.",
@@ -2273,6 +2281,14 @@
             "type": "string"
           },
           "description": "Extra `#SBATCH --key=value` lines (empty value -> `--key`); wins over the cluster defaults.",
+          "default": {}
+        },
+        "dedicated_sbatch_directives": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "sbatch options for the `slurm.dedicated_partition` companion job instead of `sbatch_directives`, over its whole-node defaults (`exclusive`, `mem: 0`); e.g. `qos: cpu-short` where the default QOS requires GPUs.",
           "default": {}
         },
         "enable_config_dump": {
@@ -3262,6 +3278,18 @@
             }
           ],
           "description": "Slurm partition. Unset uses `default_partition` from srtslurm.yaml.",
+          "default": null
+        },
+        "dedicated_partition": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Partition for the nodes `placement.node: dedicated` reserves (frontend, benchmark client, etcd/nats). When set and different from `partition`, those nodes come from a companion job on this partition, submitted when the main job starts, instead of GPU nodes of the main job. Unset uses `default_dedicated_partition` from srtslurm.yaml.",
           "default": null
         },
         "time_limit": {

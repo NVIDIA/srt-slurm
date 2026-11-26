@@ -46,6 +46,10 @@ use_exclusive_sbatch_directive: true
 
 This adds `#SBATCH --exclusive` to the job script, ensuring your job has sole access to the allocated nodes. This is often required on clusters where GPU jobs must not share nodes with other jobs.
 
+## Dedicated Nodes Without GPUs
+
+A dedicated frontend, benchmark client or etcd/NATS node uses no GPU. Set `default_dedicated_partition` (and usually `default_dedicated_sbatch_directives: {qos: <cpu qos>}`) in `srtslurm.yaml` to take them from a CPU partition; see [Dedicated nodes on a CPU partition](topology.md#dedicated-nodes-on-a-cpu-partition).
+
 ## Host Memory Used by Container Filesystems
 
 Each Pyxis container step normally extracts its own root filesystem. On clusters

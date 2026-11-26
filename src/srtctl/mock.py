@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from srtctl.core.slurm import AllocationShrink
+from srtctl.core.slurm import COMPANION_JOB_ENV, COMPANION_NODELIST_ENV, AllocationShrink
 
 __all__ = [
     "FakePopen",
@@ -444,6 +444,15 @@ def _set_slurm_env(job_id: str, nodelist: Iterable[str]) -> dict[str, str | None
     return prior
 
 
+def _set_companion_env(config: Any) -> dict[str, str | None]:
+    """Publish a running companion job (``slurm.dedicated_partition``) on nodes ``mock-cpu-NN``."""
+    nodes = [f"mock-cpu-{i:02d}" for i in range(1, config.dedicated_node_count + 1)]
+    prior = {k: os.environ.get(k) for k in (COMPANION_JOB_ENV, COMPANION_NODELIST_ENV)}
+    os.environ[COMPANION_JOB_ENV] = "mock-companion"
+    os.environ[COMPANION_NODELIST_ENV] = ",".join(nodes)
+    return prior
+
+
 def _restore_env(prior: dict[str, str | None]) -> None:
     for k, v in prior.items():
         if v is None:
@@ -495,6 +504,8 @@ def run_mock_sweep(
     try:
         with mock_infrastructure(options=opts, output_dir=output_dir) as sink:
             config = load_config(config_path)
+            if config.dedicated_allocation is not None:
+                prior_slurm.update(_set_companion_env(config))
             runtime = RuntimeContext.from_config(config, job_id=job_id)
             orchestrator = SweepOrchestrator(config=config, runtime=runtime)
 

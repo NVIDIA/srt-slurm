@@ -56,6 +56,56 @@ def get_slurm_job_id() -> str | None:
     return os.environ.get("SLURM_JOB_ID") or os.environ.get("SLURM_JOBID")
 
 
+# The companion job (``slurm.dedicated_partition``, core/companion.py), published like SLURM_JOB_ID / SLURM_NODELIST.
+COMPANION_JOB_ENV = "SRTCTL_COMPANION_JOB_ID"
+COMPANION_NODELIST_ENV = "SRTCTL_COMPANION_NODELIST"
+# The component index ``Nodes.het_group_for`` gives the companion's nodes.
+COMPANION_GROUP = 1
+
+
+def get_companion_job_id() -> str | None:
+    """The companion job holding the dedicated nodes, or None when the job has none."""
+    return os.environ.get(COMPANION_JOB_ENV) or None
+
+
+def get_companion_nodelist() -> list[str]:
+    """The companion job's nodes; empty when the job has no companion. Published already expanded."""
+    return [node for node in os.environ.get(COMPANION_NODELIST_ENV, "").split(",") if node]
+
+
+@dataclass(frozen=True)
+class StepTarget:
+    """Where an srun runs: ``--jobid``, ``--het-group``, and its environment (None inherits ours)."""
+
+    job_id: str | None
+    het_group: int | None
+    env: dict[str, str] | None = None
+
+
+def _companion_step_env() -> dict[str, str]:
+    """Our environment without this job's ``SLURM_*`` variables, which srun would read as options.
+
+    The GPU job's ``SLURM_GPUS_PER_NODE`` would ask the companion for GPUs and ``SLURM_STEPMGR`` would send
+    the step to this job's step manager. The account stays for sites whose ``cli_filter`` requires one.
+    """
+    env = {key: value for key, value in os.environ.items() if not key.startswith("SLURM_") or key == "SLURM_CONF"}
+    account = os.environ.get("SLURM_ACCOUNT") or os.environ.get("SLURM_JOB_ACCOUNT")
+    if account:
+        env["SLURM_ACCOUNT"] = account
+    return env
+
+
+def step_target(het_group: int | None) -> StepTarget:
+    """The job an srun for component ``het_group`` runs in: a ``--het-group`` of this job, or the companion job."""
+    job_id = get_slurm_job_id()
+    companion = get_companion_job_id()
+    if companion is None:
+        return StepTarget(job_id, het_group)
+    if het_group == COMPANION_GROUP:
+        return StepTarget(companion, None, _companion_step_env())
+    return StepTarget(job_id, None)
+
+
 def get_slurm_nodelist() -> list[str]:
     """Get list of nodes from SLURM_NODELIST environment variable.
 

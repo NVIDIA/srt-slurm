@@ -387,6 +387,9 @@ class ClusterConfig:
     default_account: str | None = None
     # Slurm partition for recipes that omit `slurm.partition`.
     default_partition: str | None = None
+    # Partition for the nodes `placement.node: dedicated` reserves (frontend, benchmark client, etcd/nats) when a
+    # recipe omits `slurm.dedicated_partition`. Usually a CPU-only partition, so those roles hold no GPU node.
+    default_dedicated_partition: str | None = None
     # Job time limit (HH:MM:SS) for recipes that omit `slurm.time_limit`.
     default_time_limit: str | None = None
     # GPUs per node for recipes that omit `resources.gpus_per_node`.
@@ -415,6 +418,9 @@ class ClusterConfig:
     use_het_jobs: bool = False
     # Extra `#SBATCH --key=value` lines added to every job; a recipe's `sbatch_directives` wins per key.
     default_sbatch_directives: dict[str, str] | None = None
+    # sbatch options for the dedicated-partition companion job in place of `default_sbatch_directives`, e.g.
+    # `{qos: cpu-short}` where the default QOS requires GPUs; a recipe's `dedicated_sbatch_directives` wins per key.
+    default_dedicated_sbatch_directives: dict[str, str] | None = None
     # `health_check` block (`max_attempts`, `interval_seconds`) used when a recipe has none.
     default_health_check: dict[str, int] | None = None
     # Default for recipe `reuse_container`; explicit true or false in the recipe wins.
@@ -772,6 +778,16 @@ class HetComponent:
     gpus_per_node: int
 
     Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class DedicatedAllocation:
+    """The companion job holding the ``placement.node: dedicated`` nodes on ``slurm.dedicated_partition``; see ``core/companion.py``."""
+
+    partition: str
+    nodes: int
+    # `#SBATCH`-style options for the companion: whole nodes, then `dedicated_sbatch_directives`.
+    sbatch_directives: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -1174,6 +1190,10 @@ class SlurmConfig:
     account: str | None = None
     # Slurm partition. Unset uses `default_partition` from srtslurm.yaml.
     partition: str | None = None
+    # Partition for the nodes `placement.node: dedicated` reserves (frontend, benchmark client, etcd/nats). When set
+    # and different from `partition`, those nodes come from a companion job on this partition, submitted when the
+    # main job starts, instead of GPU nodes of the main job. Unset uses `default_dedicated_partition` from srtslurm.yaml.
+    dedicated_partition: str | None = None
     # Job time limit (HH:MM:SS). Unset uses `default_time_limit` from srtslurm.yaml.
     time_limit: str | None = None
 
@@ -2943,6 +2963,9 @@ class SrtConfig:
     srun_options: dict[str, str] = field(default_factory=dict)
     # Extra `#SBATCH --key=value` lines (empty value -> `--key`); wins over the cluster defaults.
     sbatch_directives: dict[str, str] = field(default_factory=dict)
+    # sbatch options for the `slurm.dedicated_partition` companion job instead of `sbatch_directives`, over its
+    # whole-node defaults (`exclusive`, `mem: 0`); e.g. `qos: cpu-short` where the default QOS requires GPUs.
+    dedicated_sbatch_directives: dict[str, str] = field(default_factory=dict)
     # Accepted for compatibility; srtctl does not read it. Workers dump their config where the engine supports it.
     enable_config_dump: bool = True
 
@@ -4404,6 +4427,29 @@ class SrtConfig:
     def infra_dedicated_node(self) -> bool:
         """Whether the discovery plane gets a node of its own: a declared ``etcd`` or ``nats`` placed ``dedicated``."""
         return any(service.effective_placement == "dedicated" for service in self.infra_services)
+
+    @property
+    def dedicated_node_count(self) -> int:
+        """Nodes the ``placement.node: dedicated`` roles reserve: one shared with ``colocate_with_frontend``, else one each."""
+        roles = sum((self.infra_dedicated_node, self.frontend.placement.dedicated, self.benchmark.placement.dedicated))
+        return min(roles, 1) if self.benchmark.colocate_with_frontend else roles
+
+    @property
+    def dedicated_allocation(self) -> DedicatedAllocation | None:
+        """The companion job for the dedicated nodes, or None when they are nodes of the main job."""
+        partition = self.slurm.dedicated_partition
+        if (
+            not partition
+            or partition == self.slurm.partition
+            or not self.dedicated_node_count
+            or self.resources.het_jobs
+        ):
+            return None
+        return DedicatedAllocation(
+            partition=partition,
+            nodes=self.dedicated_node_count,
+            sbatch_directives={"exclusive": "", "mem": "0", **self.dedicated_sbatch_directives},
+        )
 
     @property
     def nats_max_payload_mb(self) -> int | None:

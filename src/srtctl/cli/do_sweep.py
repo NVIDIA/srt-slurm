@@ -35,6 +35,7 @@ from srtctl.cli.mixins import (
     TelemetryStageMixin,
     WorkerStageMixin,
 )
+from srtctl.core.companion import CompanionJob
 from srtctl.core.config import load_config
 from srtctl.core.health import wait_for_port
 from srtctl.core.launcher import get_launcher
@@ -47,7 +48,7 @@ from srtctl.core.processes import (
 from srtctl.core.resource_snapshot import record_resource_snapshot
 from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import SrtConfig, container_creation_env
-from srtctl.core.slurm import resolve_container_name, start_srun_process
+from srtctl.core.slurm import get_slurm_het_nodelists, resolve_container_name, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, LogStreamer, StatusReporter, tachometer_outbox
 from srtctl.core.supervisor import WORKER_RESTARTS_FILENAME
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
@@ -125,7 +126,7 @@ class SweepOrchestrator(
         other's topology segment.
         """
         r = self.config.topology
-        if self.runtime.nodes.het:
+        if self.runtime.nodes.prefill_decode_split:
             if self.config.role_backends:
                 raise ValueError("Role engine overrides do not support Slurm heterogeneous allocations")
             return allocate_endpoints_het(
@@ -985,6 +986,25 @@ class SweepOrchestrator(
         return exit_code
 
 
+def start_companion(config: SrtConfig, job_id: str) -> CompanionJob | None:
+    """Start the companion job holding the dedicated nodes (``slurm.dedicated_partition``), if any.
+
+    Skipped for a prefill/decode heterogeneous job, whose dedicated infra node folds into its prefill side.
+    """
+    allocation = config.dedicated_allocation
+    if allocation is None or get_slurm_het_nodelists() is not None:
+        return None
+    output_dir = Path(os.environ.get("SRTCTL_OUTPUT_DIR") or ".")
+    return CompanionJob.start(
+        allocation,
+        main_job_id=job_id,
+        job_name=f"{os.environ.get('SLURM_JOB_NAME') or config.name}-dedicated",
+        account=config.slurm.account or os.environ.get("SLURM_JOB_ACCOUNT"),
+        time_limit=config.slurm.time_limit or "01:00:00",
+        output=str(output_dir / "logs" / "companion_%j.log"),
+    )
+
+
 def main():
     """Main entry point."""
     from dataclasses import replace
@@ -1021,9 +1041,14 @@ def main():
 
         # Type narrowing: job_id is str after the check above
         assert job_id is not None
-        runtime = RuntimeContext.from_config(config, job_id)
-        orchestrator = SweepOrchestrator(config=config, runtime=runtime, serve_only=args.serve_only)
-        exit_code = orchestrator.run()
+        companion = start_companion(config, job_id)
+        try:
+            runtime = RuntimeContext.from_config(config, job_id)
+            orchestrator = SweepOrchestrator(config=config, runtime=runtime, serve_only=args.serve_only)
+            exit_code = orchestrator.run()
+        finally:
+            if companion is not None:
+                companion.release()
 
         sys.exit(exit_code)
 
