@@ -209,7 +209,7 @@ def test_apply_mock_json_records_applied_overrides(tmp_path: Path, monkeypatch, 
         ],
     )
     submit_cli.main()
-    record = json.loads(capsys.readouterr().out.strip().splitlines()[0])
+    record = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert record["status"] == "submitted"
     assert record["applied_overrides"] == ["--set benchmark.command=echo overridden", "--unset health_check"]
     written = yaml.safe_load((Path(record["output_dir"]) / "config.yaml").read_text())

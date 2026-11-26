@@ -39,8 +39,9 @@ def _job_dir(tmp_path: Path, job_id: str = "12807") -> Path:
 def test_submit_job_runs_apply_with_overrides_and_parses_the_record(tmp_path: Path, monkeypatch) -> None:
     recipe = tmp_path / "r.yaml"
     recipe.write_text("name: x\n")
+    accepted = {"status": "accepted", "slurm_job_id": "12807"}
     record = {"status": "submitted", "slurm_job_id": "12807", "output_dir": "/o/12807"}
-    runner = _Runner(_done("some rich banner\n" + json.dumps(record) + "\n"))
+    runner = _Runner(_done("some rich banner\n" + json.dumps(accepted) + "\n" + json.dumps(record) + "\n"))
     monkeypatch.setattr(job_tools, "_run", runner)
     monkeypatch.setattr(job_tools, "_srtctl_command", lambda: ["srtctl"])
 
@@ -56,6 +57,23 @@ def test_submit_job_runs_apply_with_overrides_and_parses_the_record(tmp_path: Pa
         "--unset", "slurm.time_limit",
         "--tags", "a,b",
     ]  # fmt: skip
+
+
+def test_submit_job_returns_error_records_and_accepted_ids_on_partial_failure(tmp_path: Path, monkeypatch) -> None:
+    recipe = tmp_path / "r.yaml"
+    recipe.write_text("name: x\n")
+    accepted = {"status": "accepted", "slurm_job_id": "7"}
+    error = {"status": "error", "code": "preflight_failed", "submission_index": 2}
+    stdout = json.dumps(accepted) + "\n" + json.dumps(error) + "\n"
+    monkeypatch.setattr(job_tools, "_run", _Runner(_done(stdout, returncode=3)))
+    monkeypatch.setattr(job_tools, "_srtctl_command", lambda: ["srtctl"])
+
+    result = job_tools.submit_job(str(recipe))
+
+    assert result["ok"] is False
+    assert result["exit_code"] == 3
+    assert result["errors"] == [error]
+    assert result["accepted"] == ["7"]
 
 
 def test_submit_job_reports_failures_with_the_cli_output(tmp_path: Path, monkeypatch) -> None:

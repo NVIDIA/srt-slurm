@@ -165,8 +165,9 @@ jobs:
 
           uv run python - <<'PY'
           import json, pathlib, time
-          sub = json.loads(pathlib.Path("/tmp/submission.json").read_text().strip())
-          assert sub["status"] == "submitted", sub
+          records = [json.loads(line) for line in pathlib.Path("/tmp/submission.json").read_text().splitlines()]
+          sub = next((r for r in records if r["status"] == "submitted"), None)
+          assert sub, records
           output_dir = pathlib.Path(sub["output_dir"])
           result_path = output_dir / "result.json"
           # The detached mock worker keeps ticking in the background after
