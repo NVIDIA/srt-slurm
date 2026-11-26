@@ -626,6 +626,56 @@ class TestFaultToleranceAndActions:
         assert [r.status for r in runner.records] == ["completed", "skipped"]
         assert runner.records[1].details["reason"] == "min_healthy_guard"
 
+    def test_min_healthy_guard_blocks_overlap_before_srun_reaps(self, tmp_path: Path):
+        """Even if scancel was delivered and local srun has not exited yet, min_healthy counts the target down."""
+        cfg = _load_dict(_base_recipe())
+        runtime = SimpleNamespace(job_id="104b", log_dir=tmp_path, network_interface=None)
+        registry = ProcessRegistry(job_id="104b")
+        stop = threading.Event()
+        supervisor = WorkerSupervisor(
+            registry=registry,
+            stop_event=stop,
+            launcher=_FakeLauncher(),
+            log_dir=tmp_path,
+            probe_interval=0.0,
+        )
+        p0, p1 = _proc("agg", 0, "node0"), _proc("agg", 1, "node0")
+        s0, s1 = _FakeStep("agg_0_node0", node="node0"), _FakeStep("agg_1_node0", node="node0")
+        registry.add_process(s0.managed)
+        registry.add_process(s1.managed)
+
+        chaos = ChaosConfig(
+            min_healthy=1,
+            events=[
+                ChaosEventConfig(type="kill", role="agg", workers=0, respawn=True),
+                ChaosEventConfig(type="kill", role="agg", workers=1, respawn=True),
+            ],
+        )
+        runner = ChaosRunner(
+            chaos=chaos,
+            config=cfg,
+            runtime=runtime,  # type: ignore[arg-type]
+            registry=registry,
+            supervisor=supervisor,
+            endpoint_groups={("agg", 0, 0): [p0], ("agg", 1, 0): [p1]},
+            stop_event=stop,
+        )
+        # Simulate signal_step succeeding (scancel delivered) while local srun popen.poll() is still None.
+        with (
+            patch("srtctl.chaos.actions.list_step_ids", return_value={"agg_0_node0": "104.2"}),
+            patch("srtctl.chaos.actions.signal_step", return_value=True),
+        ):
+            runner.start()
+            deadline = time.monotonic() + 5.0
+            while len(runner.records) < 2 or any(r.status == "running" for r in runner.records):
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+            runner.stop(timeout=5.0)
+
+        assert [r.status for r in runner.records] == ["completed", "skipped"]
+        assert runner.records[1].details["reason"] == "min_healthy_guard"
+
     def test_stochastic_schedule_fires_up_to_max_events_and_respects_floor(self, tmp_path: Path):
         sched = ChaosScheduleConfig(mean_interval_seconds=0.04, min_interval_seconds=0.02, max_events=3, role="agg")
         rng = random.Random(11)

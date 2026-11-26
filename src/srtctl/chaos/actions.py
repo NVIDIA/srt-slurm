@@ -242,6 +242,7 @@ def _prepare_destructive_target(
     # Mark only the targeted worker's step(s) non-critical so surviving workers stay critical.
     for name in live_names:
         ctx.registry.set_critical(name, False)
+        ctx.mark_step_killed(name)
     return None
 
 

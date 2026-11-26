@@ -99,6 +99,7 @@ class ChaosContext:
         self.min_healthy = min_healthy
         self._stall_lock = threading.Lock()
         self._active_stalls: list[StalledProcess] = []
+        self._killed_steps: set[str] = set()
 
     def should_stop(self) -> bool:
         return self.stop_event.is_set() or self.done_event.is_set()
@@ -152,10 +153,16 @@ class ChaosContext:
         targets.sort(key=lambda t: (t.index, t.key[2]))
         return targets
 
+    def mark_step_killed(self, step_name: str) -> None:
+        """Record a step as signalled for termination before srun finishes exiting."""
+        with self._stall_lock:
+            self._killed_steps.add(step_name)
+
     def healthy_worker_count(self, role: str) -> int:
-        """Count endpoints of ``role`` whose steps are running, not frozen, and ready in the supervisor."""
+        """Count endpoints of ``role`` whose steps are running, not killed/frozen, and ready in the supervisor."""
         with self._stall_lock:
             frozen_workers = {s.worker for s in self._active_stalls}
+            killed_steps = set(self._killed_steps)
         healthy = 0
         for target in self.candidates_for_role(role):
             if target.label in frozen_workers:
@@ -163,7 +170,7 @@ class ChaosContext:
             if self.supervisor is not None and not self.supervisor.is_endpoint_ready(target.key):
                 continue
             live_names = self.active_step_names(target)
-            if not live_names:
+            if not live_names or any(name in killed_steps for name in live_names):
                 continue
             procs = [self.registry.get_process(name) for name in live_names]
             if all(proc is not None and proc.is_running for proc in procs):
